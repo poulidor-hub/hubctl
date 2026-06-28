@@ -5,9 +5,26 @@ ESC = object()
 
 
 def _with_escape(question):
-    @question.application.key_bindings.add("escape")
-    def _(event):
-        event.app.exit(result=ESC)
+    kb = question.application.key_bindings
+    add = getattr(kb, "add", None)
+    if add is not None:
+        @add("escape")
+        def _(event):
+            event.app.exit(result=ESC)
+    else:
+        # _MergedKeyBindings (text/confirm/password) : pas de .add → on merge un binding
+        try:
+            from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+        except ImportError:
+            pass
+        else:
+            extra = KeyBindings()
+
+            @extra.add("escape")
+            def _(event):
+                event.app.exit(result=ESC)
+
+            question.application.key_bindings = merge_key_bindings([kb, extra])
     return question.ask()
 
 
