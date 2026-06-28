@@ -17,10 +17,14 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     console = Console()
-    interactive = sys.stdout.isatty()
+    interactive = _interactive()
     skip = args.no_anim or not interactive
 
     state = animation.preload_with_bar(console, animate=not skip)
@@ -30,10 +34,19 @@ def main(argv=None) -> int:
         chosen = animation.select_animation(anims, name=args.anim)
         animation.play_intro(console, anim=chosen, state=state, skip=skip)
 
+    if not interactive:
+        menu._status_banner(console, state)
+        console.print("[yellow]Mode non interactif : menu indisponible (un terminal TTY est requis).[/yellow]")
+        return 0
+
     vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
     vault = Vault(vault_path)
 
-    menu.main_loop(console, state, vault, dry_run=args.dry_run)
+    try:
+        menu.main_loop(console, state, vault, dry_run=args.dry_run)
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]Interrompu.[/dim]")
+        return 0
     return 0
 
 

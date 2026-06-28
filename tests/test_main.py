@@ -1,4 +1,6 @@
+from unittest import mock
 from hubctl_cli.__main__ import build_parser
+from hubctl_cli import __main__ as m
 
 
 def test_parser_flags():
@@ -15,3 +17,13 @@ def test_parser_defaults():
     assert args.no_anim is False
     assert args.dry_run is False
     assert args.anim is None
+
+
+def test_non_interactive_exits_cleanly_without_menu():
+    with mock.patch.object(m, "_interactive", return_value=False), \
+         mock.patch.object(m.animation, "preload_with_bar",
+                           return_value={"docker": False, "services": []}), \
+         mock.patch.object(m.menu, "main_loop") as ml:
+        rc = m.main([])
+    assert rc == 0
+    ml.assert_not_called()
