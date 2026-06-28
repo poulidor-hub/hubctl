@@ -93,8 +93,17 @@ def view_coffre(console, vault) -> None:
                 console.print(f"  [bold]{k}[/bold] = {v}")
 
 
+def pause(console) -> None:
+    console.print("\n[dim]↵ Entrée pour revenir au menu…[/dim]")
+    try:
+        input()
+    except EOFError:
+        pass
+
+
 def main_loop(console, state: dict, vault, *, dry_run: bool) -> None:
     while True:
+        console.clear()
         _status_banner(console, state)
         choice = questionary.select("Que veux-tu faire ?", choices=build_main_choices()).ask()
         if choice is None or choice.startswith("0."):
@@ -127,3 +136,4 @@ def main_loop(console, state: dict, vault, *, dry_run: bool) -> None:
             view_apps(console, state)
         elif n == "8":
             view_coffre(console, vault)
+        pause(console)

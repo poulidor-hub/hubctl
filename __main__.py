@@ -25,6 +25,9 @@ def _run(args, console) -> int:
     interactive = _interactive()
     skip = args.no_anim or not interactive
 
+    if interactive:
+        console.clear()
+
     state = animation.preload_with_bar(console, animate=not skip)
 
     if not skip:

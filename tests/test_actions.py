@@ -40,3 +40,20 @@ def test_menu_main_choices_contains_all_actions():
     joined = " ".join(choices).lower()
     for kw in ["update", "ajouter", "supprimer", "réparer", "logs", "start", "apps", "coffre", "quitter"]:
         assert kw in joined
+
+
+def test_pause_waits_for_enter():
+    from hubctl_cli import menu
+    console = mock.Mock()
+    with mock.patch("builtins.input", return_value=""):
+        menu.pause(console)
+    console.print.assert_called()
+
+
+def test_main_loop_clears_screen_then_quits():
+    from hubctl_cli import menu
+    console = mock.Mock()
+    with mock.patch.object(menu.questionary, "select") as sel:
+        sel.return_value.ask.return_value = "0. Quitter"
+        menu.main_loop(console, {"docker": False, "services": []}, vault=None, dry_run=True)
+    console.clear.assert_called()
