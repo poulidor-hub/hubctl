@@ -3,18 +3,31 @@ import datetime
 import re
 import shutil
 import tarfile
-from pathlib import Path
 
 from rich.console import Console
 
-from hubctl_cli import hub_state, utils
+from hubctl_cli import hub_state, prompts, utils
 
 APP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _console = Console()
 
 
 def valid_app_name(name: str) -> bool:
     return bool(APP_NAME_RE.match(name))
+
+
+def repo_name_from_url(url: str) -> str | None:
+    """Déduit le nom du dépôt depuis une URL git (ssh ou https)."""
+    u = (url or "").strip().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    if not u:
+        return None
+    name = re.split(r"[/:]", u)[-1]
+    if not name or name.startswith(".") or not _REPO_NAME_RE.match(name):
+        return None
+    return name
 
 
 def hub_make(target: str, *, dry_run: bool, console=None) -> int:
@@ -37,7 +50,7 @@ def disk_guard(console=None) -> bool:
     gb = d.free / 1024 ** 3
     if d.percent_free < 5:
         con.print(f"[red]⚠ Espace critique : {d.percent_free}% libre ({gb:.1f} Go).[/red]")
-        return utils.confirm("Forcer malgré l'espace critique ?", console=con)
+        return prompts.yesno("Forcer malgré l'espace critique ?", default=False) is True
     if d.percent_free < 15:
         con.print(f"[yellow]⚠ Espace faible : {d.percent_free}% libre ({gb:.1f} Go).[/yellow]")
     return True
@@ -46,7 +59,7 @@ def disk_guard(console=None) -> bool:
 def action_update(console, target: str, *, dry_run: bool) -> None:
     if not disk_guard(console):
         return
-    if not utils.confirm(f"Mettre à jour « {target} » ?", console=console):
+    if prompts.yesno(f"Mettre à jour « {target} » ?", default=False) is not True:
         return
     if target == "hub":
         utils.run_shell(["git", "-C", str(hub_state.HUB_DIR), "pull"], dry_run=dry_run, console=console)
@@ -62,26 +75,29 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
         app_make(target, "up", dry_run=dry_run, console=console)
 
 
-def action_add_app(console, name: str, *, dry_run: bool) -> None:
-    if not valid_app_name(name):
-        console.print("[red]Nom invalide (attendu ^[a-z][a-z0-9_-]*$).[/red]")
+def action_add_app(console, url: str, *, dry_run: bool) -> None:
+    name = repo_name_from_url(url)
+    if not name:
+        console.print("[red]URL git invalide.[/red]")
         return
-    if (hub_state.APPS_DIR / name).exists():
-        console.print(f"[red]L'app « {name} » existe déjà.[/red]")
+    dest = hub_state.APPS_DIR / name
+    if dest.exists():
+        console.print(f"[red]« {name} » existe déjà dans APPS/.[/red]")
         return
     if not disk_guard(console):
         return
-    if not utils.confirm(f"Créer l'app « {name} » ?", console=console):
+    if prompts.yesno(f"Cloner {url} → APPS/{name} ?", default=True) is not True:
         return
-    utils.run_shell(
-        ["bash", str(hub_state.PARC_ROOT / "scripts" / "create_app.sh"), name],
-        dry_run=dry_run, console=console,
-    )
-    if utils.confirm("Initialiser maintenant (INITIALISE.py) ?", console=console):
-        utils.run_shell(
-            ["python", "INITIALISE.py"],
-            cwd=str(hub_state.APPS_DIR / name), dry_run=dry_run, console=console,
-        )
+    rc = utils.run_shell(["git", "clone", url, str(dest)], dry_run=dry_run, console=console)
+    if not dry_run and rc != 0:
+        console.print("[red]✗ Échec du clone.[/red]")
+        return
+    if dry_run or (dest / "INITIALISE.py").exists():
+        if prompts.yesno("Initialiser l'app (INITIALISE.py) ?", default=True) is True:
+            utils.run_shell(
+                ["python", "INITIALISE.py"],
+                cwd=str(dest), dry_run=dry_run, console=console,
+            )
 
 
 def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
@@ -89,9 +105,14 @@ def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
     if not path.exists():
         console.print(f"[red]App introuvable : {app_name}.[/red]")
         return
-    console.print(f"[bold red]Suppression de « {app_name} »[/bold red] :")
-    console.print(" 1. sync du coffre + backup tar.gz, 2. arrêt conteneur, 3. mise en corbeille.")
-    if not utils.confirm_phrase(app_name, console=console):
+    console.print(
+        f"[bold red]Suppression de « {app_name} »[/bold red] : "
+        "sync du coffre + backup tar.gz, arrêt conteneur, mise en corbeille."
+    )
+    keep = "Annuler"
+    go = f"Oui, supprimer « {app_name} » (vers la corbeille)"
+    choice = prompts.select(f"Confirmer la suppression de « {app_name} » ?", [keep, go])
+    if choice is prompts.ESC or choice is None or choice == keep:
         console.print("[yellow]Annulé.[/yellow]")
         return
 
@@ -122,7 +143,7 @@ def action_repair(console, *, dry_run: bool) -> None:
     hub_make("ps", dry_run=False, console=console)
     d = hub_state.get_disk_usage()
     console.print(f"Disque : {d.percent_free}% libre.")
-    if utils.confirm("Re-up forcé du hub (force-recreate) ?", console=console):
+    if prompts.yesno("Re-up forcé du hub (force-recreate) ?", default=False) is True:
         utils.run_shell(
             ["docker", "compose", "-f", str(hub_state.HUB_DIR / "docker-compose.yml"),
              "up", "-d", "--force-recreate"],
@@ -141,7 +162,7 @@ def action_start_stop(console, sub: str, *, dry_run: bool) -> None:
     if sub == "start":
         hub_make("up-prod", dry_run=dry_run, console=console)
     elif sub in ("stop", "restart"):
-        if not utils.confirm(f"Confirmer {sub} du hub ?", console=console):
+        if prompts.yesno(f"Confirmer {sub} du hub ?", default=False) is not True:
             return
         hub_make("down", dry_run=dry_run, console=console)
         if sub == "restart":

@@ -42,3 +42,11 @@ def confirm(message, *, default=False, **kw):
 
 def password(message, **kw):
     return _with_escape(questionary.password(message, **kw))
+
+
+def yesno(message, *, default=False):
+    """Confirmation en choix Oui/Non. Retourne True, False, ou ESC (Échap)."""
+    sel = select(message, ["Oui", "Non"], default=("Oui" if default else "Non"))
+    if sel is ESC or sel is None:
+        return sel
+    return sel == "Oui"

@@ -30,8 +30,16 @@ def test_app_make_targets_app_dir():
 def test_disk_guard_blocks_when_critical():
     fake = mock.Mock(percent_free=3.0, free=1, total=100)
     with mock.patch.object(actions.hub_state, "get_disk_usage", return_value=fake), \
-         mock.patch.object(actions.utils, "confirm", return_value=False):
+         mock.patch.object(actions.prompts, "yesno", return_value=False):
         assert actions.disk_guard() is False
+
+
+def test_repo_name_from_url():
+    assert actions.repo_name_from_url("git@github.com:Poutchouli/exemple-app-2.git") == "exemple-app-2"
+    assert actions.repo_name_from_url("https://github.com/Poutchouli/exemple-app-2.git") == "exemple-app-2"
+    assert actions.repo_name_from_url("git@github.com:Org/my-app") == "my-app"
+    assert actions.repo_name_from_url("") is None
+    assert actions.repo_name_from_url("nom avec espaces/") is None
 
 
 def test_menu_main_choices_contains_all_actions():

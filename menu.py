@@ -51,12 +51,12 @@ def choose_app(console):
     return choice
 
 
-def _choose_target(console, hub_question):
+def _choose_target(console):
     """Retourne 'hub', un nom d'app, ou None (annulé)."""
-    answer = prompts.confirm(hub_question, default=True)
-    if answer is prompts.ESC or answer is None:
+    sel = prompts.select("Cibler quoi ?", ["Le hub central", "Une app", "← Retour"])
+    if sel is prompts.ESC or sel is None or sel == "← Retour":
         return None
-    if answer:
+    if sel == "Le hub central":
         return "hub"
     return choose_app(console)
 
@@ -116,16 +116,16 @@ def view_coffre(console, vault) -> None:
 def _handle(n, console, state, vault, *, dry_run) -> bool:
     """Exécute l'action n. Retourne True si une action a été menée (→ pause)."""
     if n == "1":
-        target = _choose_target(console, "Cibler le hub central ?")
+        target = _choose_target(console)
         if target is None:
             return False
         actions.action_update(console, target, dry_run=dry_run)
         return True
     if n == "2":
-        name = prompts.text("Nom de la nouvelle app :")
-        if name is prompts.ESC or name is None or not name:
+        url = prompts.text("URL git du depôt (ex: git@github.com:Poutchouli/exemple-app-2.git) :")
+        if url is prompts.ESC or url is None or not url.strip():
             return False
-        actions.action_add_app(console, name, dry_run=dry_run)
+        actions.action_add_app(console, url.strip(), dry_run=dry_run)
         return True
     if n == "3":
         app = choose_app(console)
@@ -137,7 +137,7 @@ def _handle(n, console, state, vault, *, dry_run) -> bool:
         actions.action_repair(console, dry_run=dry_run)
         return True
     if n == "5":
-        target = _choose_target(console, "Logs du hub ?")
+        target = _choose_target(console)
         if target is None:
             return False
         actions.action_logs(console, target)
