@@ -25,6 +25,18 @@ Start/Stop hub · Apps (vue + disque) · Coffre (secrets chiffrés).
 Les opérations s'appuient sur les `Makefile` du parc : `make -C HUB_base …`
 (hub central) et `make -C APPS/<nom> …` (apps).
 
+## Raccourcis clavier
+
+| Touche | Où | Action |
+|--------|-----|--------|
+| **↑↓** | Menu, sous-menus | Naviguer |
+| **Entrée** | Partout | Valider |
+| **Échap** | Menu principal | Quitter |
+| **Échap** | Sous-menu, saisie | Revenir au menu principal |
+| **Ctrl-C** | Action en cours | Interrompre et revenir au menu |
+| **Ctrl-C** | Menu principal | Rester au menu |
+| Toute touche | Intro animée | Passer l'intro |
+
 ## Coffre
 
 Secrets chiffrés (Fernet) dans `hubctl_cli/vault/parc.vault.enc`, déverrouillé par

@@ -28,12 +28,15 @@ def _run(args, console) -> int:
     if interactive:
         console.clear()
 
-    state = animation.preload_with_bar(console, animate=not skip)
-
-    if not skip:
-        anims = animation.discover_animations()
-        chosen = animation.select_animation(anims, name=args.anim)
-        animation.play_intro(console, anim=chosen, state=state, skip=skip)
+    state: dict = {}
+    try:
+        state = animation.preload_with_bar(console, animate=not skip)
+        if not skip:
+            anims = animation.discover_animations()
+            chosen = animation.select_animation(anims, name=args.anim)
+            animation.play_intro(console, anim=chosen, state=state, skip=skip)
+    except KeyboardInterrupt:
+        pass  # Ctrl-C pendant préchargement/intro → on passe directement au menu
 
     if not interactive:
         menu._status_banner(console, state)
