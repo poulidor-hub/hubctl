@@ -21,9 +21,7 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
-    console = Console()
+def _run(args, console) -> int:
     interactive = _interactive()
     skip = args.no_anim or not interactive
 
@@ -41,13 +39,18 @@ def main(argv=None) -> int:
 
     vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
     vault = Vault(vault_path)
-
-    try:
-        menu.main_loop(console, state, vault, dry_run=args.dry_run)
-    except (EOFError, KeyboardInterrupt):
-        console.print("\n[dim]Interrompu.[/dim]")
-        return 0
+    menu.main_loop(console, state, vault, dry_run=args.dry_run)
     return 0
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    console = Console()
+    try:
+        return _run(args, console)
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[dim]Interrompu.[/dim]")
+        return 130
 
 
 if __name__ == "__main__":

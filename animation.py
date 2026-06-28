@@ -1,9 +1,20 @@
 from __future__ import annotations
+import contextlib
 import importlib
+import os
 import pkgutil
+import select
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import termios
+    import tty
+    _HAS_TTY = True
+except ImportError:  # plateformes non-Unix
+    _HAS_TTY = False
 
 from rich.progress import BarColumn, Progress, TextColumn
 
@@ -77,6 +88,40 @@ def preload_with_bar(console, *, animate=True) -> dict:
     return state
 
 
+@contextlib.contextmanager
+def _interruptible_input():
+    """Fournit nap(secs)->bool : dort 'secs' mais renvoie True si une touche
+    a été pressée pendant ce laps (demande de skip de l'intro)."""
+    if not (_HAS_TTY and sys.stdin.isatty()):
+        def nap(secs):
+            time.sleep(secs)
+            return False
+        yield nap
+        return
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+
+        def nap(secs):
+            ready, _, _ = select.select([sys.stdin], [], [], secs)
+            if ready:
+                try:
+                    os.read(fd, 64)
+                except OSError:
+                    pass
+                return True
+            return False
+
+        yield nap
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def play_intro(console, *, anim: Animation, state: dict, skip=False) -> None:
-    if not skip:
-        anim.play(console, state)
+    if skip:
+        return
+    with _interruptible_input() as nap:
+        local_state = dict(state)
+        local_state["sleep"] = nap
+        anim.play(console, local_state)

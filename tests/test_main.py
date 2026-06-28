@@ -27,3 +27,10 @@ def test_non_interactive_exits_cleanly_without_menu():
         rc = m.main([])
     assert rc == 0
     ml.assert_not_called()
+
+
+def test_main_handles_keyboard_interrupt_during_intro():
+    with mock.patch.object(m, "_interactive", return_value=True), \
+         mock.patch.object(m.animation, "preload_with_bar", side_effect=KeyboardInterrupt):
+        rc = m.main([])
+    assert rc == 130

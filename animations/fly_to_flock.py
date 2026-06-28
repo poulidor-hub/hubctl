@@ -18,14 +18,21 @@ _HUB = [
 ]
 
 
+def _fallback_nap(secs):
+    time.sleep(secs)
+    return False
+
+
 def play(console, state):
+    nap = state.get("sleep", _fallback_nap)
     width = min(console.width, 60)
     with Live(console=console, refresh_per_second=8, transient=True) as live:
         for col in range(0, width - 6, 4):
             line = " " * col + _BIRD
             sky = Text(line + "\n\n" + " " * (width - len(_FLOCK)) + _FLOCK, style="cyan")
             live.update(Align.center(sky))
-            time.sleep(0.12)
+            if nap(0.12):
+                return
     big = Text("\n".join(_HUB), style="bold magenta")
     console.print(Align.center(big))
-    time.sleep(0.4)
+    nap(0.4)
