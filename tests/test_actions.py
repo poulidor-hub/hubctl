@@ -32,3 +32,11 @@ def test_disk_guard_blocks_when_critical():
     with mock.patch.object(actions.hub_state, "get_disk_usage", return_value=fake), \
          mock.patch.object(actions.utils, "confirm", return_value=False):
         assert actions.disk_guard() is False
+
+
+def test_menu_main_choices_contains_all_actions():
+    from hubctl_cli import menu
+    choices = menu.build_main_choices()
+    joined = " ".join(choices).lower()
+    for kw in ["update", "ajouter", "supprimer", "réparer", "logs", "start", "apps", "coffre", "quitter"]:
+        assert kw in joined
