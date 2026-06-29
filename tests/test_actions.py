@@ -50,44 +50,54 @@ def test_menu_main_choices_contains_all_actions():
         assert kw in joined
 
 
+def _menu_canvas():
+    c = mock.MagicMock()
+    c.inner_cols = 98
+    c.inner_rows = 28
+    return c
+
+
 def test_pause_waits_for_enter():
     from hubctl_cli import menu
-    console = mock.Mock()
-    with mock.patch("builtins.input", return_value=""):
-        menu.pause(console)
-    console.print.assert_called()
+    canvas = _menu_canvas()
+    with mock.patch("sys.stdin.fileno", return_value=0), \
+         mock.patch.object(menu.keys, "read_key", side_effect=[menu.keys.KeyEnter()]):
+        menu.pause(canvas)
+    assert canvas.render.call_count >= 1
 
 
 def test_main_loop_clears_screen_then_quits():
     from hubctl_cli import menu
-    console = mock.Mock()
-    with mock.patch.object(menu.prompts, "select", return_value="0. Quitter"):
-        menu.main_loop(console, {"docker": False, "services": []}, vault=None, dry_run=True)
-    console.clear.assert_called()
+    canvas = _menu_canvas()
+    with mock.patch.object(menu.widgets, "select", return_value="0. Quitter"):
+        menu.main_loop(canvas, {"docker": False, "services": []}, vault=None, dry_run=True)
+    canvas.render.assert_called()
 
 
 def test_main_loop_escape_quits():
     from hubctl_cli import menu
-    console = mock.Mock()
-    with mock.patch.object(menu.prompts, "select", return_value=menu.prompts.ESC):
-        menu.main_loop(console, {"docker": False}, vault=None, dry_run=True)
-    console.clear.assert_called()
+    canvas = _menu_canvas()
+    with mock.patch.object(menu.widgets, "select", return_value=menu.widgets.ESC):
+        menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
+    canvas.render.assert_called()
 
 
 def test_main_loop_ctrlc_at_menu_stays_then_quits():
     from hubctl_cli import menu
-    console = mock.Mock()
-    with mock.patch.object(menu.prompts, "select", side_effect=[None, "0. Quitter"]) as sel:
-        menu.main_loop(console, {"docker": False}, vault=None, dry_run=True)
+    canvas = _menu_canvas()
+    with mock.patch.object(menu.widgets, "select",
+                           side_effect=[KeyboardInterrupt(), "0. Quitter"]) as sel:
+        menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
     assert sel.call_count == 2
 
 
 def test_main_loop_action_keyboardinterrupt_returns_to_menu():
     from hubctl_cli import menu
-    console = mock.Mock()
-    with mock.patch.object(menu.prompts, "select",
-                           side_effect=["4. Réparer / Diagnostiquer", menu.prompts.ESC]), \
-         mock.patch.object(menu.actions, "action_repair", side_effect=KeyboardInterrupt) as rep, \
+    canvas = _menu_canvas()
+    with mock.patch.object(menu.widgets, "select",
+                           side_effect=["4. Réparer / Diagnostiquer", menu.widgets.ESC]), \
+         mock.patch.object(menu.actions, "action_repair",
+                           side_effect=KeyboardInterrupt) as rep, \
          mock.patch.object(menu, "pause"):
-        menu.main_loop(console, {"docker": False}, vault=None, dry_run=True)
+        menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
     rep.assert_called_once()

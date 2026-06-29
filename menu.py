@@ -1,8 +1,13 @@
 from __future__ import annotations
-from rich.panel import Panel
-from rich.table import Table
+import sys
 
-from hubctl_cli import actions, hub_state, prompts
+from rich.console import Console
+from rich.text import Text
+
+from hubctl_cli import actions, hub_state, keys, widgets
+from hubctl_cli.canvas import Canvas
+
+_ACTION_CONSOLE = Console()
 
 _MENU = [
     "1. Update (mise à jour)",
@@ -21,159 +26,182 @@ def build_main_choices() -> list[str]:
     return list(_MENU)
 
 
-def pause(console) -> None:
-    console.print("\n[dim]↵ Entrée pour revenir au menu…[/dim]")
-    try:
-        input()
-    except (EOFError, KeyboardInterrupt):
-        pass
+def pause(canvas: Canvas) -> None:
+    canvas.render(Text("↵ Entrée pour revenir au menu…", style="dim"))
+    fd = sys.stdin.fileno()
+    while True:
+        k = keys.read_key(fd, timeout=0.2)
+        if k is None:
+            continue
+        if isinstance(k, keys.KeyEnter):
+            break
+        if isinstance(k, keys.KeyCtrlC):
+            raise KeyboardInterrupt()
+        # any other key → resume
+        break
 
 
-def _status_banner(console, state: dict) -> None:
+def _status_banner(state: dict) -> Text:
     services = state.get("services") or []
     docker_ok = state.get("docker", False)
     if not docker_ok:
-        console.print(Panel("[red]Docker injoignable[/red]", title="HUB STATUS"))
-        return
-    line = "  ".join(f"{s.name} [green]●[/green] {s.state}" for s in services) or "aucun service"
-    console.print(Panel(line, title="HUB STATUS"))
-    console.print("[dim]↑↓ naviguer · Entrée valider · Échap quitter · Ctrl-C annuler[/dim]")
+        return Text("HUB STATUS\nDocker injoignable", style="red")
+    lines = ["HUB STATUS"]
+    for s in services:
+        lines.append(f"  {s.name} ● {s.state}")
+    lines.append("")
+    lines.append("↑↓ naviguer · Entrée valider · Échap quitter · Ctrl-C annuler")
+    return Text("\n".join(lines), style="green")
 
 
-def choose_app(console):
+def choose_app(canvas: Canvas):
     apps = hub_state.get_apps()
     if not apps:
-        console.print("[yellow]Aucune app dans APPS/.[/yellow]")
+        canvas.render(Text("Aucune app dans APPS/.", style="yellow"))
+        pause(canvas)
         return None
-    choice = prompts.select("Quelle app ?", [a.name for a in apps] + ["← Retour"])
-    if choice is prompts.ESC or choice is None or choice == "← Retour":
+    choice = widgets.select(canvas, "Quelle app ?", [a.name for a in apps] + ["← Retour"])
+    if choice is widgets.ESC or choice is None or choice == "← Retour":
         return None
     return choice
 
 
-def _choose_target(console):
-    """Retourne 'hub', un nom d'app, ou None (annulé)."""
-    sel = prompts.select("Cibler quoi ?", ["Le hub central", "Une app", "← Retour"])
-    if sel is prompts.ESC or sel is None or sel == "← Retour":
+def _choose_target(canvas: Canvas):
+    sel = widgets.select(canvas, "Cibler quoi ?", ["Le hub central", "Une app", "← Retour"])
+    if sel is widgets.ESC or sel is None or sel == "← Retour":
         return None
     if sel == "Le hub central":
         return "hub"
-    return choose_app(console)
+    return choose_app(canvas)
 
 
-def view_apps(console, state: dict) -> None:
+def view_apps(canvas: Canvas, state: dict) -> None:
     d = hub_state.get_disk_usage()
     gb_free = d.free / 1024 ** 3
     gb_total = d.total / 1024 ** 3
-    console.print(Panel(
-        f"Disque serveur : {gb_free:.1f} / {gb_total:.1f} Go libres ({d.percent_free}%)",
-        title="ESPACE DISQUE",
-    ))
-    table = Table(title="Apps du parc")
-    table.add_column("Nom"); table.add_column("Version")
-    table.add_column("Git"); table.add_column("Taille")
+
+    lines = [
+        Text(f"ESPACE DISQUE\n{gb_free:.1f} / {gb_total:.1f} Go libres ({d.percent_free}%)\n", style="bold"),
+        Text("Apps du parc\n", style="bold"),
+    ]
     for a in hub_state.get_apps():
         size_mb = a.size_bytes / 1024 ** 2
-        table.add_row(
-            a.name, a.version,
-            "[yellow]modifié[/yellow]" if a.git_dirty else "[green]propre[/green]",
-            f"{size_mb:.0f} Mo",
-        )
-    console.print(table)
+        dirty = "M" if a.git_dirty else " "
+        lines.append(Text(f"  {a.name:20s}  v{a.version:12s}  [{dirty}]  {size_mb:5.0f} Mo"))
+    canvas.render(Text("\n").join(lines))
+    pause(canvas)
 
 
-def view_coffre(console, vault) -> None:
+def view_coffre(canvas: Canvas, vault) -> None:
     if vault is None:
-        console.print("[yellow]Coffre indisponible.[/yellow]")
+        canvas.render(Text("Coffre indisponible.", style="yellow"))
+        pause(canvas)
         return
     if vault.is_locked:
-        pw = prompts.password("Passphrase du coffre :")
-        if pw is prompts.ESC or pw is None or not pw:
+        pw = widgets.password(canvas, "Passphrase du coffre :")
+        if pw is widgets.ESC or pw is None or not pw:
             return
         if not vault.unlock(pw):
-            console.print("[red]Passphrase incorrecte.[/red]")
+            canvas.render(Text("Passphrase incorrecte.", style="red"))
+            pause(canvas)
             return
     while True:
         entries = vault.list_entries() + ["↻ Synchroniser", "← Retour"]
-        sel = prompts.select("Coffre :", entries)
-        if sel is prompts.ESC or sel is None or sel == "← Retour":
+        sel = widgets.select(canvas, "Coffre :", entries)
+        if sel is widgets.ESC or sel is None or sel == "← Retour":
             return
         if sel == "↻ Synchroniser":
-            vault.sync(); vault.save()
-            console.print("[green]✓ Coffre synchronisé.[/green]")
+            vault.sync()
+            vault.save()
+            canvas.render(Text("✓ Coffre synchronisé.", style="green"))
+            pause(canvas)
             continue
         secrets = vault.reveal(sel)
-        table = Table(title=f"Entrée : {sel}")
-        table.add_column("Clé"); table.add_column("Valeur")
+        list_lines = [Text(f"Entrée : {sel}\n", style="bold")]
         for k in secrets:
-            table.add_row(k, "••••••••")
-        console.print(table)
-        if prompts.confirm("Révéler les valeurs en clair ?", default=False) is True:
+            list_lines.append(Text(f"  {k} = ••••••••"))
+        canvas.render(Text("\n").join(list_lines))
+        reveal = widgets.confirm(canvas, "Révéler les valeurs en clair ?", default=False)
+        if reveal is True:
+            clear_lines = []
             for k, v in secrets.items():
-                console.print(f"  [bold]{k}[/bold] = {v}")
+                clear_lines.append(Text(f"  {k} = {v}"))
+            canvas.render(Text("\n").join(clear_lines))
+            pause(canvas)
 
 
-def _handle(n, console, state, vault, *, dry_run) -> bool:
-    """Exécute l'action n. Retourne True si une action a été menée (→ pause)."""
+def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> bool:
     if n == "1":
-        target = _choose_target(console)
+        target = _choose_target(canvas)
         if target is None:
             return False
-        actions.action_update(console, target, dry_run=dry_run)
+        with canvas.paused():
+            actions.action_update(_ACTION_CONSOLE, target, dry_run=dry_run)
         return True
     if n == "2":
-        url = prompts.text("URL git du depôt (ex: git@github.com:Poutchouli/exemple-app-2.git) :")
-        if url is prompts.ESC or url is None or not url.strip():
+        url = widgets.text(canvas, "URL git du dépôt (ex: git@github.com:org/repo.git) :")
+        if url is widgets.ESC or url is None or not url.strip():
             return False
-        actions.action_add_app(console, url.strip(), dry_run=dry_run)
+        with canvas.paused():
+            actions.action_add_app(_ACTION_CONSOLE, url.strip(), dry_run=dry_run)
         return True
     if n == "3":
-        app = choose_app(console)
+        app = choose_app(canvas)
         if app is None:
             return False
-        actions.action_remove_app(console, app, vault, dry_run=dry_run)
+        with canvas.paused():
+            actions.action_remove_app(_ACTION_CONSOLE, app, vault, dry_run=dry_run)
         return True
     if n == "4":
-        actions.action_repair(console, dry_run=dry_run)
+        with canvas.paused():
+            actions.action_repair(_ACTION_CONSOLE, dry_run=dry_run)
         return True
     if n == "5":
-        target = _choose_target(console)
+        target = _choose_target(canvas)
         if target is None:
             return False
-        actions.action_logs(console, target)
+        with canvas.paused():
+            actions.action_logs(_ACTION_CONSOLE, target)
         return True
     if n == "6":
-        sub = prompts.select("Action :", ["start", "stop", "restart", "← Retour"])
-        if sub is prompts.ESC or sub is None or sub == "← Retour":
+        sub = widgets.select(canvas, "Action :", ["start", "stop", "restart", "← Retour"])
+        if sub is widgets.ESC or sub is None or sub == "← Retour":
             return False
-        actions.action_start_stop(console, sub, dry_run=dry_run)
+        with canvas.paused():
+            actions.action_start_stop(_ACTION_CONSOLE, sub, dry_run=dry_run)
         return True
     if n == "7":
-        view_apps(console, state)
+        view_apps(canvas, state)
         return True
     if n == "8":
-        view_coffre(console, vault)
+        view_coffre(canvas, vault)
         return True
     return False
 
 
-def main_loop(console, state: dict, vault, *, dry_run: bool) -> None:
+def main_loop(canvas: Canvas, state: dict, vault, *, dry_run: bool) -> None:
     while True:
-        console.clear()
-        _status_banner(console, state)
-        choice = prompts.select("Que veux-tu faire ?", build_main_choices())
-        if choice is prompts.ESC:
-            console.print("À bientôt.")
+        canvas.render(_status_banner(state))
+        try:
+            choice = widgets.select(canvas, "Que veux-tu faire ?", build_main_choices())
+        except KeyboardInterrupt:
+            continue
+
+        if choice is widgets.ESC:
+            canvas.render(Text("À bientôt.", style="bold"))
             return
-        if choice is None:                      # Ctrl-C au menu → rester
+        if choice is None:
             continue
         if choice.startswith("0."):
-            console.print("À bientôt.")
+            canvas.render(Text("À bientôt.", style="bold"))
             return
+
         try:
-            executed = _handle(choice[0], console, state, vault, dry_run=dry_run)
-        except KeyboardInterrupt:               # Ctrl-C pendant l'action → retour menu
-            console.print("\n[dim]Action interrompue — retour au menu.[/dim]")
+            executed = _handle(choice[0], canvas, state, vault, dry_run=dry_run)
+        except KeyboardInterrupt:
+            canvas.render(Text("Action interrompue — retour au menu.", style="dim"))
+            pause(canvas)
             executed = True
+
         if executed:
-            pause(console)
+            pause(canvas)

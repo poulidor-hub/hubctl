@@ -42,7 +42,7 @@ def _run(args) -> int:
     if not interactive:
         console = Console()
         state = animation.preload_with_bar(console, animate=False)
-        menu._status_banner(console, state)
+        console.print(menu._status_banner(state))
         console.print("[yellow]Mode non interactif : menu indisponible (un terminal TTY est requis).[/yellow]")
         return 0
 
