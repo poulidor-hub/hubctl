@@ -8,10 +8,9 @@ import tty
 from typing import Any
 
 from rich.align import Align
-from rich.console import RenderableType
+from rich.console import Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
 
@@ -124,10 +123,7 @@ class Canvas:
         header = self._header_renderable or Text("")
         body = self._body_renderable or Text("")
         sep = Text("─" * self.inner_cols, style="dim")
-        inner = Table.grid()
-        inner.add_row(header)
-        inner.add_row(sep)
-        inner.add_row(body)
+        inner = Group(header, sep, body)
         panel = Panel(
             inner,
             title=self.title,
