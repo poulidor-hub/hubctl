@@ -1,7 +1,7 @@
 # hubctl — Menu CLI de pilotage du hub
 
 Menu interactif pour piloter le hub POULIDOR depuis le serveur : intro animée
-(oiseau → flock → « HUB ») + barre de chargement réelle, puis menu de pilotage.
+(animation HUB en ASCII art, ~10 s) + barre de chargement réelle, puis menu de pilotage.
 
 ## Lancement
 
@@ -53,26 +53,24 @@ toute suppression d'app.
 
 ## Animations
 
-### Intro Python (par défaut)
+L'intro par défaut est **`hub-ascii`** : une animation HUB en ASCII art (~240 frames,
+~10 s) rejouée avec Rich. Les frames sont précalculées et stockées compressées dans
+`hubctl_cli/animations/hub_ascii.frames.gz`.
 
-Déposer un fichier `.py` dans `hubctl_cli/animations/` exposant :
+Les animations sont **pluggables** : déposer un fichier `.py` dans
+`hubctl_cli/animations/` exposant :
 
 ```python
 NAME = "mon-animation"
 DESCRIPTION = "…"
 
 def play(console, state):
+    # state["sleep"](secondes) -> True si l'utilisateur a pressé une touche (skip)
     ...
 ```
 
-Il est auto-découvert. Sélection : `--anim <NAME>`.
-
-### Intro Node / @opentui (hybride, optionnelle)
-
-Le launcher peut jouer une animation `.tsx` (`@opentui`, 10 s) **avant** le menu
-Python. Voir `hubctl_cli/intro/README.md`. Tant qu'elle n'est pas installée
-(`ascii-motion-tui.tsx` + `npm install`), le launcher bascule automatiquement sur
-l'intro Python — rien n'est cassé.
+Il est auto-découvert. Sélection : `--anim <NAME>` (ou `--anim random`).
+Animations fournies : `hub-ascii` (défaut), `fly-to-flock`.
 
 ## Garde-fous
 

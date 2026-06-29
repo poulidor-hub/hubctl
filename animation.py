@@ -45,13 +45,23 @@ def discover_animations(anim_dir: Path | None = None) -> list[Animation]:
     return found
 
 
+DEFAULT_NAME = "hub-ascii"
+
+
 def select_animation(animations, name=None) -> Animation:
     if not animations:
         raise RuntimeError("Aucune animation trouvée dans hubctl_cli/animations/")
+    if name == "random":
+        import random
+        return random.choice(animations)
     if name:
         for a in animations:
             if a.name == name:
                 return a
+    # Aucune (ou nom inconnu) : animation par défaut, sinon la première.
+    for a in animations:
+        if a.name == DEFAULT_NAME:
+            return a
     return animations[0]
 
 
