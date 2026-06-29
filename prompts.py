@@ -1,7 +1,7 @@
 from __future__ import annotations
 import questionary
 
-ESC = object()
+from hubctl_cli.widgets import ESC  # noqa: F811 — canonical sentinel shared with widgets
 
 
 def _with_escape(question):
