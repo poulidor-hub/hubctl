@@ -11,6 +11,7 @@ from rich.align import Align
 from rich.console import RenderableType
 from rich.live import Live
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 
@@ -42,6 +43,8 @@ class Canvas:
         self._old_termios: list[Any] | None = None
         self._resized = False
         self._last_inner: RenderableType | None = None
+        self._header_renderable: RenderableType | None = None
+        self._body_renderable: RenderableType | None = None
 
     @property
     def inner_cols(self) -> int:
@@ -82,9 +85,12 @@ class Canvas:
             self._old_termios = None
 
     def render(self, inner: RenderableType) -> None:
+        """Full-frame render (backward compat). Clears header/body state."""
         if self._live is None:
             return
         self._last_inner = inner
+        self._header_renderable = None
+        self._body_renderable = None
         cols, rows = shutil.get_terminal_size()
         if self.is_too_small:
             content = _guard_screen(cols, rows, self.target_cols, self.target_rows)
@@ -98,6 +104,40 @@ class Canvas:
             )
             content = Align.center(panel, vertical="middle")
         self._live.update(content)
+
+    def render_header(self, inner: RenderableType) -> None:
+        self._header_renderable = inner
+        self._render_composite()
+
+    def render_body(self, inner: RenderableType) -> None:
+        self._body_renderable = inner
+        self._render_composite()
+
+    def _render_composite(self) -> None:
+        if self._live is None:
+            return
+        cols, rows = shutil.get_terminal_size()
+        if self.is_too_small:
+            content = _guard_screen(cols, rows, self.target_cols, self.target_rows)
+            self._live.update(content)
+            return
+        header = self._header_renderable or Text("")
+        body = self._body_renderable or Text("")
+        sep = Text("─" * self.inner_cols, style="dim")
+        inner = Table.grid()
+        inner.add_row(header)
+        inner.add_row(sep)
+        inner.add_row(body)
+        panel = Panel(
+            inner,
+            title=self.title,
+            width=self.target_cols,
+            height=self.target_rows,
+            border_style="cyan",
+        )
+        content = Align.center(panel, vertical="middle")
+        self._live.update(content)
+        self._last_inner = inner
 
     @contextlib.contextmanager
     def paused(self):
@@ -115,3 +155,14 @@ class Canvas:
             self._live.__enter__()
             if self._last_inner is not None:
                 self.render(self._last_inner)
+
+
+class ViewportHeader:
+    """Expose uniquement la zone header aux animations."""
+    def __init__(self, canvas: Canvas, cols: int = 98, rows: int = 10):
+        self._canvas = canvas
+        self.cols = cols
+        self.rows = rows
+
+    def render(self, inner: RenderableType) -> None:
+        self._canvas.render_header(inner)
