@@ -10,7 +10,6 @@ import json
 import time
 from pathlib import Path
 
-from rich.align import Align
 from rich.text import Text
 
 NAME = "hub-ascii"
@@ -40,7 +39,7 @@ def play(viewport, state):
     frames = data["frames"]
     durations = data["durations"]
     for frame, dur in zip(frames, durations):
-        inner = Align.center(Text.from_markup(frame))
+        inner = Text.from_markup(frame)
         viewport.render(inner)
         if nap(dur / 1000.0):
             return

@@ -130,6 +130,7 @@ class Canvas:
             width=self.target_cols,
             height=self.target_rows,
             border_style="cyan",
+            padding=0,
         )
         content = Align.center(panel, vertical="middle")
         self._live.update(content)
