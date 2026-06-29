@@ -25,7 +25,7 @@ def _fallback_nap(secs):
 def play(viewport, state):
     """viewport is a Canvas instance providing .render(renderable)."""
     nap = state.get("sleep", _fallback_nap)
-    width = min(viewport.inner_cols, 60)
+    width = min(viewport.cols, 60)
 
     for col in range(0, width - 6, 4):
         line = " " * col + _BIRD
