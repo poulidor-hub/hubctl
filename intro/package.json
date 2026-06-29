@@ -1,0 +1,19 @@
+{
+  "name": "hubctl-intro",
+  "private": true,
+  "type": "module",
+  "description": "Intro animée (@opentui) jouée avant le menu hubctl.",
+  "scripts": {
+    "play": "tsx main.tsx"
+  },
+  "dependencies": {
+    "@opentui/core": "latest",
+    "@opentui/react": "latest",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0",
+    "@types/react": "^18.2.0"
+  }
+}
