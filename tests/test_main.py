@@ -30,7 +30,10 @@ def test_non_interactive_exits_cleanly_without_menu():
 
 
 def test_keyboard_interrupt_during_intro_goes_to_menu():
+    fake_canvas = mock.Mock()
+    fake_canvas.is_too_small = False
     with mock.patch.object(m, "_interactive", return_value=True), \
+         mock.patch.object(m, "Canvas", return_value=fake_canvas), \
          mock.patch.object(m.animation, "preload_with_bar", side_effect=KeyboardInterrupt), \
          mock.patch.object(m, "Vault"), \
          mock.patch.object(m.menu, "main_loop") as ml:

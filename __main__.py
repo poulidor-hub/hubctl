@@ -5,8 +5,10 @@ import sys
 from rich.console import Console
 
 from hubctl_cli import animation, menu
+from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
 from hubctl_cli import hub_state
+from hubctl_cli import keys
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,42 +23,64 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _run(args, console) -> int:
-    interactive = _interactive()
-    skip = args.no_anim or not interactive
+def _poll_quit() -> bool:
+    k = keys.read_key(sys.stdin.fileno(), timeout=0.5)
+    if k is None:
+        return False
+    if isinstance(k, (keys.KeyEsc, keys.KeyCtrlC)):
+        return True
+    return False
 
-    if interactive:
-        console.clear()
+
+def _run(args) -> int:
+    interactive = _interactive()
+    skip_anim = args.no_anim or not interactive
 
     state: dict = {}
-    try:
-        state = animation.preload_with_bar(console, animate=not skip)
-        if not skip:
-            anims = animation.discover_animations()
-            chosen = animation.select_animation(anims, name=args.anim)
-            animation.play_intro(console, anim=chosen, state=state, skip=skip)
-    except KeyboardInterrupt:
-        pass  # Ctrl-C pendant préchargement/intro → on passe directement au menu
+    canvas = Canvas(title="HUBCTL · POULIDOR", target_cols=100, target_rows=30)
 
     if not interactive:
+        console = Console()
+        state = animation.preload_with_bar(console, animate=False)
         menu._status_banner(console, state)
         console.print("[yellow]Mode non interactif : menu indisponible (un terminal TTY est requis).[/yellow]")
         return 0
 
-    vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
-    vault = Vault(vault_path)
-    menu.main_loop(console, state, vault, dry_run=args.dry_run)
-    return 0
+    try:
+        canvas.open()
+
+        while canvas.is_too_small:
+            canvas.render(None)
+            if _poll_quit():
+                return 0
+
+        try:
+            state = animation.preload_with_bar(canvas, animate=not skip_anim)
+            if not skip_anim:
+                try:
+                    anims = animation.discover_animations()
+                    chosen = animation.select_animation(anims, name=args.anim)
+                    animation.play_intro(canvas, anim=chosen, state=state)
+                except KeyboardInterrupt:
+                    pass
+        except KeyboardInterrupt:
+            pass  # Ctrl-C pendant preload → on passe au menu
+
+        vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
+        vault = Vault(vault_path)
+        menu.main_loop(canvas, state, vault, dry_run=args.dry_run)
+        return 0
+
+    except (KeyboardInterrupt, EOFError):
+        return 130
+
+    finally:
+        canvas.close()
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    console = Console()
-    try:
-        return _run(args, console)
-    except (KeyboardInterrupt, EOFError):
-        console.print("\n[dim]Interrompu.[/dim]")
-        return 130
+    return _run(args)
 
 
 if __name__ == "__main__":
