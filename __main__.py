@@ -3,6 +3,7 @@ import argparse
 import sys
 
 from rich.console import Console
+from rich.text import Text
 
 from hubctl_cli import animation, menu
 from hubctl_cli.canvas import Canvas
@@ -55,11 +56,13 @@ def _run(args) -> int:
                 return 0
 
         try:
+            canvas.render_body(Text("Chargement…", style="dim"))
             state = animation.preload_with_bar(canvas, animate=not skip_anim)
             if not skip_anim:
                 try:
                     anims = animation.discover_animations()
                     chosen = animation.select_animation(anims, name=args.anim)
+                    canvas.render_body(menu._status_banner(state))
                     animation.play_intro(canvas, anim=chosen, state=state)
                 except KeyboardInterrupt:
                     pass

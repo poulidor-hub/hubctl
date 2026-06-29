@@ -4,7 +4,7 @@ import sys
 from rich.console import Console
 from rich.text import Text
 
-from hubctl_cli import actions, hub_state, keys, widgets
+from hubctl_cli import actions, hub_state, keys, setup_wizard, widgets
 from hubctl_cli.canvas import Canvas
 
 _ACTION_CONSOLE = Console()
@@ -18,6 +18,7 @@ _MENU = [
     "6. Start / Stop hub",
     "7. Apps (vue + disque)",
     "8. Coffre (secrets)",
+    "9. Setup (configurer le hub)",
     "0. Quitter",
 ]
 
@@ -176,7 +177,31 @@ def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> boo
     if n == "8":
         view_coffre(canvas, vault)
         return True
+    if n == "9":
+        _setup_menu(canvas)
+        return False
     return False
+
+
+def _setup_menu(canvas: Canvas) -> None:
+    while True:
+        choice = widgets.select(canvas, "Setup :", [
+            "1. Quick setup (assistant rapide)",
+            "2. Réseau (whitelist, CORS)",
+            "3. Admin (identifiants)",
+            "4. Mode & avancé",
+            "0. Retour",
+        ])
+        if choice is widgets.ESC or choice is None or choice.startswith("0."):
+            return
+        if choice.startswith("1."):
+            setup_wizard.quick_setup(canvas)
+        elif choice.startswith("2."):
+            setup_wizard.submenu_network(canvas)
+        elif choice.startswith("3."):
+            setup_wizard.submenu_admin(canvas)
+        elif choice.startswith("4."):
+            setup_wizard.submenu_advanced(canvas)
 
 
 def main_loop(canvas: Canvas, state: dict, vault, *, dry_run: bool) -> None:

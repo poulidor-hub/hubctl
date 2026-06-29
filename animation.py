@@ -111,7 +111,7 @@ def preload_with_bar(canvas, *, animate: bool = True) -> dict:
             Text(f"{label}", style="bold blue"),
             Text(f"[{bar}] {pct * 100:.0f}%"),
         ]
-        canvas.render(Text("\n").join(lines))
+        canvas.render_header(Text("\n").join(lines))
         elapsed = time.monotonic() - t0
         if animate and elapsed < min_step:
             time.sleep(min_step - elapsed)
@@ -119,7 +119,8 @@ def preload_with_bar(canvas, *, animate: bool = True) -> dict:
 
 
 def play_intro(canvas, *, anim: Animation, state: dict) -> None:
-    """Play animation inside the canvas viewport."""
+    """Play animation inside the canvas header viewport."""
+    from hubctl_cli.canvas import ViewportHeader
     fd = sys.stdin.fileno()
 
     def nap(secs: float) -> bool:
@@ -128,4 +129,5 @@ def play_intro(canvas, *, anim: Animation, state: dict) -> None:
 
     local_state = dict(state)
     local_state["sleep"] = nap
-    anim.play(canvas, local_state)
+    vp = ViewportHeader(canvas)
+    anim.play(vp, local_state)
