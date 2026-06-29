@@ -25,6 +25,13 @@ Start/Stop hub · Apps (vue + disque) · Coffre (secrets chiffrés).
 Les opérations s'appuient sur les `Makefile` du parc : `make -C HUB_base …`
 (hub central) et `make -C APPS/<nom> …` (apps).
 
+Toutes les confirmations sont des **choix** (Oui/Non), pas de la saisie libre.
+
+**Ajouter une app** = cloner un dépôt : tu saisis l'URL git
+(ex: `git@github.com:Poutchouli/exemple-app-2.git`), `hubctl` fait `git clone` dans
+`APPS/<nom-du-dépôt>` (le clone hérite des droits SSH du serveur), puis propose de
+lancer `INITIALISE.py`.
+
 ## Raccourcis clavier
 
 | Touche | Où | Action |
@@ -46,6 +53,8 @@ toute suppression d'app.
 
 ## Animations
 
+### Intro Python (par défaut)
+
 Déposer un fichier `.py` dans `hubctl_cli/animations/` exposant :
 
 ```python
@@ -57,6 +66,13 @@ def play(console, state):
 ```
 
 Il est auto-découvert. Sélection : `--anim <NAME>`.
+
+### Intro Node / @opentui (hybride, optionnelle)
+
+Le launcher peut jouer une animation `.tsx` (`@opentui`, 10 s) **avant** le menu
+Python. Voir `hubctl_cli/intro/README.md`. Tant qu'elle n'est pas installée
+(`ascii-motion-tui.tsx` + `npm install`), le launcher bascule automatiquement sur
+l'intro Python — rien n'est cassé.
 
 ## Garde-fous
 
