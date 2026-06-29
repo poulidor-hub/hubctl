@@ -2,7 +2,8 @@
 
 Les frames sont précalculées et stockées compressées dans `hub_ascii.frames.gz`
 (extraites de l'animation @opentui d'origine). Rejouées ici avec Rich, sans
-dépendance Node/Bun.
+dépendance Node/Bun. Les frames contiennent du markup Rich pour le rendu couleur
+avec transparence.
 """
 import gzip
 import json
@@ -13,7 +14,7 @@ from rich.align import Align
 from rich.text import Text
 
 NAME = "hub-ascii"
-DESCRIPTION = "Animation HUB (ASCII art, ~10 s)"
+DESCRIPTION = "Animation HUB (ASCII art, ~10 s, couleur)"
 
 _DATA_FILE = Path(__file__).parent / "hub_ascii.frames.gz"
 _cache = None
@@ -39,7 +40,7 @@ def play(viewport, state):
     frames = data["frames"]
     durations = data["durations"]
     for frame, dur in zip(frames, durations):
-        inner = Align.center(Text(frame, style="bold cyan"))
+        inner = Align.center(Text.from_markup(frame))
         viewport.render(inner)
         if nap(dur / 1000.0):
             return
