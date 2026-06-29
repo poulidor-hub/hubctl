@@ -1,25 +1,18 @@
 from __future__ import annotations
-import contextlib
 import importlib
-import os
 import pkgutil
-import select
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import termios
-    import tty
-    _HAS_TTY = True
-except ImportError:  # plateformes non-Unix
-    _HAS_TTY = False
-
-from rich.progress import BarColumn, Progress, TextColumn
+from rich.console import Console
+from rich.progress import BarColumn, Progress, TextColumn as ProgressTextColumn
+from rich.text import Text
 
 from hubctl_cli import animations as _anim_pkg
 from hubctl_cli import hub_state
+from hubctl_cli import keys
 
 
 @dataclass
@@ -29,7 +22,7 @@ class Animation:
     play: object
 
 
-def discover_animations(anim_dir: Path | None = None) -> list[Animation]:
+def discover_animations() -> list[Animation]:
     found: list[Animation] = []
     for mod in pkgutil.iter_modules(_anim_pkg.__path__):
         if mod.name.startswith("_"):
@@ -48,7 +41,7 @@ def discover_animations(anim_dir: Path | None = None) -> list[Animation]:
 DEFAULT_NAME = "hub-ascii"
 
 
-def select_animation(animations, name=None) -> Animation:
+def select_animation(animations: list[Animation], name: str | None = None) -> Animation:
     if not animations:
         raise RuntimeError("Aucune animation trouvée dans hubctl_cli/animations/")
     if name == "random":
@@ -58,7 +51,6 @@ def select_animation(animations, name=None) -> Animation:
         for a in animations:
             if a.name == name:
                 return a
-    # Aucune (ou nom inconnu) : animation par défaut, sinon la première.
     for a in animations:
         if a.name == DEFAULT_NAME:
             return a
@@ -75,63 +67,65 @@ _STEPS = [
 ]
 
 
-def preload_with_bar(console, *, animate=True) -> dict:
+def preload_with_bar(canvas, *, animate: bool = True) -> dict:
+    """Preload hub state with a progress indicator.
+
+    Accepts a Canvas (framed, interactive) or a Console (non-interactive fallback).
+    """
     state: dict = {}
     min_step = 0.18 if animate else 0.0
-    with Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=40),
-        TextColumn("{task.percentage:>3.0f}%"),
-        console=console, transient=True,
-    ) as progress:
-        task = progress.add_task("Chargement…", total=len(_STEPS))
-        for label, fn in _STEPS:
-            progress.update(task, description=label)
-            t0 = time.monotonic()
-            key, value = fn()
-            if key != "_done":
-                state[key] = value
-            elapsed = time.monotonic() - t0
-            if animate and elapsed < min_step:
-                time.sleep(min_step - elapsed)
-            progress.advance(task)
+
+    if isinstance(canvas, Console):
+        # Non-interactive: use Rich Progress bar on normal console
+        with Progress(
+            ProgressTextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            ProgressTextColumn("{task.percentage:>3.0f}%"),
+            console=canvas, transient=True,
+        ) as progress:
+            task = progress.add_task("Chargement…", total=len(_STEPS))
+            for label, fn in _STEPS:
+                progress.update(task, description=label)
+                t0 = time.monotonic()
+                key, value = fn()
+                if key != "_done":
+                    state[key] = value
+                elapsed = time.monotonic() - t0
+                if animate and elapsed < min_step:
+                    time.sleep(min_step - elapsed)
+                progress.advance(task)
+        return state
+
+    # Canvas path: framed progress rendering
+    total = len(_STEPS)
+    for i, (label, fn) in enumerate(_STEPS):
+        t0 = time.monotonic()
+        key, value = fn()
+        if key != "_done":
+            state[key] = value
+        pct = (i + 1) / total
+        bar_w = min(40, canvas.inner_cols - 10)
+        filled = int(bar_w * pct)
+        bar = "█" * filled + "░" * (bar_w - filled)
+        lines = [
+            Text(f"{label}", style="bold blue"),
+            Text(f"[{bar}] {pct * 100:.0f}%"),
+        ]
+        canvas.render(Text("\n").join(lines))
+        elapsed = time.monotonic() - t0
+        if animate and elapsed < min_step:
+            time.sleep(min_step - elapsed)
     return state
 
 
-@contextlib.contextmanager
-def _interruptible_input():
-    """Fournit nap(secs)->bool : dort 'secs' mais renvoie True si une touche
-    a été pressée pendant ce laps (demande de skip de l'intro)."""
-    if not (_HAS_TTY and sys.stdin.isatty()):
-        def nap(secs):
-            time.sleep(secs)
-            return False
-        yield nap
-        return
+def play_intro(canvas, *, anim: Animation, state: dict) -> None:
+    """Play animation inside the canvas viewport."""
     fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
 
-        def nap(secs):
-            ready, _, _ = select.select([sys.stdin], [], [], secs)
-            if ready:
-                try:
-                    os.read(fd, 64)
-                except OSError:
-                    pass
-                return True
-            return False
+    def nap(secs: float) -> bool:
+        k = keys.read_key(fd, timeout=secs)
+        return k is not None
 
-        yield nap
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-
-def play_intro(console, *, anim: Animation, state: dict, skip=False) -> None:
-    if skip:
-        return
-    with _interruptible_input() as nap:
-        local_state = dict(state)
-        local_state["sleep"] = nap
-        anim.play(console, local_state)
+    local_state = dict(state)
+    local_state["sleep"] = nap
+    anim.play(canvas, local_state)
