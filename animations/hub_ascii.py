@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 from rich.align import Align
-from rich.live import Live
 from rich.text import Text
 
 NAME = "hub-ascii"
@@ -33,13 +32,14 @@ def _fallback_nap(secs):
     return False
 
 
-def play(console, state):
+def play(viewport, state):
+    """viewport is a Canvas instance providing .render(renderable)."""
     nap = state.get("sleep", _fallback_nap)
     data = _load()
     frames = data["frames"]
     durations = data["durations"]
-    with Live(console=console, refresh_per_second=30, transient=True, screen=False) as live:
-        for frame, dur in zip(frames, durations):
-            live.update(Align.center(Text(frame, style="bold cyan")))
-            if nap(dur / 1000.0):
-                return
+    for frame, dur in zip(frames, durations):
+        inner = Align.center(Text(frame, style="bold cyan"))
+        viewport.render(inner)
+        if nap(dur / 1000.0):
+            return

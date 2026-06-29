@@ -2,7 +2,6 @@
 import time
 from rich.align import Align
 from rich.text import Text
-from rich.live import Live
 
 NAME = "fly-to-flock"
 DESCRIPTION = "Oiseau qui s'envole pour rejoindre son flock"
@@ -23,16 +22,18 @@ def _fallback_nap(secs):
     return False
 
 
-def play(console, state):
+def play(viewport, state):
+    """viewport is a Canvas instance providing .render(renderable)."""
     nap = state.get("sleep", _fallback_nap)
-    width = min(console.width, 60)
-    with Live(console=console, refresh_per_second=8, transient=True) as live:
-        for col in range(0, width - 6, 4):
-            line = " " * col + _BIRD
-            sky = Text(line + "\n\n" + " " * (width - len(_FLOCK)) + _FLOCK, style="cyan")
-            live.update(Align.center(sky))
-            if nap(0.12):
-                return
+    width = min(viewport.inner_cols, 60)
+
+    for col in range(0, width - 6, 4):
+        line = " " * col + _BIRD
+        sky = Text(line + "\n\n" + " " * (width - len(_FLOCK)) + _FLOCK, style="cyan")
+        viewport.render(Align.center(sky))
+        if nap(0.12):
+            return
+
     big = Text("\n".join(_HUB), style="bold magenta")
-    console.print(Align.center(big))
+    viewport.render(Align.center(big))
     nap(0.4)
