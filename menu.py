@@ -21,6 +21,7 @@ _MENU = [
     "8. Coffre (secrets)",
     "9. Dev/Prod (mode app)",
     "10. Setup (configurer le hub)",
+    "11. Init (cloner tous les dépôts)",
     "0. Quitter",
 ]
 
@@ -318,6 +319,10 @@ def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> boo
     if n == "10":
         _setup_menu(canvas)
         return False
+    if n == "11":
+        with canvas.paused():
+            actions.action_init(_ACTION_CONSOLE, dry_run=dry_run)
+        return True
     return False
 
 
@@ -373,6 +378,28 @@ def _setup_menu(canvas: Canvas) -> None:
             setup_wizard.submenu_admin(canvas)
         elif choice.startswith("4."):
             setup_wizard.submenu_advanced(canvas)
+
+
+# ── Détection clone frais ──
+
+def _offer_init_fresh(canvas: Canvas, *, dry_run: bool) -> None:
+    canvas.render(Text(
+        "\n\nAucun dépôt HUB détecté.\n"
+        "Pour faire fonctionner le parc POULIDOR,\n"
+        "les dépôts suivants doivent être clonés depuis manifest.json :\n"
+        "  HUB_base, HUBCSS, hub-mcp, HUBapp_TEMPLATE_base,\n"
+        "  et les apps de l'APP_Workshop.\n",
+        style="bold yellow"
+    ))
+    sel = widgets.select(canvas, "Action :", [
+        "1. Initialiser le parc (recommandé)",
+        "2. Passer au menu",
+    ])
+    if sel is widgets.ESC or sel is None or sel.startswith("2."):
+        return
+    with canvas.paused():
+        actions.action_init(_ACTION_CONSOLE, dry_run=dry_run)
+    pause(canvas)
 
 
 # ── Main loop ──

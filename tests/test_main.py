@@ -17,6 +17,24 @@ def test_parser_defaults():
     assert args.no_anim is False
     assert args.dry_run is False
     assert args.anim is None
+    assert args.init is False
+
+
+def test_parser_init_flag():
+    p = build_parser()
+    args = p.parse_args(["--init"])
+    assert args.init is True
+
+
+def test_init_calls_action_init_and_exits():
+    fake_canvas = mock.Mock()
+    fake_canvas.is_too_small = False
+    with mock.patch.object(m, "_interactive", return_value=False), \
+         mock.patch.object(m.actions, "action_init") as ai, \
+         mock.patch.object(m, "Canvas", return_value=fake_canvas):
+        rc = m.main(["--init"])
+    assert rc == 0
+    ai.assert_called_once()
 
 
 def test_non_interactive_exits_cleanly_without_menu():

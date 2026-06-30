@@ -1,10 +1,13 @@
 from __future__ import annotations
 import datetime
+import json
 import re
 import shutil
 import tarfile
+from pathlib import Path
 
 from rich.console import Console
+from rich.table import Table
 
 from hubctl_cli import hub_state, prompts, utils
 
@@ -156,6 +159,39 @@ def action_logs(console, target: str) -> None:
         hub_make("logs", dry_run=False, console=console)
     else:
         app_make(target, "logs", dry_run=False, console=console)
+
+
+def action_init(console, *, dry_run: bool) -> None:
+    manifest_path = hub_state.PARC_ROOT / "manifest.json"
+    if not manifest_path.exists():
+        console.print("[red]✗ manifest.json introuvable à la racine du parc.[/red]")
+        return
+    try:
+        projects = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError:
+        console.print("[red]✗ manifest.json invalide.[/red]")
+        return
+    if not isinstance(projects, dict) or not projects:
+        console.print("[yellow]Aucun projet listé dans manifest.json.[/yellow]")
+        return
+    table = Table(title="Résultat de l'init")
+    table.add_column("Projet", style="bold")
+    table.add_column("État", style="bold")
+    for rel_path, url in projects.items():
+        dest = hub_state.PARC_ROOT / rel_path
+        if dest.exists():
+            table.add_row(rel_path, "[dim]déjà présent[/dim]")
+            continue
+        if not disk_guard(console):
+            table.add_row(rel_path, "[red]espace disque insuffisant[/red]")
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        rc = utils.run_shell(["git", "clone", url, str(dest)], dry_run=dry_run, console=console)
+        if rc == 0:
+            table.add_row(rel_path, "[green]✓ cloné[/green]")
+        else:
+            table.add_row(rel_path, "[red]✗ échec[/red]")
+    console.print(table)
 
 
 def action_start_stop(console, sub: str, *, dry_run: bool) -> None:

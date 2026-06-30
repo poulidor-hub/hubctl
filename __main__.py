@@ -6,7 +6,7 @@ import threading
 from rich.console import Console
 from rich.text import Text
 
-from hubctl_cli import animation, menu
+from hubctl_cli import actions, animation, menu
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
 from hubctl_cli import hub_state
@@ -18,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-anim", action="store_true", help="Désactiver l'intro animée.")
     p.add_argument("--dry-run", action="store_true", help="Imprimer les commandes sans les exécuter.")
     p.add_argument("--anim", default=None, help="Nom de l'animation d'intro (ou 'random').")
+    p.add_argument("--init", action="store_true", help="Cloner tous les dépôts listés dans manifest.json.")
     return p
 
 
@@ -37,6 +38,11 @@ def _poll_quit() -> bool:
 def _run(args) -> int:
     interactive = _interactive()
     skip_anim = args.no_anim or not interactive
+
+    if args.init:
+        console = Console()
+        actions.action_init(console, dry_run=args.dry_run)
+        return 0
 
     state: dict = {}
     canvas = Canvas(title="HUBCTL · POULIDOR", target_cols=100, target_rows=30)
@@ -86,6 +92,8 @@ def _run(args) -> int:
 
         vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
         vault = Vault(vault_path)
+        if not hub_state.HUB_DIR.exists():
+            menu._offer_init_fresh(canvas, dry_run=args.dry_run)
         menu.main_loop(canvas, state, vault, dry_run=args.dry_run)
         return 0
 
