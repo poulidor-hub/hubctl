@@ -95,7 +95,7 @@ def _build_welcome(state: dict) -> Text:
 
 
 def _build_hud(state: dict) -> Text:
-    """HUD with scrolling docker services, disk bar, app count (cached)."""
+    """HUD with docker services, disk bar, app count, live network/cpu graphs."""
     services = state.get("services") or []
     docker_ok = state.get("docker", False)
     text = Text()
@@ -110,22 +110,87 @@ def _build_hud(state: dict) -> Text:
         t = int(time.monotonic() / 2.5)
         offset = t % max(1, len(services))
         shown = services[offset:] + services[:offset]
-        for s in shown[:5]:
+        for s in shown[:4]:
             icon = "█" if s.state == "running" else "░"
             color = "green" if s.state == "running" else "red"
-            text.append(f"  {icon} {s.name:18s} {s.state}\n", style=color)
+            text.append(f"  {icon} {s.name:16s} {s.state}\n", style=color)
+
+    # Live network + CPU mini graphs
+    net = _net_sample()
+    text.append("\n◆ LIVE\n", style="bold cyan")
+    text.append(f"  RX {_bar(net['rx_kbs'], 1000)} {_fmt(net['rx_kbs'])}/s\n", style="bright_black")
+    text.append(f"  TX {_bar(net['tx_kbs'], 500)} {_fmt(net['tx_kbs'])}/s\n", style="bright_black")
+
+    cpu = _cpu_pct()
+    text.append(f"  CPU {_bar(int(cpu), 100)}\n", style="yellow")
 
     disk = state.get("disk")
     if disk:
         disk_pct = 100 - disk.percent_free
-        disk_bars = int(disk_pct / 10)
-        disk_bar = "█" * disk_bars + "░" * (10 - disk_bars)
-        text.append(f"\n◆ DISK [{disk_bar}] {disk.percent_free:.0f}%\n", style="yellow")
+        text.append(f"◆ DISK {_bar(int(disk_pct), 100)} {disk.percent_free:.0f}%\n", style="yellow")
 
     apps = state.get("apps") or []
     text.append(f"◆ APPS {len(apps)}\n", style="bold green")
 
     return text
+
+
+# ── Network / CPU mini-graph helpers ──
+
+_prev_net = (0, 0, time.monotonic())  # (rx_bytes, tx_bytes, timestamp)
+
+def _net_sample() -> dict:
+    global _prev_net
+    now = time.monotonic()
+    try:
+        with open("/proc/net/dev") as f:
+            for line in f:
+                if "eth0" in line or "enp" in line or "wlan" in line:
+                    parts = line.split()
+                    rx = int(parts[1])
+                    tx = int(parts[9])
+                    break
+            else:
+                rx = tx = 0
+    except (FileNotFoundError, IndexError, ValueError):
+        rx = tx = 0
+
+    p_rx, p_tx, p_ts = _prev_net
+    elapsed = now - p_ts
+    if elapsed > 0.5 and p_rx > 0:
+        rx_kbs = (rx - p_rx) / elapsed / 1024
+        tx_kbs = (tx - p_tx) / elapsed / 1024
+    else:
+        rx_kbs = tx_kbs = 0
+
+    if elapsed > 0.8:
+        _prev_net = (rx, tx, now)
+
+    return {"rx_kbs": max(0, rx_kbs), "tx_kbs": max(0, tx_kbs)}
+
+
+def _cpu_pct() -> float:
+    try:
+        with open("/proc/loadavg") as f:
+            return float(f.read().split()[0]) * 25  # scale to ~100
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _bar(value: float, max_val: float) -> str:
+    n = int(min(value, max_val) / max_val * 8)
+    bars = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
+    full = n // 8
+    rem = n % 8
+    return "█" * full + (bars[rem] if rem else "") + "░" * (8 - full - (1 if rem else 0))
+
+
+def _fmt(kbs: float) -> str:
+    if kbs >= 1000:
+        return f"{kbs / 1000:.1f}M"
+    if kbs >= 1:
+        return f"{kbs:.0f}K"
+    return f"{kbs * 1000:.0f}"
 
 
 def _build_help() -> Text:
