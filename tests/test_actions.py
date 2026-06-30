@@ -97,15 +97,13 @@ def test_main_loop_ctrlc_at_menu_stays_then_quits():
 def test_main_loop_action_keyboardinterrupt_returns_to_menu():
     from hubctl_cli import menu
     canvas = _menu_canvas()
-    # Pick "2. Hub" → submenu → "2. Réparer" → KeyboardInterrupt in action_repair
     with mock.patch.object(menu, "_retro_select",
-                           side_effect=["2. Hub", "2. Réparer / Diagnostiquer", menu.widgets.ESC]), \
-         mock.patch.object(menu.widgets, "select", return_value=menu.widgets.ESC), \
-         mock.patch.object(menu.actions, "action_repair",
-                           side_effect=KeyboardInterrupt) as rep, \
+                           side_effect=["2. Hub", menu.widgets.ESC]), \
+         mock.patch.object(menu, "_submenu_hub",
+                           side_effect=KeyboardInterrupt) as sm, \
          mock.patch.object(menu, "pause"):
         menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
-    rep.assert_called_once()
+    sm.assert_called_once()
 
 
 # ── action_init tests ──
