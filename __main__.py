@@ -62,7 +62,6 @@ def _run(args) -> int:
                 try:
                     anims = animation.discover_animations()
                     chosen = animation.select_animation(anims, name=args.anim)
-                    canvas.render_body(menu._status_banner(state))
                     animation.play_intro(canvas, anim=chosen, state=state)
                 except KeyboardInterrupt:
                     pass
