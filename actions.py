@@ -470,9 +470,15 @@ def action_workshop_move(console, direction: str, app_name: str, *, dry_run: boo
     # ── 1. CHECK ──
     dev_marker = hub_state.HUB_DIR / ".dev-mode"
     if not dev_marker.exists():
-        con.print("[red]✗ Mode dev requis : HUB_base/.dev-mode absent.[/red]")
-        con.print("[dim]Passez en mode dev via le menu 9 (Dev/Prod) ou créez le fichier HUB_base/.dev-mode[/dim]")
-        return
+        con.print("[yellow]⚠ Mode dev requis — HUB_base/.dev-mode absent.[/yellow]")
+        if dry_run:
+            con.print("[dim]  (dry-run : passage automatique en mode dev)[/dim]")
+        elif not utils.confirm("Passer en mode dev ? (crée HUB_base/.dev-mode)", default=True, console=con):
+            con.print("[yellow]Annulé — le mode dev est obligatoire pour cette opération.[/yellow]")
+            return
+        if not dry_run:
+            dev_marker.touch()
+            con.print("[green]✓ Mode dev activé[/green]")
 
     if hub_state.check_docker() is False:
         con.print("[red]✗ Docker injoignable.[/red]")
