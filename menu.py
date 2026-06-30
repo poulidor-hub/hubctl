@@ -18,7 +18,8 @@ _MENU = [
     "6. Start / Stop hub",
     "7. Apps (vue + disque)",
     "8. Coffre (secrets)",
-    "9. Setup (configurer le hub)",
+    "9. Dev/Prod (mode app)",
+    "10. Setup (configurer le hub)",
     "0. Quitter",
 ]
 
@@ -178,12 +179,50 @@ def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> boo
         view_coffre(canvas, vault)
         return True
     if n == "9":
+        _devprod_toggle(canvas, dry_run)
+        return False
+    if n == "10":
         _setup_menu(canvas)
         return False
     return False
 
 
-def _setup_menu(canvas: Canvas) -> None:
+def _devprod_toggle(canvas: Canvas, dry_run: bool) -> None:
+    apps = hub_state.get_apps()
+    if not apps:
+        canvas.render(Text("Aucune app dans APPS/.", style="yellow"))
+        pause(canvas)
+        return
+
+    choices = []
+    for a in apps:
+        marker = a.path / ".dev-mode"
+        mode = "dev" if marker.exists() else "prod"
+        choices.append(f"{a.name}  [{mode}]")
+    choices.append("← Retour")
+
+    sel = widgets.select(canvas, "Dev/Prod — choisir une app :", choices)
+    if sel is widgets.ESC or sel is None or sel == "← Retour":
+        return
+
+    app_name = sel.split()[0]
+    marker = hub_state.APPS_DIR / app_name / ".dev-mode"
+    current = "dev" if marker.exists() else "prod"
+    new_mode = "production" if current == "dev" else "développement"
+
+    msg = f"Basculer « {app_name} » de {current} → {new_mode} ?"
+    if widgets.confirm(canvas, msg, default=True) is not True:
+        return
+
+    if dry_run:
+        canvas.render(Text(f"[dry-run] {app_name} : {current} → {new_mode}"))
+    else:
+        if current == "dev":
+            marker.unlink(missing_ok=True)
+        else:
+            marker.touch()
+        canvas.render(Text(f"✓ {app_name} → {new_mode}"))
+    pause(canvas)
     while True:
         choice = widgets.select(canvas, "Setup :", [
             "1. Quick setup (assistant rapide)",
@@ -222,7 +261,8 @@ def main_loop(canvas: Canvas, state: dict, vault, *, dry_run: bool) -> None:
             return
 
         try:
-            executed = _handle(choice[0], canvas, state, vault, dry_run=dry_run)
+            num = choice.split(".")[0]
+            executed = _handle(num, canvas, state, vault, dry_run=dry_run)
         except KeyboardInterrupt:
             canvas.render(Text("Action interrompue — retour au menu.", style="dim"))
             pause(canvas)
