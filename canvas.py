@@ -120,10 +120,15 @@ class Canvas:
             content = _guard_screen(cols, rows, self.target_cols, self.target_rows)
             self._live.update(content)
             return
-        header = self._header_renderable or Text("")
-        body = self._body_renderable or Text("")
-        sep = Text("─" * self.inner_cols, style="dim")
-        inner = Text.assemble(header, "\n", sep, "\n", body)
+        header = self._header_renderable
+        body = self._body_renderable
+        if header is not None and body is not None:
+            sep = Text("─" * self.inner_cols, style="dim")
+            inner = Text.assemble(header, "\n", sep, "\n", body)
+        elif header is not None:
+            inner = header
+        else:
+            inner = body or Text("")
         panel = Panel(
             inner,
             title=self.title,
