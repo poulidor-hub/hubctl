@@ -47,39 +47,38 @@ def pause(canvas: Canvas) -> None:
 # ── Zone builders (called each frame via canvas.set_layout) ──
 
 def _build_welcome() -> Text:
-    """HUBcli block art centered, with diagonal shimmer wave every ~13s."""
+    """HUB block art centered, with delicate slow shimmer wave every ~15s."""
     t = time.monotonic()
-    cycle = t % 13  # 13s cycle
-    shimmer = cycle < 1.2  # shimmer wave plays for 1.2s
+    cycle = t % 17  # slower: 17s cycle
+    shimmer = cycle < 2.5  # longer wave: 2.5s
 
     chars = [
-        list("██  ██  ██  ██  ██████          ██  ██"),
-        list("██  ██  ██  ██  ██   ██         ██  ██ "),
-        list("██████  ██  ██  ██████    ████  ██  ██ "),
-        list("██  ██  ██  ██  ██   ██         ██  ██ "),
-        list("██  ██  ██████  ██████          ██  ██ "),
+        list("██  ██  ██  ██  ██████  "),
+        list("██  ██  ██  ██  ██   ██ "),
+        list("██████  ██  ██  ██████  "),
+        list("██  ██  ██  ██  ██   ██ "),
+        list("██  ██  ██████  ██████  "),
     ]
     rows = len(chars)
     cols = len(chars[0])
-    width = 96  # inner_cols - 2
+    width = 96
 
     if shimmer:
-        # Animated diagonal wave: phase moves left to right
-        wave_phase = int(cycle * 20)  # speed ~20 steps per second
+        wave_phase = int(cycle * 8)  # slower speed: 8 steps/sec
+        wave_width = 12  # wider, smoother gradient
         for r in range(rows):
             for c in range(cols):
                 if chars[r][c] == "█":
-                    # Diagonal wave pattern
-                    wave_pos = (c - wave_phase) % 16
-                    if 0 <= wave_pos < 4:
+                    pos = (c - wave_phase) % wave_width
+                    if 0 <= pos < 3:
                         chars[r][c] = "▓"
-                    elif 4 <= wave_pos < 8:
+                    elif 3 <= pos < 6:
                         chars[r][c] = "▒"
-                    elif 8 <= wave_pos < 10:
+                    elif 6 <= pos < 9:
                         chars[r][c] = "░"
-                    # else keep █
+                    elif 9 <= pos < 11:
+                        chars[r][c] = " "
 
-    # Convert to centered lines
     inner = Text()
     for row in chars:
         line = "".join(row)
