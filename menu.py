@@ -46,11 +46,11 @@ def pause(canvas: Canvas) -> None:
 
 # ── Zone builders (called each frame via canvas.set_layout) ──
 
-def _build_welcome() -> Text:
-    """HUB block art centered, with delicate slow shimmer wave every ~15s."""
+def _build_welcome(state: dict) -> Text:
+    """HUB block art centered, with delicate slow shimmer wave every ~17s."""
     t = time.monotonic()
-    cycle = t % 17  # slower: 17s cycle
-    shimmer = cycle < 2.5  # longer wave: 2.5s
+    cycle = t % 17
+    shimmer = cycle < 2.5
 
     chars = [
         list("██  ██  ██  ██  ██████  "),
@@ -64,8 +64,8 @@ def _build_welcome() -> Text:
     width = 96
 
     if shimmer:
-        wave_phase = int(cycle * 8)  # slower speed: 8 steps/sec
-        wave_width = 12  # wider, smoother gradient
+        wave_phase = int(cycle * 8)
+        wave_width = 12
         for r in range(rows):
             for c in range(cols):
                 if chars[r][c] == "█":
@@ -84,6 +84,12 @@ def _build_welcome() -> Text:
         line = "".join(row)
         pad = (width - len(line)) // 2
         inner.append(" " * max(0, pad) + line + "\n", style="bold cyan")
+
+    # Loading indicator
+    if state.get("_loading"):
+        loaded = sum(1 for k in ("docker", "services", "apps", "disk", "hub_version") if k in state)
+        bar = "█" * loaded + "░" * (5 - loaded)
+        inner.append(f"\n  Loading [{bar}]", style="dim cyan")
     return inner
 
 
@@ -372,7 +378,7 @@ def _setup_menu(canvas: Canvas) -> None:
 # ── Main loop ──
 
 def main_loop(canvas: Canvas, state: dict, vault, *, dry_run: bool) -> None:
-    canvas.set_layout(_build_welcome, lambda: _build_hud(state), _build_help)
+    canvas.set_layout(lambda: _build_welcome(state), lambda: _build_hud(state), _build_help)
     while True:
         try:
             choice = _retro_select(canvas, "MENU", build_main_choices())

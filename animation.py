@@ -67,12 +67,13 @@ _STEPS = [
 ]
 
 
-def preload_with_bar(canvas, *, animate: bool = True) -> dict:
+def preload_with_bar(canvas, *, animate: bool = True, state_dict: dict | None = None) -> dict:
     """Preload hub state with a progress indicator.
 
     Accepts a Canvas (framed, interactive) or a Console (non-interactive fallback).
+    If state_dict is provided, populates it in-place (for threaded use).
     """
-    state: dict = {}
+    state: dict = state_dict if state_dict is not None else {}
     min_step = 0.18 if animate else 0.0
 
     if isinstance(canvas, Console):

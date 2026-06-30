@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import sys
+import threading
 
 from rich.console import Console
 from rich.text import Text
@@ -56,16 +57,32 @@ def _run(args) -> int:
                 return 0
 
         try:
-            state = animation.preload_with_bar(canvas, animate=not skip_anim)
+            state: dict = {"_loading": True}
+            preload_done = threading.Event()
+
+            def _do_preload():
+                animation.preload_with_bar(canvas, animate=not skip_anim, state_dict=state)
+                state["_loading"] = False
+                preload_done.set()
+
             if not skip_anim:
-                try:
+                t = threading.Thread(target=_do_preload, daemon=True)
+                t.start()
+
+            try:
+                if not skip_anim:
                     anims = animation.discover_animations()
                     chosen = animation.select_animation(anims, name=args.anim)
                     animation.play_intro(canvas, anim=chosen, state=state)
-                except KeyboardInterrupt:
-                    pass
+                else:
+                    animation.preload_with_bar(canvas, animate=False, state_dict=state)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                if not skip_anim:
+                    preload_done.wait(timeout=30)
         except KeyboardInterrupt:
-            pass  # Ctrl-C pendant preload → on passe au menu
+            pass
 
         vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
         vault = Vault(vault_path)
