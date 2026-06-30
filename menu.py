@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 import sys
 import time
 
@@ -25,19 +24,6 @@ _MENU = [
     "0. Quitter",
 ]
 
-_MENU_COLS = [
-    "1. Update",
-    "2. Ajouter app",
-    "3. Supprimer",
-    "4. Réparer",
-    "5. Logs",
-    "     ",
-    "6. Start/Stop",
-    "7. Apps + disque",
-    "8. Coffre",
-    "9. Dev/Prod",
-    "10. Setup",
-]
 
 
 def build_main_choices() -> list[str]:
@@ -61,36 +47,25 @@ def pause(canvas: Canvas) -> None:
 # ── Zone builders (called each frame via canvas.set_layout) ──
 
 def _build_welcome() -> Text:
-    """Pixel art WELCOME TO HUBCTL with power-up/down pulsating."""
+    """Pixel art HUBcli with reflective shimmer every 10-15s."""
     t = time.monotonic()
-    intensity = (math.sin(t * 2.5) + 1) / 2  # 0..1 oscillation
-    if intensity > 0.7:
-        style = "bold cyan"
-    elif intensity > 0.3:
-        style = "cyan"
-    else:
-        style = "dim cyan"
+    cycle = t % 13  # 13s cycle
+    shimmer = cycle < 0.8  # shimmer flash for 0.8s
 
-    art = [
-        r" __      __   _                            _           _   _   _   _   _     ___  _ ",
-        r" \ \    / /  | |                          | |         | | | | | | | | | |   |__ \| |",
-        r"  \ \  / /__ | | ___ ___  _ __ ___   ___  | |_ ___    | | | | | |_| | | |      ) | |",
-        r"   \ \/ / _ \| |/ __/ _ \| '_ ` _ \ / _ \ | __/ _ \   | | | | |  _  | | |     / / | |",
-        r"    \  /  __/ | (_| (_) | | | | | |  __/ | || (_) |  | |_| | | | | |_| |_   / /_ |_|",
-        r"     \/ \___|_|\___\___/|_| |_| |_|\___|  \__\___/    \___/  \_| |_/\___/  |____|(_)",
+    blocks = [
+        "██  ██  ██  ██  ██████          ██  ██",
+        "██  ██  ██  ██  ██   ██         ██  ██ ",
+        "██████  ██  ██  ██████    ████  ██  ██ ",
+        "██  ██  ██  ██  ██   ██         ██  ██ ",
+        "██  ██  ██████  ██████          ██  ██ ",
     ]
     text = Text()
-    for line in art:
-        text.append(line + "\n", style=style)
-    power_bar = _power_bars(intensity)
-    text.append(power_bar, style=style)
+    for line in blocks:
+        if shimmer:
+            text.append(line + "\n", style="bold white on cyan")
+        else:
+            text.append(line + "\n", style="bold cyan")
     return text
-
-
-def _power_bars(intensity: float) -> str:
-    n = int(intensity * 10)
-    bars = "█" * n + "░" * (10 - n)
-    return f"  POWER  [{bars}]"
 
 
 def _build_hud(state: dict) -> Text:
