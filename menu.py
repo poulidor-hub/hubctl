@@ -12,18 +12,9 @@ from hubctl_cli.hub_state import WORKSHOP_DIR
 _ACTION_CONSOLE = Console()
 
 _MENU = [
-    "1. Update (mise à jour)",
-    "2. Ajouter une app",
-    "3. Supprimer une app",
-    "4. Réparer / Diagnostiquer",
-    "5. Logs",
-    "6. Start / Stop hub",
-    "7. Apps (vue + disque)",
-    "8. Coffre (secrets)",
-    "9. Dev/Prod (mode app)",
-    "10. Setup (configurer le hub)",
-    "11. Init (cloner tous les dépôts)",
-    "12. Workshop (déplacer app en atelier)",
+    "1. Apps (gérer les applications)",
+    "2. Hub (actions sur le hub)",
+    "3. Configuration (setup, réseau, coffre)",
     "0. Quitter",
 ]
 
@@ -374,52 +365,100 @@ def _run_action(canvas: Canvas, label: str, fn, *args, **kw) -> bool:
 
 def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> bool:
     if n == "1":
-        target = _choose_target(canvas)
-        if target is None:
-            return False
-        return _run_action(canvas, f"Update {target}", actions.action_update, _ACTION_CONSOLE, target, dry_run=dry_run)
+        _submenu_apps(canvas, state, vault, dry_run)
+        return False
     if n == "2":
-        url = widgets.text(canvas, "URL git du dépôt (ex: git@github.com:org/repo.git) :")
-        if url is widgets.ESC or url is None or not url.strip():
-            return False
-        return _run_action(canvas, f"Ajout {url}", actions.action_add_app, _ACTION_CONSOLE, url.strip(), dry_run=dry_run)
+        _submenu_hub(canvas, state, vault, dry_run)
+        return False
     if n == "3":
-        app = choose_app(canvas)
-        if app is None:
-            return False
-        return _run_action(canvas, f"Suppression {app}", actions.action_remove_app, _ACTION_CONSOLE, app, vault, dry_run=dry_run)
-    if n == "4":
-        return _run_action(canvas, "Diagnostic", actions.action_repair, _ACTION_CONSOLE, dry_run=dry_run)
-    if n == "5":
-        target = _choose_target(canvas)
-        if target is None:
-            return False
-        return _run_action(canvas, f"Logs {target}", actions.action_logs, _ACTION_CONSOLE, target)
-    if n == "6":
-        sub = widgets.select(canvas, "Action :", ["start", "stop", "restart", "← Retour"])
-        if sub is widgets.ESC or sub is None or sub == "← Retour":
-            return False
-        return _run_action(canvas, f"{sub} hub", actions.action_start_stop, _ACTION_CONSOLE, sub, dry_run=dry_run)
-    if n == "7":
-        view_apps(canvas, state)
-        return True
-    if n == "8":
-        view_coffre(canvas, vault)
-        return True
-    if n == "9":
-        _devprod_toggle(canvas, dry_run)
+        _submenu_config(canvas, vault, dry_run)
         return False
-    if n == "10":
-        _setup_menu(canvas)
-        return False
-    if n == "11":
-        with canvas.paused():
-            actions.action_init(_ACTION_CONSOLE, dry_run=dry_run)
-        return True
-    if n == "12":
-        _workshop_menu(canvas, dry_run)
-        return True
     return False
+
+
+def _submenu_apps(canvas: Canvas, state: dict, vault, dry_run: bool) -> None:
+    while True:
+        choice = _retro_select(canvas, "APPS", [
+            "1. Update app",
+            "2. Ajouter une app",
+            "3. Supprimer une app",
+            "4. Dev/Prod (mode app)",
+            "5. Logs app",
+            "0. Retour",
+        ])
+        if choice is widgets.ESC or choice is None or choice.startswith("0."):
+            return
+        if choice.startswith("1."):
+            app = choose_app(canvas)
+            if app:
+                _run_action(canvas, f"Update {app}", actions.action_update, _ACTION_CONSOLE, app, dry_run=dry_run)
+        elif choice.startswith("2."):
+            url = widgets.text(canvas, "URL git du dépôt :")
+            if url is not widgets.ESC and url and url.strip():
+                _run_action(canvas, "Ajout app", actions.action_add_app, _ACTION_CONSOLE, url.strip(), dry_run=dry_run)
+        elif choice.startswith("3."):
+            app = choose_app(canvas)
+            if app:
+                _run_action(canvas, f"Suppression {app}", actions.action_remove_app, _ACTION_CONSOLE, app, vault, dry_run=dry_run)
+        elif choice.startswith("4."):
+            _devprod_toggle(canvas, dry_run)
+        elif choice.startswith("5."):
+            app = choose_app(canvas)
+            if app:
+                _run_action(canvas, f"Logs {app}", actions.action_logs, _ACTION_CONSOLE, app)
+
+
+def _submenu_hub(canvas: Canvas, state: dict, vault, dry_run: bool) -> None:
+    while True:
+        choice = _retro_select(canvas, "HUB", [
+            "1. Update hub",
+            "2. Réparer / Diagnostiquer",
+            "3. Start / Stop hub",
+            "4. Apps (vue + disque)",
+            "5. Logs hub",
+            "0. Retour",
+        ])
+        if choice is widgets.ESC or choice is None or choice.startswith("0."):
+            return
+        if choice.startswith("1."):
+            _run_action(canvas, "Update hub", actions.action_update, _ACTION_CONSOLE, "hub", dry_run=dry_run)
+        elif choice.startswith("2."):
+            _run_action(canvas, "Diagnostic", actions.action_repair, _ACTION_CONSOLE, dry_run=dry_run)
+        elif choice.startswith("3."):
+            sub = widgets.select(canvas, "Action :", ["start", "stop", "restart", "← Retour"])
+            if sub is not widgets.ESC and sub and sub != "← Retour":
+                _run_action(canvas, f"{sub} hub", actions.action_start_stop, _ACTION_CONSOLE, sub, dry_run=dry_run)
+        elif choice.startswith("4."):
+            view_apps(canvas, state)
+        elif choice.startswith("5."):
+            _run_action(canvas, "Logs hub", actions.action_logs, _ACTION_CONSOLE, "hub")
+
+
+def _submenu_config(canvas: Canvas, vault, dry_run: bool) -> None:
+    while True:
+        choice = _retro_select(canvas, "SETUP", [
+            "1. Quick setup",
+            "2. Réseau (whitelist, CORS)",
+            "3. Admin (identifiants)",
+            "4. Mode & avancé",
+            "5. Coffre (secrets)",
+            "6. Workshop",
+            "0. Retour",
+        ])
+        if choice is widgets.ESC or choice is None or choice.startswith("0."):
+            return
+        if choice.startswith("1."):
+            setup_wizard.quick_setup(canvas)
+        elif choice.startswith("2."):
+            setup_wizard.submenu_network(canvas)
+        elif choice.startswith("3."):
+            setup_wizard.submenu_admin(canvas)
+        elif choice.startswith("4."):
+            setup_wizard.submenu_advanced(canvas)
+        elif choice.startswith("5."):
+            view_coffre(canvas, vault)
+        elif choice.startswith("6."):
+            _workshop_menu(canvas, dry_run)
 
 
 def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
