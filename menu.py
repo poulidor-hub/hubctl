@@ -267,46 +267,48 @@ def view_coffre(canvas: Canvas, vault) -> None:
 
 # ── Actions ──
 
+def _run_action(canvas: Canvas, label: str, fn, *args, **kw) -> bool:
+    """Show loading screen, run action in passthrough, show result."""
+    canvas.render(Text(f"▸ {label} en cours…\n\nCtrl-C pour annuler", style="bold yellow"))
+    success = True
+    try:
+        with canvas.paused():
+            fn(*args, **kw)
+    except KeyboardInterrupt:
+        success = False
+    canvas.render(Text(f"{'✓' if success else '✗'} {label}", style="green" if success else "red"))
+    pause(canvas)
+    return True
+
+
 def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> bool:
     if n == "1":
         target = _choose_target(canvas)
         if target is None:
             return False
-        with canvas.paused():
-            actions.action_update(_ACTION_CONSOLE, target, dry_run=dry_run)
-        return True
+        return _run_action(canvas, f"Update {target}", actions.action_update, _ACTION_CONSOLE, target, dry_run=dry_run)
     if n == "2":
         url = widgets.text(canvas, "URL git du dépôt (ex: git@github.com:org/repo.git) :")
         if url is widgets.ESC or url is None or not url.strip():
             return False
-        with canvas.paused():
-            actions.action_add_app(_ACTION_CONSOLE, url.strip(), dry_run=dry_run)
-        return True
+        return _run_action(canvas, f"Ajout {url}", actions.action_add_app, _ACTION_CONSOLE, url.strip(), dry_run=dry_run)
     if n == "3":
         app = choose_app(canvas)
         if app is None:
             return False
-        with canvas.paused():
-            actions.action_remove_app(_ACTION_CONSOLE, app, vault, dry_run=dry_run)
-        return True
+        return _run_action(canvas, f"Suppression {app}", actions.action_remove_app, _ACTION_CONSOLE, app, vault, dry_run=dry_run)
     if n == "4":
-        with canvas.paused():
-            actions.action_repair(_ACTION_CONSOLE, dry_run=dry_run)
-        return True
+        return _run_action(canvas, "Diagnostic", actions.action_repair, _ACTION_CONSOLE, dry_run=dry_run)
     if n == "5":
         target = _choose_target(canvas)
         if target is None:
             return False
-        with canvas.paused():
-            actions.action_logs(_ACTION_CONSOLE, target)
-        return True
+        return _run_action(canvas, f"Logs {target}", actions.action_logs, _ACTION_CONSOLE, target)
     if n == "6":
         sub = widgets.select(canvas, "Action :", ["start", "stop", "restart", "← Retour"])
         if sub is widgets.ESC or sub is None or sub == "← Retour":
             return False
-        with canvas.paused():
-            actions.action_start_stop(_ACTION_CONSOLE, sub, dry_run=dry_run)
-        return True
+        return _run_action(canvas, f"{sub} hub", actions.action_start_stop, _ACTION_CONSOLE, sub, dry_run=dry_run)
     if n == "7":
         view_apps(canvas, state)
         return True
@@ -428,6 +430,3 @@ def main_loop(canvas: Canvas, state: dict, vault, *, dry_run: bool) -> None:
             canvas.render(Text("Action interrompue — retour au menu.", style="dim"))
             pause(canvas)
             executed = True
-
-        if executed:
-            pause(canvas)
