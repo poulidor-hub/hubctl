@@ -430,9 +430,6 @@ def action_init(console, *, dry_run: bool) -> None:
     console.print(table)
 
 
-def action_start_stop(console, sub: str, *, dry_run: bool) -> None:
-
-
 def cleanup_orphan_tests(console=None) -> None:
     """Remove leftover -test docker-compose projects from crashed sessions."""
     con = console or _console
@@ -442,7 +439,7 @@ def cleanup_orphan_tests(console=None) -> None:
             capture_output=True, text=True, timeout=10,
         )
         projects = json.loads(result.stdout) if result.stdout.strip() else []
-        for p in projects if isinstance(projects, list) else []:
+        for p in (projects if isinstance(projects, list) else []):
             name = p.get("Name", "")
             if name.endswith("-test"):
                 con.print(f"[dim]Nettoyage instance orpheline : {name}[/dim]")
