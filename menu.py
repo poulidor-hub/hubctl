@@ -1,5 +1,7 @@
 from __future__ import annotations
+import math
 import sys
+import time
 
 from rich.console import Console
 from rich.text import Text
@@ -23,6 +25,20 @@ _MENU = [
     "0. Quitter",
 ]
 
+_MENU_COLS = [
+    "1. Update",
+    "2. Ajouter app",
+    "3. Supprimer",
+    "4. Réparer",
+    "5. Logs",
+    "     ",
+    "6. Start/Stop",
+    "7. Apps + disque",
+    "8. Coffre",
+    "9. Dev/Prod",
+    "10. Setup",
+]
+
 
 def build_main_choices() -> list[str]:
     return list(_MENU)
@@ -39,15 +55,150 @@ def pause(canvas: Canvas) -> None:
             break
         if isinstance(k, keys.KeyCtrlC):
             raise KeyboardInterrupt()
-        # any other key → resume
         break
 
+
+# ── Zone builders (called each frame via canvas.set_layout) ──
+
+def _build_welcome() -> Text:
+    """Pixel art WELCOME TO HUBCTL with power-up/down pulsating."""
+    t = time.monotonic()
+    intensity = (math.sin(t * 2.5) + 1) / 2  # 0..1 oscillation
+    if intensity > 0.7:
+        style = "bold cyan"
+    elif intensity > 0.3:
+        style = "cyan"
+    else:
+        style = "dim cyan"
+
+    art = [
+        r" __      __   _                            _           _   _   _   _   _     ___  _ ",
+        r" \ \    / /  | |                          | |         | | | | | | | | | |   |__ \| |",
+        r"  \ \  / /__ | | ___ ___  _ __ ___   ___  | |_ ___    | | | | | |_| | | |      ) | |",
+        r"   \ \/ / _ \| |/ __/ _ \| '_ ` _ \ / _ \ | __/ _ \   | | | | |  _  | | |     / / | |",
+        r"    \  /  __/ | (_| (_) | | | | | |  __/ | || (_) |  | |_| | | | | |_| |_   / /_ |_|",
+        r"     \/ \___|_|\___\___/|_| |_| |_|\___|  \__\___/    \___/  \_| |_/\___/  |____|(_)",
+    ]
+    text = Text()
+    for line in art:
+        text.append(line + "\n", style=style)
+    power_bar = _power_bars(intensity)
+    text.append(power_bar, style=style)
+    return text
+
+
+def _power_bars(intensity: float) -> str:
+    n = int(intensity * 10)
+    bars = "█" * n + "░" * (10 - n)
+    return f"  POWER  [{bars}]"
+
+
+def _build_hud(state: dict) -> Text:
+    """HUD with scrolling docker services, disk bar, app count."""
+    services = state.get("services") or []
+    docker_ok = state.get("docker", False)
+    text = Text()
+
+    # Title bar
+    text.append("◆ HUB STATUS ", style="bold yellow")
+    text.append("▌", style="bright_black")
+    text.append(" " * 50 + "\n", style="bright_black")
+
+    if not docker_ok:
+        text.append("  Docker injoignable\n", style="red")
+    elif not services:
+        text.append("  Aucun service\n", style="yellow")
+    else:
+        # Scrolling: cycle every 2.5 seconds
+        t = int(time.monotonic() / 2.5)
+        offset = t % max(1, len(services))
+        shown = services[offset:] + services[:offset]
+        for s in shown[:5]:
+            bar = "████████" if s.state == "running" else "░░░░░░░░"
+            color = "green" if s.state == "running" else "red"
+            text.append(f"  {bar}  {s.name:20s}  {s.state}\n", style=color)
+
+    # Disk bar
+    from hubctl_cli import hub_state as hs
+    d = hs.get_disk_usage()
+    disk_pct = 100 - d.percent_free
+    disk_bars = int(disk_pct / 10)
+    disk_bar = "█" * disk_bars + "░" * (10 - disk_bars)
+    text.append(f"\n◆ DISK  [{disk_bar}]  {d.percent_free:.0f}% free  {d.free / 1024**3:.1f} Go\n",
+                style="yellow")
+
+    # App count
+    apps = hs.get_apps()
+    text.append(f"◆ APPS  {len(apps)}  ", style="bold green")
+    text.append("▌ ready\n", style="bright_black")
+
+    return text
+
+
+def _build_help() -> Text:
+    text = Text()
+    text.append("▶ ", style="bold cyan")
+    text.append("↑↓ select", style="bright_black")
+    text.append("  ▶ ", style="bold cyan")
+    text.append("Enter confirm", style="bright_black")
+    text.append("  ▶ ", style="bold cyan")
+    text.append("Esc back", style="bright_black")
+    text.append("  ▶ ", style="bold cyan")
+    text.append("Ctrl-C cancel", style="bright_black")
+    text.append("  ▶", style="bold cyan")
+    return text
+
+
+# ── Select with retro styling ──
+
+def _retro_select(canvas: Canvas, message: str, choices: list[str]) -> str | object:
+    """Like widgets.select but renders inside the 4-zone layout via canvas.render()."""
+    selected_idx = 0
+    scroll = 0
+    fd = sys.stdin.fileno()
+    max_vis = 6
+
+    while True:
+        visible = choices[scroll:scroll + max_vis]
+        lines = [Text("▀" * 40 + " MENU " + "▀" * 40 + "\n", style="bold yellow")]
+        for i, c in enumerate(visible):
+            idx = scroll + i
+            if idx == selected_idx:
+                lines.append(Text(f" ▸ {c}\n", style="reverse bold cyan"))
+            else:
+                lines.append(Text(f"   {c}\n"))
+        if scroll > 0:
+            lines.append(Text("   ▲ more…\n", style="dim"))
+        if scroll + max_vis < len(choices):
+            lines.append(Text("   ▼ more…\n", style="dim"))
+        canvas.render(Text.assemble(*lines))
+
+        key = keys.read_key(fd, timeout=0.15)
+        if key is None:
+            continue
+        if isinstance(key, keys.KeyUp):
+            selected_idx = (selected_idx - 1) % len(choices)
+        elif isinstance(key, keys.KeyDown):
+            selected_idx = (selected_idx + 1) % len(choices)
+        elif isinstance(key, keys.KeyEnter):
+            return choices[selected_idx]
+        elif isinstance(key, keys.KeyEsc):
+            return widgets.ESC
+        elif isinstance(key, keys.KeyCtrlC):
+            raise KeyboardInterrupt()
+        if selected_idx < scroll:
+            scroll = selected_idx
+        elif selected_idx >= scroll + max_vis:
+            scroll = selected_idx - max_vis + 1
+
+
+# ── Views ──
 
 def _status_banner(state: dict) -> Text:
     services = state.get("services") or []
     docker_ok = state.get("docker", False)
     if not docker_ok:
-        return Text("HUB STATUS\nDocker injoignable", style="red")
+        return Text("Docker injoignable", style="red")
     lines = ["HUB STATUS"]
     for s in services:
         lines.append(f"  {s.name} ● {s.state}")
@@ -81,7 +232,6 @@ def view_apps(canvas: Canvas, state: dict) -> None:
     d = hub_state.get_disk_usage()
     gb_free = d.free / 1024 ** 3
     gb_total = d.total / 1024 ** 3
-
     lines = [
         Text(f"ESPACE DISQUE\n{gb_free:.1f} / {gb_total:.1f} Go libres ({d.percent_free}%)\n", style="bold"),
         Text("Apps du parc\n", style="bold"),
@@ -131,6 +281,8 @@ def view_coffre(canvas: Canvas, vault) -> None:
             canvas.render(Text("\n").join(clear_lines))
             pause(canvas)
 
+
+# ── Actions ──
 
 def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> bool:
     if n == "1":
@@ -193,27 +345,22 @@ def _devprod_toggle(canvas: Canvas, dry_run: bool) -> None:
         canvas.render(Text("Aucune app dans APPS/.", style="yellow"))
         pause(canvas)
         return
-
     choices = []
     for a in apps:
         marker = a.path / ".dev-mode"
         mode = "dev" if marker.exists() else "prod"
         choices.append(f"{a.name}  [{mode}]")
     choices.append("← Retour")
-
     sel = widgets.select(canvas, "Dev/Prod — choisir une app :", choices)
     if sel is widgets.ESC or sel is None or sel == "← Retour":
         return
-
     app_name = sel.split()[0]
     marker = hub_state.APPS_DIR / app_name / ".dev-mode"
     current = "dev" if marker.exists() else "prod"
     new_mode = "production" if current == "dev" else "développement"
-
     msg = f"Basculer « {app_name} » de {current} → {new_mode} ?"
     if widgets.confirm(canvas, msg, default=True) is not True:
         return
-
     if dry_run:
         canvas.render(Text(f"[dry-run] {app_name} : {current} → {new_mode}"))
     else:
@@ -223,6 +370,9 @@ def _devprod_toggle(canvas: Canvas, dry_run: bool) -> None:
             marker.touch()
         canvas.render(Text(f"✓ {app_name} → {new_mode}"))
     pause(canvas)
+
+
+def _setup_menu(canvas: Canvas) -> None:
     while True:
         choice = widgets.select(canvas, "Setup :", [
             "1. Quick setup (assistant rapide)",
@@ -243,11 +393,13 @@ def _devprod_toggle(canvas: Canvas, dry_run: bool) -> None:
             setup_wizard.submenu_advanced(canvas)
 
 
+# ── Main loop ──
+
 def main_loop(canvas: Canvas, state: dict, vault, *, dry_run: bool) -> None:
+    canvas.set_layout(_build_welcome, lambda: _build_hud(state), _build_help)
     while True:
-        canvas.render(_status_banner(state))
         try:
-            choice = widgets.select(canvas, "Que veux-tu faire ?", build_main_choices())
+            choice = _retro_select(canvas, "MENU", build_main_choices())
         except KeyboardInterrupt:
             continue
 

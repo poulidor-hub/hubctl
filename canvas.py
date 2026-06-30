@@ -4,6 +4,7 @@ import shutil
 import signal
 import sys
 import termios
+import time
 import tty
 from typing import Any
 
@@ -32,6 +33,10 @@ def _guard_screen(cols: int, rows: int, target_cols: int, target_rows: int) -> P
     return Panel(Text(msg, style="bold yellow"), title="Fenêtre trop petite")
 
 
+_BORDER_TOP = "┌" + "─" * 96 + "┐"
+_BORDER_BOT = "└" + "─" * 96 + "┘"
+
+
 class Canvas:
     def __init__(self, *, title: str = "HUBCTL · POULIDOR", target_cols: int = 100, target_rows: int = 30):
         self.title = title
@@ -42,8 +47,10 @@ class Canvas:
         self._old_termios: list[Any] | None = None
         self._resized = False
         self._last_inner: RenderableType | None = None
-        self._header_renderable: RenderableType | None = None
-        self._body_renderable: RenderableType | None = None
+        self._z3_builder: Any = None
+        self._z1_builder: Any = None
+        self._z4_builder: Any = None
+        self._use_layout = False
 
     @property
     def inner_cols(self) -> int:
@@ -60,6 +67,12 @@ class Canvas:
 
     def _on_resize(self, signum: int, frame: object) -> None:
         self._resized = True
+
+    def set_layout(self, z3_builder: Any, z1_builder: Any, z4_builder: Any) -> None:
+        self._z3_builder = z3_builder
+        self._z1_builder = z1_builder
+        self._z4_builder = z4_builder
+        self._use_layout = True
 
     def open(self) -> None:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -84,15 +97,14 @@ class Canvas:
             self._old_termios = None
 
     def render(self, inner: RenderableType) -> None:
-        """Full-frame render (backward compat). Clears header/body state."""
         if self._live is None:
             return
         self._last_inner = inner
-        self._header_renderable = None
-        self._body_renderable = None
         cols, rows = shutil.get_terminal_size()
         if self.is_too_small:
             content = _guard_screen(cols, rows, self.target_cols, self.target_rows)
+        elif self._use_layout:
+            content = self._render_layout(inner)
         else:
             panel = Panel(
                 inner,
@@ -104,42 +116,24 @@ class Canvas:
             content = Align.center(panel, vertical="middle")
         self._live.update(content)
 
-    def render_header(self, inner: RenderableType) -> None:
-        self._header_renderable = inner
-        self._render_composite()
+    def _render_layout(self, z2_menu: RenderableType) -> RenderableType:
+        welcome = (self._z3_builder() if callable(self._z3_builder) else None) or Text("")
+        hud = (self._z1_builder() if callable(self._z1_builder) else None) or Text("")
+        help_bar = (self._z4_builder() if callable(self._z4_builder) else None) or Text("")
 
-    def render_body(self, inner: RenderableType) -> None:
-        self._body_renderable = inner
-        self._render_composite()
+        top = Text(_BORDER_TOP + "\n", style="bright_black")
+        bot = Text(_BORDER_BOT, style="bright_black")
+        sep = Text("├" + "─" * (self.inner_cols - 2) + "┤\n", style="bright_black")
 
-    def _render_composite(self) -> None:
-        if self._live is None:
-            return
-        cols, rows = shutil.get_terminal_size()
-        if self.is_too_small:
-            content = _guard_screen(cols, rows, self.target_cols, self.target_rows)
-            self._live.update(content)
-            return
-        header = self._header_renderable
-        body = self._body_renderable
-        if header is not None and body is not None:
-            sep = Text("─" * self.inner_cols, style="dim")
-            inner = Text.assemble(header, "\n", sep, "\n", body)
-        elif header is not None:
-            inner = header
-        else:
-            inner = body or Text("")
-        panel = Panel(
-            inner,
-            title=self.title,
-            width=self.target_cols,
-            height=self.target_rows,
-            border_style="cyan",
-            padding=0,
+        inner = Text.assemble(
+            top, welcome, "\n",
+            sep, hud, "\n",
+            sep, z2_menu, "\n",
+            sep, help_bar, "\n",
+            bot,
         )
-        content = Align.center(panel, vertical="middle")
-        self._live.update(content)
-        self._last_inner = inner
+        panel = Panel(inner, width=self.target_cols, height=self.target_rows, border_style="cyan", padding=0)
+        return Align.center(panel, vertical="middle")
 
     @contextlib.contextmanager
     def paused(self):
@@ -157,14 +151,3 @@ class Canvas:
             self._live.__enter__()
             if self._last_inner is not None:
                 self.render(self._last_inner)
-
-
-class ViewportHeader:
-    """Expose uniquement la zone header aux animations."""
-    def __init__(self, canvas: Canvas, cols: int = 98, rows: int = 10):
-        self._canvas = canvas
-        self.cols = cols
-        self.rows = rows
-
-    def render(self, inner: RenderableType) -> None:
-        self._canvas.render_header(inner)

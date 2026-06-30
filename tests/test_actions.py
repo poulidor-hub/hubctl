@@ -69,7 +69,8 @@ def test_pause_waits_for_enter():
 def test_main_loop_clears_screen_then_quits():
     from hubctl_cli import menu
     canvas = _menu_canvas()
-    with mock.patch.object(menu.widgets, "select", return_value="0. Quitter"):
+    with mock.patch.object(menu, "_retro_select", return_value="0. Quitter"), \
+         mock.patch.object(menu.widgets, "select", return_value="0. Quitter"):
         menu.main_loop(canvas, {"docker": False, "services": []}, vault=None, dry_run=True)
     canvas.render.assert_called()
 
@@ -77,7 +78,8 @@ def test_main_loop_clears_screen_then_quits():
 def test_main_loop_escape_quits():
     from hubctl_cli import menu
     canvas = _menu_canvas()
-    with mock.patch.object(menu.widgets, "select", return_value=menu.widgets.ESC):
+    with mock.patch.object(menu, "_retro_select", return_value=menu.widgets.ESC), \
+         mock.patch.object(menu.widgets, "select", return_value=menu.widgets.ESC):
         menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
     canvas.render.assert_called()
 
@@ -85,8 +87,9 @@ def test_main_loop_escape_quits():
 def test_main_loop_ctrlc_at_menu_stays_then_quits():
     from hubctl_cli import menu
     canvas = _menu_canvas()
-    with mock.patch.object(menu.widgets, "select",
-                           side_effect=[KeyboardInterrupt(), "0. Quitter"]) as sel:
+    with mock.patch.object(menu, "_retro_select",
+                           side_effect=[KeyboardInterrupt(), "0. Quitter"]) as sel, \
+         mock.patch.object(menu.widgets, "select", return_value="0. Quitter"):
         menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
     assert sel.call_count == 2
 
@@ -94,8 +97,9 @@ def test_main_loop_ctrlc_at_menu_stays_then_quits():
 def test_main_loop_action_keyboardinterrupt_returns_to_menu():
     from hubctl_cli import menu
     canvas = _menu_canvas()
-    with mock.patch.object(menu.widgets, "select",
+    with mock.patch.object(menu, "_retro_select",
                            side_effect=["4. Réparer / Diagnostiquer", menu.widgets.ESC]), \
+         mock.patch.object(menu.widgets, "select", return_value=menu.widgets.ESC), \
          mock.patch.object(menu.actions, "action_repair",
                            side_effect=KeyboardInterrupt) as rep, \
          mock.patch.object(menu, "pause"):
