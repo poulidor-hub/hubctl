@@ -95,7 +95,7 @@ def _build_welcome(state: dict) -> Text:
 
 
 def _build_hud(state: dict) -> Text:
-    """HUD with scrolling docker services, disk bar, app count."""
+    """HUD with scrolling docker services, disk bar, app count (cached)."""
     services = state.get("services") or []
     docker_ok = state.get("docker", False)
     text = Text()
@@ -115,14 +115,14 @@ def _build_hud(state: dict) -> Text:
             color = "green" if s.state == "running" else "red"
             text.append(f"  {icon} {s.name:18s} {s.state}\n", style=color)
 
-    from hubctl_cli import hub_state as hs
-    d = hs.get_disk_usage()
-    disk_pct = 100 - d.percent_free
-    disk_bars = int(disk_pct / 10)
-    disk_bar = "█" * disk_bars + "░" * (10 - disk_bars)
-    text.append(f"\n◆ DISK [{disk_bar}] {d.percent_free:.0f}%\n", style="yellow")
+    disk = state.get("disk")
+    if disk:
+        disk_pct = 100 - disk.percent_free
+        disk_bars = int(disk_pct / 10)
+        disk_bar = "█" * disk_bars + "░" * (10 - disk_bars)
+        text.append(f"\n◆ DISK [{disk_bar}] {disk.percent_free:.0f}%\n", style="yellow")
 
-    apps = hs.get_apps()
+    apps = state.get("apps") or []
     text.append(f"◆ APPS {len(apps)}\n", style="bold green")
 
     return text
