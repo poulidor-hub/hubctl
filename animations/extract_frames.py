@@ -8,14 +8,14 @@ TSX = Path(__file__).parent / "introHUB.tsx"
 OUT = Path(__file__).parent / "hub_ascii.frames.gz"
 
 DARK_PALETTE = {
-    "c0": "#10002b",
-    "c1": "#3c096c",
-    "c2": "#5a189a",
-    "c3": "#240046",
-    "c4": "#7b2cbf",
-    "c5": "#9d4edd",
-    "c6": "#c77dff",
-    "c7": "#e0aaff",
+    "c0": "#3a0a5c",
+    "c1": "#6a1b9a",
+    "c2": "#8e24aa",
+    "c3": "#4a148c",
+    "c4": "#ab47bc",
+    "c5": "#ce93d8",
+    "c6": "#e1bee7",
+    "c7": "#f3e5f5",
 }
 
 TARGET_COLS = 98
