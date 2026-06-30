@@ -3,7 +3,9 @@ import datetime
 import json
 import re
 import shutil
+import subprocess
 import tarfile
+import time
 from pathlib import Path
 
 from rich.console import Console
@@ -59,23 +61,157 @@ def disk_guard(console=None) -> bool:
     return True
 
 
+def _db_snapshot(console=None) -> Path | None:
+    """Take a PostgreSQL snapshot of hub-db. Returns path or None on failure."""
+    con = console or _console
+    backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = backups / f"snap_{stamp}.sql"
+    try:
+        subprocess.run(
+            ["docker", "exec", "hub-db", "pg_dump", "-U", "hubadmin", "hub_auth"],
+            stdout=open(path, "w"), stderr=subprocess.PIPE, timeout=30, check=True,
+        )
+        con.print(f"[green]✓ Snapshot DB →[/green] {path.name}")
+        return path
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        con.print(f"[yellow]⚠ Snapshot DB échoué : {e}[/yellow]")
+        return None
+
+
+def _git_previous_commit(path: Path, console=None) -> str | None:
+    """Return current HEAD hash before update. None if not a git repo."""
+    con = console or _console
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _health_check(target: str, console=None, timeout: int = 60) -> bool:
+    """Wait for hub API to be healthy. Returns True if healthy within timeout."""
+    con = console or _console
+    elapsed = 0
+    while elapsed < timeout:
+        try:
+            result = subprocess.run(
+                ["curl", "-sk", "http://localhost:8000/api/health"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if '"status":"healthy"' in result.stdout:
+                con.print(f"[green]✓ Hub healthy après {elapsed}s[/green]")
+                return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        time.sleep(3)
+        elapsed += 3
+        con.print(f"  ... attente {elapsed}s/{timeout}s")
+    con.print(f"[yellow]⚠ Hub pas healthy après {timeout}s[/yellow]")
+    return False
+
+
+def _rollback(target: str, target_path: Path, prev_commit: str | None,
+              snapshot: Path | None, console=None) -> None:
+    """Rollback: revert git, restore DB snapshot, re-up."""
+    con = console or _console
+    con.print(f"[bold red]↩ Rollback de « {target} »[/bold red]")
+
+    if prev_commit:
+        con.print(f"  git reset → {prev_commit[:8]}")
+        subprocess.run(["git", "-C", str(target_path), "reset", "--hard", prev_commit],
+                       capture_output=True, timeout=15)
+
+    if snapshot and snapshot.exists():
+        con.print(f"  restauration DB → {snapshot.name}")
+        subprocess.run(
+            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "hub_auth"],
+            input=snapshot.read_bytes(), capture_output=True, timeout=30,
+        )
+
+    if target == "hub":
+        subprocess.run(
+            ["make", "-C", str(target_path), "up-prod"],
+            capture_output=True, timeout=60,
+        )
+    else:
+        subprocess.run(
+            ["make", "-C", str(target_path), "build"], capture_output=True, timeout=120,
+        )
+        subprocess.run(
+            ["make", "-C", str(target_path), "up"], capture_output=True, timeout=60,
+        )
+
+    con.print("[green]✓ Rollback terminé[/green]")
+
+
 def action_update(console, target: str, *, dry_run: bool) -> None:
-    if not disk_guard(console):
+    con = console or _console
+    if not disk_guard(con):
         return
     if prompts.yesno(f"Mettre à jour « {target} » ?", default=False) is not True:
         return
-    if target == "hub":
-        utils.run_shell(["git", "-C", str(hub_state.HUB_DIR), "pull"], dry_run=dry_run, console=console)
-        hub_make("up-prod", dry_run=dry_run, console=console)
-        utils.run_shell(
-            ["python", str(hub_state.HUB_DIR / "sync_version.py")],
-            dry_run=dry_run, console=console,
-        )
-    else:
-        path = hub_state.APPS_DIR / target
-        utils.run_shell(["git", "-C", str(path), "pull"], dry_run=dry_run, console=console)
-        app_make(target, "build", dry_run=dry_run, console=console)
-        app_make(target, "up", dry_run=dry_run, console=console)
+
+    target_path = hub_state.HUB_DIR if target == "hub" else hub_state.APPS_DIR / target
+    if not target_path.exists():
+        con.print(f"[red]✗ Cible introuvable : {target_path}[/red]")
+        return
+
+    prev_commit = _git_previous_commit(target_path, con)
+    snapshot = _db_snapshot(con)
+    ok = True
+
+    con.print(f"[bold]→ git pull[/bold]")
+    rc = utils.run_shell(["git", "-C", str(target_path), "pull"], dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print("[red]✗ git pull a échoué[/red]")
+        ok = False
+
+    if ok and target == "hub":
+        rc = hub_make("up-prod", dry_run=dry_run, console=con)
+        if rc != 0:
+            con.print("[red]✗ up-prod a échoué[/red]")
+            ok = False
+        else:
+            utils.run_shell(
+                ["python", str(hub_state.HUB_DIR / "sync_version.py")],
+                dry_run=dry_run, console=con,
+            )
+    elif ok:
+        rc = app_make(target, "build", dry_run=dry_run, console=con)
+        if rc != 0:
+            con.print("[red]✗ build a échoué[/red]")
+            ok = False
+        if ok:
+            rc = app_make(target, "up", dry_run=dry_run, console=con)
+            if rc != 0:
+                con.print("[red]✗ up a échoué[/red]")
+                ok = False
+
+    if not ok:
+        con.print("[red]✗ Mise à jour échouée[/red]")
+        if not dry_run and prev_commit:
+            _rollback(target, target_path, prev_commit, snapshot, con)
+        return
+
+    # Wait for health + user confirmation
+    con.print("[bold]→ Vérification santé…[/bold]")
+    healthy = _health_check(target, con, timeout=60)
+
+    if not dry_run:
+        con.print("")
+        con.print("[bold yellow]Vérifie visuellement que tout fonctionne.[/bold yellow]")
+        is_ok = prompts.yesno("Tout est OK ? (non = rollback)", default=True)
+        if is_ok is not True:
+            con.print("[yellow]Rollback demandé par l'utilisateur.[/yellow]")
+            _rollback(target, target_path, prev_commit, snapshot, con)
+            return
+
+    con.print(f"[green]✓ « {target} » à jour[/green]")
 
 
 def action_add_app(console, url: str, *, dry_run: bool) -> None:
