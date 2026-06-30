@@ -173,3 +173,34 @@ def test_action_init_dry_run():
     first_args = rs.call_args_list[0].args[0]
     assert first_args[0] == "git"
     assert first_args[1] == "clone"
+
+
+# ── Port helpers ──
+
+def test_port_in_use_detects_port():
+    with mock.patch("subprocess.run") as run:
+        run.return_value.stdout = "LISTEN 0 128 0.0.0.0:8000 0.0.0.0:*"
+        assert actions._port_in_use(8000) is True
+
+
+def test_port_in_use_free():
+    with mock.patch("subprocess.run") as run:
+        run.return_value.stdout = "LISTEN 0 128 0.0.0.0:9000 0.0.0.0:*"
+        assert actions._port_in_use(8000) is False
+
+
+def test_find_free_ports_first_available():
+    with mock.patch.object(actions, "_port_in_use", return_value=False):
+        api, fe, https = actions._find_free_ports(8000, 80, 443)
+    assert api == 8000
+    assert fe == 80
+    assert https == 443
+
+
+def test_find_free_ports_skip_occupied():
+    calls = [True, True, True, False, False, False]
+    with mock.patch.object(actions, "_port_in_use", side_effect=calls):
+        api, fe, https = actions._find_free_ports(8000, 80, 443)
+    assert api == 8003  # short-circuit: 3 True skip offsets 0-2, then 3 False at offset 3
+    assert fe == 83
+    assert https == 446

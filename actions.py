@@ -49,6 +49,24 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None) -> int:
     )
 
 
+def _port_in_use(port: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp"], capture_output=True, text=True, timeout=5,
+        )
+        return f":{port} " in result.stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def _find_free_ports(base_api: int, base_fe: int, base_https: int) -> tuple[int, int, int]:
+    for offset in range(10):
+        api, fe, https = base_api + offset, base_fe + offset, base_https + offset
+        if not _port_in_use(api) and not _port_in_use(fe) and not _port_in_use(https):
+            return api, fe, https
+    raise RuntimeError("Aucun port libre trouvé (10 tentatives)")
+
+
 def disk_guard(console=None) -> bool:
     con = console or _console
     d = hub_state.get_disk_usage()
