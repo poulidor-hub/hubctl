@@ -47,25 +47,45 @@ def pause(canvas: Canvas) -> None:
 # ── Zone builders (called each frame via canvas.set_layout) ──
 
 def _build_welcome() -> Text:
-    """Pixel art HUBcli with reflective shimmer every 10-15s."""
+    """HUBcli block art centered, with diagonal shimmer wave every ~13s."""
     t = time.monotonic()
     cycle = t % 13  # 13s cycle
-    shimmer = cycle < 0.8  # shimmer flash for 0.8s
+    shimmer = cycle < 1.2  # shimmer wave plays for 1.2s
 
-    blocks = [
-        "██  ██  ██  ██  ██████          ██  ██",
-        "██  ██  ██  ██  ██   ██         ██  ██ ",
-        "██████  ██  ██  ██████    ████  ██  ██ ",
-        "██  ██  ██  ██  ██   ██         ██  ██ ",
-        "██  ██  ██████  ██████          ██  ██ ",
+    chars = [
+        list("██  ██  ██  ██  ██████          ██  ██"),
+        list("██  ██  ██  ██  ██   ██         ██  ██ "),
+        list("██████  ██  ██  ██████    ████  ██  ██ "),
+        list("██  ██  ██  ██  ██   ██         ██  ██ "),
+        list("██  ██  ██████  ██████          ██  ██ "),
     ]
-    text = Text()
-    for line in blocks:
-        if shimmer:
-            text.append(line + "\n", style="bold white on cyan")
-        else:
-            text.append(line + "\n", style="bold cyan")
-    return text
+    rows = len(chars)
+    cols = len(chars[0])
+    width = 96  # inner_cols - 2
+
+    if shimmer:
+        # Animated diagonal wave: phase moves left to right
+        wave_phase = int(cycle * 20)  # speed ~20 steps per second
+        for r in range(rows):
+            for c in range(cols):
+                if chars[r][c] == "█":
+                    # Diagonal wave pattern
+                    wave_pos = (c - wave_phase) % 16
+                    if 0 <= wave_pos < 4:
+                        chars[r][c] = "▓"
+                    elif 4 <= wave_pos < 8:
+                        chars[r][c] = "▒"
+                    elif 8 <= wave_pos < 10:
+                        chars[r][c] = "░"
+                    # else keep █
+
+    # Convert to centered lines
+    inner = Text()
+    for row in chars:
+        line = "".join(row)
+        pad = (width - len(line)) // 2
+        inner.append(" " * max(0, pad) + line + "\n", style="bold cyan")
+    return inner
 
 
 def _build_hud(state: dict) -> Text:
