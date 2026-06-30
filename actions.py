@@ -1,6 +1,7 @@
 from __future__ import annotations
 import datetime
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -194,14 +195,14 @@ def _deploy_test(target: str, target_path: Path, compose_file: Path,
         "APP_ENV": "development",
         "AUTO_GENERATE_KEYS": "true",
     }
-    env_args = [f"{k}={v}" for k, v in env.items()]
     cmd = ["docker", "compose", "-p", project, "-f", str(compose_file), "up", "-d"]
     if dry_run:
-        con.print(f"[dim]$ {' '.join(env_args)} {' '.join(cmd)} (dry-run)[/dim]")
+        env_str = " ".join(f"{k}={v}" for k, v in env.items())
+        con.print(f"[dim]${env_str} {' '.join(cmd)} (dry-run)[/dim]")
     else:
-        full_env = {"PATH": ""}
+        full_env = dict(subprocess.os.environ)
         full_env.update(env)
-        result = subprocess.run(env_args + cmd, cwd=str(target_path), timeout=60)
+        result = subprocess.run(cmd, cwd=str(target_path), timeout=60, env=full_env)
         if result.returncode != 0:
             con.print("[red]✗ docker compose up a échoué[/red]")
             return None
