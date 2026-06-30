@@ -167,6 +167,113 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
     con.print("[green]✓ Rollback terminé[/green]")
 
 
+def _deploy_test(target: str, target_path: Path, compose_file: Path,
+                 base_api: int, base_fe: int, base_https: int,
+                 *, dry_run: bool, console=None) -> dict | None:
+    """Deploy test instance with snapshot DB. Returns ports dict or None."""
+    con = console or _console
+    con.print(f"[bold]→ Déploiement test de « {target} »[/bold]")
+
+    snapshot = _db_snapshot(con)
+    if not snapshot:
+        con.print("[red]✗ Snapshot DB échoué, abort.[/red]")
+        return None
+
+    try:
+        api, fe, https = _find_free_ports(base_api, base_fe, base_https)
+    except RuntimeError as e:
+        con.print(f"[red]✗ {e}[/red]")
+        return None
+    con.print(f"  Ports test : API={api}  HTTP={fe}  HTTPS={https}")
+
+    project = f"{target}-test"
+    env = {
+        "HUB_API_PORT": str(api),
+        "HUB_FRONTEND_PORT": str(fe),
+        "HUB_HTTPS_PORT": str(https),
+        "APP_ENV": "development",
+        "AUTO_GENERATE_KEYS": "true",
+    }
+    env_args = [f"{k}={v}" for k, v in env.items()]
+    cmd = ["docker", "compose", "-p", project, "-f", str(compose_file), "up", "-d"]
+    if dry_run:
+        con.print(f"[dim]$ {' '.join(env_args)} {' '.join(cmd)} (dry-run)[/dim]")
+    else:
+        full_env = {"PATH": ""}
+        full_env.update(env)
+        result = subprocess.run(env_args + cmd, cwd=str(target_path), timeout=60)
+        if result.returncode != 0:
+            con.print("[red]✗ docker compose up a échoué[/red]")
+            return None
+
+    db_container = f"{project}-db-1"
+    if not dry_run:
+        time.sleep(3)
+        try:
+            with open(snapshot, "rb") as f:
+                subprocess.run(
+                    ["docker", "exec", "-i", db_container, "psql", "-U", "hubadmin", "hub_auth"],
+                    stdin=f, capture_output=True, timeout=30, check=True,
+                )
+            con.print("[green]✓ Snapshot restauré dans la DB test[/green]")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            con.print(f"[yellow]⚠ Restauration DB test échouée : {e}[/yellow]")
+
+    healthy = _health_check(target, con, timeout=60)
+    if not healthy:
+        con.print("[red]✗ Health check test échoué[/red]")
+        _cleanup_test(project, target_path, dry_run, con)
+        return None
+
+    con.print(f"\n[bold cyan]► Instance test prête[/bold cyan]")
+    con.print(f"  http://localhost:{fe}")
+    con.print(f"  https://localhost:{https}")
+    return {"api_port": api, "fe_port": fe, "https_port": https, "project": project}
+
+
+def _cleanup_test(project: str, target_path: Path, dry_run: bool, console=None) -> None:
+    con = console or _console
+    cmd = ["docker", "compose", "-p", project, "down", "-v"]
+    if dry_run:
+        con.print(f"[dim]$ {' '.join(cmd)} (dry-run)[/dim]")
+    else:
+        subprocess.run(cmd, cwd=str(target_path), capture_output=True, timeout=30)
+        con.print("[dim]Instance test nettoyée[/dim]")
+
+
+def _swap_to_prod(target: str, target_path: Path, compose_file: Path,
+                  ports: dict, *, dry_run: bool, console=None) -> bool:
+    """Swap test instance to production ports. Returns True on success."""
+    con = console or _console
+    project = ports["project"]
+    prod_project = "hub" if target == "hub" else target
+
+    con.print(f"[bold]→ Swap vers production[/bold]")
+    if not dry_run:
+        subprocess.run(
+            ["docker", "compose", "-p", prod_project, "-f", str(compose_file), "down"],
+            cwd=str(target_path), capture_output=True, timeout=30,
+        )
+        subprocess.run(
+            ["docker", "compose", "-p", project, "-f", str(compose_file), "down"],
+            cwd=str(target_path), capture_output=True, timeout=30,
+        )
+        result = subprocess.run(
+            ["docker", "compose", "-p", prod_project, "-f", str(compose_file), "up", "-d"],
+            cwd=str(target_path), capture_output=True, timeout=60,
+        )
+        if result.returncode != 0:
+            con.print("[red]✗ docker compose up (prod) a échoué[/red]")
+            return False
+
+    if not _health_check(target, con, timeout=30):
+        con.print("[red]✗ Health check prod échoué[/red]")
+        return False
+
+    _cleanup_test(project, target_path, dry_run, con)
+    return True
+
+
 def action_update(console, target: str, *, dry_run: bool) -> None:
     con = console or _console
     if not disk_guard(con):
@@ -175,61 +282,36 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
         return
 
     target_path = hub_state.HUB_DIR if target == "hub" else hub_state.APPS_DIR / target
-    if not target_path.exists():
-        con.print(f"[red]✗ Cible introuvable : {target_path}[/red]")
+    compose_file = target_path / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
         return
-
-    prev_commit = _git_previous_commit(target_path, con)
-    snapshot = _db_snapshot(con)
-    ok = True
 
     con.print(f"[bold]→ git pull[/bold]")
     rc = utils.run_shell(["git", "-C", str(target_path), "pull"], dry_run=dry_run, console=con)
     if rc != 0:
         con.print("[red]✗ git pull a échoué[/red]")
-        ok = False
-
-    if ok and target == "hub":
-        rc = hub_make("up-prod", dry_run=dry_run, console=con)
-        if rc != 0:
-            con.print("[red]✗ up-prod a échoué[/red]")
-            ok = False
-        else:
-            utils.run_shell(
-                ["python", str(hub_state.HUB_DIR / "sync_version.py")],
-                dry_run=dry_run, console=con,
-            )
-    elif ok:
-        rc = app_make(target, "build", dry_run=dry_run, console=con)
-        if rc != 0:
-            con.print("[red]✗ build a échoué[/red]")
-            ok = False
-        if ok:
-            rc = app_make(target, "up", dry_run=dry_run, console=con)
-            if rc != 0:
-                con.print("[red]✗ up a échoué[/red]")
-                ok = False
-
-    if not ok:
-        con.print("[red]✗ Mise à jour échouée[/red]")
-        if not dry_run and prev_commit:
-            _rollback(target, target_path, prev_commit, snapshot, con)
         return
 
-    # Wait for health + user confirmation
-    con.print("[bold]→ Vérification santé…[/bold]")
-    healthy = _health_check(target, con, timeout=60)
+    ports = _deploy_test(
+        target, target_path, compose_file,
+        base_api=8000, base_fe=80, base_https=443,
+        dry_run=dry_run, console=con,
+    )
+    if ports is None:
+        return
 
-    if not dry_run:
-        con.print("")
-        con.print("[bold yellow]Vérifie visuellement que tout fonctionne.[/bold yellow]")
-        is_ok = prompts.yesno("Tout est OK ? (non = rollback)", default=True)
-        if is_ok is not True:
-            con.print("[yellow]Rollback demandé par l'utilisateur.[/yellow]")
-            _rollback(target, target_path, prev_commit, snapshot, con)
-            return
+    con.print("")
+    is_ok = prompts.yesno("Tout OK visuellement ? Passer en production ?", default=True)
+    if is_ok is not True:
+        con.print("[yellow]Abandon — nettoyage de l'instance test.[/yellow]")
+        _cleanup_test(ports["project"], target_path, dry_run, con)
+        return
 
-    con.print(f"[green]✓ « {target} » à jour[/green]")
+    if _swap_to_prod(target, target_path, compose_file, ports, dry_run=dry_run, console=con):
+        con.print(f"[green]✓ « {target} » migré en production[/green]")
+    else:
+        con.print("[red]✗ Swap échoué — rollback manuel nécessaire[/red]")
 
 
 def action_add_app(console, url: str, *, dry_run: bool) -> None:
