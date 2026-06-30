@@ -124,7 +124,7 @@ def _build_hud(state: dict) -> Text:
 
 def _build_help() -> Text:
     text = Text()
-    text.append("▶ ↑↓ select  ▶ Enter confirm  ▶ Esc back  ▶ Ctrl-C cancel", style="bright_black")
+    text.append("▶ ↑↓ select  ▶ Enter confirm  ▶ Esc back  ▶ Ctrl-C cancel", style="bold white")
     return text
 
 
@@ -141,11 +141,11 @@ def _retro_select(canvas: Canvas, message: str, choices: list[str]) -> str | obj
         lines: list[Text] = []
         for i, c in enumerate(visible):
             idx = scroll + i
-            short = c[:45]  # fit in right column
+            short = c[:45]
             if idx == selected_idx:
-                lines.append(Text(f"▸ {short}\n", style="reverse bold cyan"))
+                lines.append(Text(f"▸ {short}\n", style="bold white on cyan"))
             else:
-                lines.append(Text(f"  {short}\n"))
+                lines.append(Text(f"  {short}\n", style="bold white"))
         while len(lines) < max_vis:
             lines.append(Text("\n"))
         canvas.render(Text.assemble(*lines))

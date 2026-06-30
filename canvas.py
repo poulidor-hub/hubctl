@@ -122,13 +122,13 @@ class Canvas:
         hud = (self._z1_builder() if callable(self._z1_builder) else None) or Text("")
         help_bar = (self._z4_builder() if callable(self._z4_builder) else None) or Text("")
 
-        top = Text(_BORDER_TOP + "\n", style="bright_black")
-        bot = Text(_BORDER_BOT, style="bright_black")
-        hsep = Text("├" + "─" * (self.inner_cols - 2) + "┤\n", style="bright_black")
+        top = Text(_BORDER_TOP + "\n", style="bold bright_black")
+        bot = Text(_BORDER_BOT, style="bold bright_black")
+        hsep = Text("├" + "─" * (self.inner_cols - 2) + "┤\n", style="bold bright_black")
 
         # Middle zone: HUD (left 50%) + Menu (right 50%)
         half = (self.inner_cols - 3) // 2  # -3 for the vertical separator
-        vsep = Text("│\n", style="bright_black")
+        vsep = Text("│\n", style="bold bright_black")
 
         # Pad HUD and menu to same height
         hud_lines = hud.plain.split("\n") if hud.plain else []
@@ -141,7 +141,7 @@ class Canvas:
             r = menu_lines[i] if i < len(menu_lines) else ""
             lp = " " * max(0, half - len(l))
             rp = " " * max(0, half - len(r))
-            middle.append("│ " + l + lp + " │ " + r + rp + " │\n", style="bright_black")
+            middle.append("│ " + l + lp + " │ " + r + rp + " │\n", style="bold bright_black")
 
         inner = Text.assemble(top, welcome, "\n", hsep, middle, hsep, help_bar, "\n", bot)
         panel = Panel(inner, width=self.target_cols, height=self.target_rows, border_style="cyan", padding=0)
