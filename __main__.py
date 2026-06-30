@@ -3,6 +3,7 @@ import argparse
 import sys
 
 from rich.console import Console
+from rich.text import Text
 
 from hubctl_cli import animation, menu
 from hubctl_cli.canvas import Canvas
@@ -56,6 +57,7 @@ def _run(args) -> int:
 
         try:
             state = animation.preload_with_bar(canvas, animate=not skip_anim)
+            canvas.render_body(Text(""))
             if not skip_anim:
                 try:
                     anims = animation.discover_animations()

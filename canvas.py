@@ -133,6 +133,7 @@ class Canvas:
             inner,
             title=self.title,
             width=self.target_cols,
+            height=self.target_rows,
             border_style="cyan",
             padding=0,
         )
