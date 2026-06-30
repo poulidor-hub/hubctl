@@ -279,8 +279,6 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
     con = console or _console
     if not disk_guard(con):
         return
-    if prompts.yesno(f"Mettre à jour « {target} » ?", default=False) is not True:
-        return
 
     target_path = hub_state.HUB_DIR if target == "hub" else hub_state.APPS_DIR / target
     compose_file = target_path / "docker-compose.yml"
@@ -302,17 +300,18 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
     if ports is None:
         return
 
-    con.print("")
-    is_ok = prompts.yesno("Tout OK visuellement ? Passer en production ?", default=True)
-    if is_ok is not True:
-        con.print("[yellow]Abandon — nettoyage de l'instance test.[/yellow]")
+    con.print(f"\n[bold cyan]► Instance test : http://localhost:{ports['fe_port']}[/bold cyan]")
+    con.print("[dim]Ctrl-C pour annuler, ou attente du health check…[/dim]")
+
+    if not _health_check(target, con, timeout=30):
+        con.print("[red]✗ Health check test échoué — nettoyage[/red]")
         _cleanup_test(ports["project"], target_path, dry_run, con)
         return
 
     if _swap_to_prod(target, target_path, compose_file, ports, dry_run=dry_run, console=con):
         con.print(f"[green]✓ « {target} » migré en production[/green]")
     else:
-        con.print("[red]✗ Swap échoué — rollback manuel nécessaire[/red]")
+        con.print("[red]✗ Swap échoué[/red]")
 
 
 def action_add_app(console, url: str, *, dry_run: bool) -> None:
@@ -326,18 +325,15 @@ def action_add_app(console, url: str, *, dry_run: bool) -> None:
         return
     if not disk_guard(console):
         return
-    if prompts.yesno(f"Cloner {url} → APPS/{name} ?", default=True) is not True:
-        return
     rc = utils.run_shell(["git", "clone", url, str(dest)], dry_run=dry_run, console=console)
     if not dry_run and rc != 0:
         console.print("[red]✗ Échec du clone.[/red]")
         return
     if dry_run or (dest / "INITIALISE.py").exists():
-        if prompts.yesno("Initialiser l'app (INITIALISE.py) ?", default=True) is True:
-            utils.run_shell(
-                ["python", "INITIALISE.py"],
-                cwd=str(dest), dry_run=dry_run, console=console,
-            )
+        utils.run_shell(
+            ["python", "INITIALISE.py"],
+            cwd=str(dest), dry_run=dry_run, console=console,
+        )
 
 
 def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
@@ -379,16 +375,16 @@ def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
 
 
 def action_repair(console, *, dry_run: bool) -> None:
-    console.print("[bold]Diagnostic (lecture seule)[/bold]")
+    con = console or _console
+    con.print("[bold]Diagnostic (lecture seule)[/bold]")
     hub_make("ps", dry_run=False, console=console)
     d = hub_state.get_disk_usage()
-    console.print(f"Disque : {d.percent_free}% libre.")
-    if prompts.yesno("Re-up forcé du hub (force-recreate) ?", default=False) is True:
-        utils.run_shell(
-            ["docker", "compose", "-f", str(hub_state.HUB_DIR / "docker-compose.yml"),
-             "up", "-d", "--force-recreate"],
-            dry_run=dry_run, console=console,
-        )
+    con.print(f"Disque : {d.percent_free}% libre.")
+    utils.run_shell(
+        ["docker", "compose", "-f", str(hub_state.HUB_DIR / "docker-compose.yml"),
+         "up", "-d", "--force-recreate"],
+        dry_run=dry_run, console=con,
+    )
 
 
 def action_logs(console, target: str) -> None:
@@ -456,8 +452,6 @@ def action_start_stop(console, sub: str, *, dry_run: bool) -> None:
     if sub == "start":
         hub_make("up-prod", dry_run=dry_run, console=console)
     elif sub in ("stop", "restart"):
-        if prompts.yesno(f"Confirmer {sub} du hub ?", default=False) is not True:
-            return
         hub_make("down", dry_run=dry_run, console=console)
         if sub == "restart":
             hub_make("up-prod", dry_run=dry_run, console=console)
