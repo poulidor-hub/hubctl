@@ -38,6 +38,7 @@ def _render_frame(chars: list[str], colors: list[list]) -> Text:
         if r > 0:
             text.append("\n")
         text.append(row_chars)
+    row_len = len(chars[0]) + 1 if chars else 0
     for run in colors:
         r, start, end, fg_hex, bg_hex = run
         style_parts = []
@@ -47,12 +48,7 @@ def _render_frame(chars: list[str], colors: list[list]) -> Text:
             style_parts.append(f"on {bg_hex}")
         if style_parts:
             style = " ".join(style_parts)
-            # stylize the row segment: line offset + col range
-            line_start = text._cell_len(text.plain[:text.plain.index("\n")]) if "\n" in text.plain else 0
-            # Actually, Rich Text.stylize works on the plain text index.
-            # Each row is row_chars + "\n", so row offset = r * (row_len + 1)
-            row_len = len(chars[0]) if chars else 0
-            offset = r * (row_len + 1) + start
+            offset = r * row_len + start
             text.stylize(style, offset, offset + (end - start))
     return text
 
