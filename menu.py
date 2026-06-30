@@ -74,78 +74,60 @@ def _build_hud(state: dict) -> Text:
     docker_ok = state.get("docker", False)
     text = Text()
 
-    # Title bar
-    text.append("◆ HUB STATUS ", style="bold yellow")
-    text.append("▌", style="bright_black")
-    text.append(" " * 50 + "\n", style="bright_black")
+    text.append("◆ HUB STATUS\n", style="bold yellow")
 
     if not docker_ok:
         text.append("  Docker injoignable\n", style="red")
     elif not services:
         text.append("  Aucun service\n", style="yellow")
     else:
-        # Scrolling: cycle every 2.5 seconds
         t = int(time.monotonic() / 2.5)
         offset = t % max(1, len(services))
         shown = services[offset:] + services[:offset]
         for s in shown[:5]:
-            bar = "████████" if s.state == "running" else "░░░░░░░░"
+            icon = "█" if s.state == "running" else "░"
             color = "green" if s.state == "running" else "red"
-            text.append(f"  {bar}  {s.name:20s}  {s.state}\n", style=color)
+            text.append(f"  {icon} {s.name:18s} {s.state}\n", style=color)
 
-    # Disk bar
     from hubctl_cli import hub_state as hs
     d = hs.get_disk_usage()
     disk_pct = 100 - d.percent_free
     disk_bars = int(disk_pct / 10)
     disk_bar = "█" * disk_bars + "░" * (10 - disk_bars)
-    text.append(f"\n◆ DISK  [{disk_bar}]  {d.percent_free:.0f}% free  {d.free / 1024**3:.1f} Go\n",
-                style="yellow")
+    text.append(f"\n◆ DISK [{disk_bar}] {d.percent_free:.0f}%\n", style="yellow")
 
-    # App count
     apps = hs.get_apps()
-    text.append(f"◆ APPS  {len(apps)}  ", style="bold green")
-    text.append("▌ ready\n", style="bright_black")
+    text.append(f"◆ APPS {len(apps)}\n", style="bold green")
 
     return text
 
 
 def _build_help() -> Text:
     text = Text()
-    text.append("▶ ", style="bold cyan")
-    text.append("↑↓ select", style="bright_black")
-    text.append("  ▶ ", style="bold cyan")
-    text.append("Enter confirm", style="bright_black")
-    text.append("  ▶ ", style="bold cyan")
-    text.append("Esc back", style="bright_black")
-    text.append("  ▶ ", style="bold cyan")
-    text.append("Ctrl-C cancel", style="bright_black")
-    text.append("  ▶", style="bold cyan")
+    text.append("▶ ↑↓ select  ▶ Enter confirm  ▶ Esc back  ▶ Ctrl-C cancel", style="bright_black")
     return text
 
 
 # ── Select with retro styling ──
 
 def _retro_select(canvas: Canvas, message: str, choices: list[str]) -> str | object:
-    """Like widgets.select but renders inside the 4-zone layout via canvas.render()."""
     selected_idx = 0
     scroll = 0
     fd = sys.stdin.fileno()
-    max_vis = 6
+    max_vis = 9
 
     while True:
         visible = choices[scroll:scroll + max_vis]
-        lines = [Text("▀" * 40 + " MENU " + "▀" * 40 + "\n", style="bold yellow")]
+        lines: list[Text] = []
         for i, c in enumerate(visible):
             idx = scroll + i
+            short = c[:45]  # fit in right column
             if idx == selected_idx:
-                lines.append(Text(f" ▸ {c}\n", style="reverse bold cyan"))
+                lines.append(Text(f"▸ {short}\n", style="reverse bold cyan"))
             else:
-                lines.append(Text(f"   {c}\n"))
-        if scroll > 0:
-            lines.append(Text("   ▲ more…\n", style="dim"))
-        if scroll + max_vis < len(choices):
-            lines.append(Text("   ▼ more…\n", style="dim"))
+                lines.append(Text(f"  {short}\n"))
+        while len(lines) < max_vis:
+            lines.append(Text("\n"))
         canvas.render(Text.assemble(*lines))
 
         key = keys.read_key(fd, timeout=0.15)

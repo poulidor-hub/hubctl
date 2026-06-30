@@ -12,6 +12,7 @@ from rich.align import Align
 from rich.console import RenderableType
 from rich.live import Live
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 
@@ -123,15 +124,26 @@ class Canvas:
 
         top = Text(_BORDER_TOP + "\n", style="bright_black")
         bot = Text(_BORDER_BOT, style="bright_black")
-        sep = Text("├" + "─" * (self.inner_cols - 2) + "┤\n", style="bright_black")
+        hsep = Text("├" + "─" * (self.inner_cols - 2) + "┤\n", style="bright_black")
 
-        inner = Text.assemble(
-            top, welcome, "\n",
-            sep, hud, "\n",
-            sep, z2_menu, "\n",
-            sep, help_bar, "\n",
-            bot,
-        )
+        # Middle zone: HUD (left 50%) + Menu (right 50%)
+        half = (self.inner_cols - 3) // 2  # -3 for the vertical separator
+        vsep = Text("│\n", style="bright_black")
+
+        # Pad HUD and menu to same height
+        hud_lines = hud.plain.split("\n") if hud.plain else []
+        menu_lines = (z2_menu.plain.split("\n") if isinstance(z2_menu, Text) else str(z2_menu).split("\n"))
+        max_lines = max(len(hud_lines), len(menu_lines), 1)
+
+        middle = Text()
+        for i in range(max_lines):
+            l = hud_lines[i] if i < len(hud_lines) else ""
+            r = menu_lines[i] if i < len(menu_lines) else ""
+            lp = " " * max(0, half - len(l))
+            rp = " " * max(0, half - len(r))
+            middle.append("│ " + l + lp + " │ " + r + rp + " │\n", style="bright_black")
+
+        inner = Text.assemble(top, welcome, "\n", hsep, middle, hsep, help_bar, "\n", bot)
         panel = Panel(inner, width=self.target_cols, height=self.target_rows, border_style="cyan", padding=0)
         return Align.center(panel, vertical="middle")
 
