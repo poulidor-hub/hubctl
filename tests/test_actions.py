@@ -46,7 +46,7 @@ def test_menu_main_choices_contains_all_actions():
     from hubctl_cli import menu
     choices = menu.build_main_choices()
     joined = " ".join(choices).lower()
-    for kw in ["update", "ajouter", "supprimer", "réparer", "logs", "start", "apps", "coffre", "quitter", "init"]:
+    for kw in ["apps", "hub", "configuration", "quitter"]:
         assert kw in joined
 
 
@@ -97,8 +97,9 @@ def test_main_loop_ctrlc_at_menu_stays_then_quits():
 def test_main_loop_action_keyboardinterrupt_returns_to_menu():
     from hubctl_cli import menu
     canvas = _menu_canvas()
+    # Pick "2. Hub" → submenu → "2. Réparer" → KeyboardInterrupt in action_repair
     with mock.patch.object(menu, "_retro_select",
-                           side_effect=["4. Réparer / Diagnostiquer", menu.widgets.ESC]), \
+                           side_effect=["2. Hub", "2. Réparer / Diagnostiquer", menu.widgets.ESC]), \
          mock.patch.object(menu.widgets, "select", return_value=menu.widgets.ESC), \
          mock.patch.object(menu.actions, "action_repair",
                            side_effect=KeyboardInterrupt) as rep, \
