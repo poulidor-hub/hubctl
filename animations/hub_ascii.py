@@ -6,6 +6,7 @@ Transparence préservée : seules les cellules avec couleur sont stylisées.
 """
 import gzip
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -15,12 +16,25 @@ NAME = "hub-ascii"
 DESCRIPTION = "Animation HUB (ASCII art, ~10 s, couleur)"
 
 _DATA_FILE = Path(__file__).parent / "hub_ascii.frames.gz"
+_TSX_FILE = Path(__file__).parent / "introHUB.tsx"
 _cache = None
+
+
+def _check_regenerate():
+    """Re-extract frames if TSX is newer than cached .gz, or .gz is missing."""
+    if not _TSX_FILE.exists():
+        return
+    if _DATA_FILE.exists() and _TSX_FILE.stat().st_mtime <= _DATA_FILE.stat().st_mtime:
+        return
+    extract_script = Path(__file__).parent / "extract_frames.py"
+    if extract_script.exists():
+        subprocess.run(["python3", str(extract_script)], capture_output=True, timeout=30)
 
 
 def _load():
     global _cache
     if _cache is None:
+        _check_regenerate()
         with gzip.open(_DATA_FILE, "rb") as g:
             _cache = json.loads(g.read().decode("utf-8"))
     return _cache
