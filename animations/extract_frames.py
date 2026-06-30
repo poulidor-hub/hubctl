@@ -19,7 +19,7 @@ DARK_PALETTE = {
 }
 
 TARGET_COLS = 98
-TARGET_ROWS = 10
+TARGET_ROWS = 28
 
 
 def extract_frame_data(lines: list[str]) -> str:

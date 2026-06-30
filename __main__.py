@@ -57,7 +57,6 @@ def _run(args) -> int:
 
         try:
             state = animation.preload_with_bar(canvas, animate=not skip_anim)
-            canvas.render_body(menu._status_banner(state))
             if not skip_anim:
                 try:
                     anims = animation.discover_animations()
