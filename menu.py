@@ -86,7 +86,7 @@ def _build_welcome(state: dict) -> Text:
     for row in chars:
         line = "".join(row)
         pad = (width - len(line)) // 2
-        inner.append(" " * max(0, pad) + line + "\n", style="bold cyan")
+        inner.append(" " * max(0, pad) + line + "\n", style="bold magenta")
 
     # Loading indicator
     if state.get("_loading"):
@@ -119,9 +119,11 @@ def _build_hud(state: dict) -> Text:
 
     # Live network + CPU mini graphs
     net = _net_sample()
-    text.append("\n◆ LIVE\n", style="bold cyan")
+    text.append("\n◆ LIVE  ", style="bold magenta")
+    text.append(f"up {_uptime()}\n", style="bright_black")
     text.append(f"  RX {_bar(net['rx_kbs'], 1000)} {_fmt(net['rx_kbs'])}/s\n", style="bright_black")
     text.append(f"  TX {_bar(net['tx_kbs'], 500)} {_fmt(net['tx_kbs'])}/s\n", style="bright_black")
+    text.append(f"  Σ {_fmt(_cumul_rx * 1024)}↓ {_fmt(_cumul_tx * 1024)}↑\n", style="dim magenta")
 
     cpu = _cpu_pct()
     text.append(f"  CPU {_bar(int(cpu), 100)}\n", style="yellow")
@@ -137,21 +139,31 @@ def _build_hud(state: dict) -> Text:
     return text
 
 
-# ── Network / CPU mini-graph helpers ──
+# ── Network / CPU / Uptime helpers ──
 
-_prev_net = (0, 0, time.monotonic())  # (rx_bytes, tx_bytes, timestamp)
+_prev_net = (0, 0, time.monotonic())
+_start_time = time.monotonic()
+_cumul_rx = 0.0
+_cumul_tx = 0.0
+
 
 def _net_sample() -> dict:
-    global _prev_net
+    global _prev_net, _cumul_rx, _cumul_tx
     now = time.monotonic()
     try:
         with open("/proc/net/dev") as f:
+            found = None
             for line in f:
-                if "eth0" in line or "enp" in line or "wlan" in line:
+                if any(x in line for x in ("eth0", "ens", "enp", "wlan", "docker")):
                     parts = line.split()
                     rx = int(parts[1])
                     tx = int(parts[9])
-                    break
+                    if found is None or "docker" not in line:
+                        found = (rx, tx)
+                        if "docker" not in line:
+                            break
+            if found:
+                rx, tx = found
             else:
                 rx = tx = 0
     except (FileNotFoundError, IndexError, ValueError):
@@ -166,15 +178,27 @@ def _net_sample() -> dict:
         rx_kbs = tx_kbs = 0
 
     if elapsed > 0.8:
+        _cumul_rx += max(0, rx_kbs) * elapsed / 1024
+        _cumul_tx += max(0, tx_kbs) * elapsed / 1024
         _prev_net = (rx, tx, now)
 
     return {"rx_kbs": max(0, rx_kbs), "tx_kbs": max(0, tx_kbs)}
 
 
+def _uptime() -> str:
+    elapsed = int(time.monotonic() - _start_time)
+    h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
 def _cpu_pct() -> float:
     try:
         with open("/proc/loadavg") as f:
-            return float(f.read().split()[0]) * 25  # scale to ~100
+            return float(f.read().split()[0]) * 25
     except (FileNotFoundError, ValueError):
         return 0
 

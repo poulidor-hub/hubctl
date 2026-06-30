@@ -34,8 +34,8 @@ def _guard_screen(cols: int, rows: int, target_cols: int, target_rows: int) -> P
     return Panel(Text(msg, style="bold yellow"), title="Fenêtre trop petite")
 
 
-_BORDER_TOP = "┌" + "─" * 96 + "┐"
-_BORDER_BOT = "└" + "─" * 96 + "┘"
+_BORDER_TOP = "▛" + "▀" * 96 + "▜"
+_BORDER_BOT = "▙" + "▄" * 96 + "▟"
 
 
 class Canvas:
@@ -122,9 +122,9 @@ class Canvas:
         hud = (self._z1_builder() if callable(self._z1_builder) else None) or Text("")
         help_bar = (self._z4_builder() if callable(self._z4_builder) else None) or Text("")
 
-        top = Text(_BORDER_TOP + "\n", style="bold bright_black")
-        bot = Text(_BORDER_BOT, style="bold bright_black")
-        hsep = Text("├" + "─" * (self.inner_cols - 2) + "┤\n", style="bold bright_black")
+        top = Text(_BORDER_TOP + "\n", style="bold magenta")
+        bot = Text(_BORDER_BOT, style="bold magenta")
+        hsep = Text("▌" + "─" * (self.inner_cols - 2) + "▐\n", style="bold bright_black")
 
         # Middle zone: HUD (left 50%) + Menu (right 50%)
         half = (self.inner_cols - 3) // 2  # -3 for the vertical separator
