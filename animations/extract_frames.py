@@ -1,26 +1,11 @@
 #!/usr/bin/env python3
-"""Extract frames from introHUB.tsx → hub_ascii.frames.gz with Rich color support."""
+"""Extract frames from introHUB.tsx → hub_ascii.frames.gz as raw grids + color data."""
 import gzip
 import json
-import sys
 from pathlib import Path
 
 TSX = Path(__file__).parent / "introHUB.tsx"
 OUT = Path(__file__).parent / "hub_ascii.frames.gz"
-
-# Rich color names mapped from TSX hex palette
-HEX_TO_RICH = {
-    "#10002b": "#10002b",
-    "#3c096c": "#3c096c",
-    "#5a189a": "#5a189a",
-    "#240046": "#240046",
-    "#7b2cbf": "#7b2cbf",
-    "#9d4edd": "#9d4edd",
-    "#c77dff": "#c77dff",
-    "#e0aaff": "#e0aaff",
-    "#3c264d": "#3c264d",
-    "#43334d": "#43334d",
-}
 
 DARK_PALETTE = {
     "c0": "#10002b",
@@ -38,38 +23,29 @@ TARGET_ROWS = 10
 
 
 def extract_frame_data(lines: list[str]) -> str:
-    """Extract the JSON array from the TSX source."""
-    start = None
     for i, line in enumerate(lines):
         if "const FRAMES" in line:
             start = i
             break
-    if start is None:
-        raise ValueError("FRAMES not found")
-    # Find the opening bracket position
     bracket_pos = lines[start].rfind("[")
-    # Extract from [ onward, replacing the prefix line
     json_lines = [lines[start][bracket_pos:]]
-    brace_depth = 1  # the opening [ is on the first line
+    depth = 1
     for line in lines[start + 1:]:
         json_lines.append(line)
         for ch in line:
             if ch == "[":
-                brace_depth += 1
+                depth += 1
             elif ch == "]":
-                brace_depth -= 1
-        if brace_depth == 0 and "]" in line:
+                depth -= 1
+        if depth == 0:
             break
-    json_str = "\n".join(json_lines)
-    # Strip trailing TypeScript semicolon
-    json_str = json_str.rstrip()
+    json_str = "\n".join(json_lines).rstrip()
     if json_str.endswith(";"):
         json_str = json_str[:-1].rstrip()
     return json_str
 
 
-def render_frame_to_rich(frame: dict) -> str:
-    """Convert a TSX frame to a Rich-renderable string with per-cell colors."""
+def build_frame_data(frame: dict) -> dict:
     content = frame["content"]
     fg = frame.get("fgColors", {})
     bg = frame.get("bgColors", {})
@@ -77,62 +53,70 @@ def render_frame_to_rich(frame: dict) -> str:
     src_rows = len(content)
     src_cols = max(len(row) for row in content) if content else 0
 
-    # Build a 2D grid of (char, fg_hex, bg_hex)
-    grid = []
-    for r in range(src_rows):
-        row = []
+    # Build raw char grid (crop to TARGET)
+    chars = []
+    for r in range(min(TARGET_ROWS, src_rows)):
         line = content[r] if r < len(content) else ""
-        for c in range(src_cols):
-            ch = line[c] if c < len(line) else " "
+        row_chars = []
+        for c in range(min(TARGET_COLS, src_cols)):
+            row_chars.append(line[c] if c < len(line) else " ")
+        chars.append("".join(row_chars))
+    # Pad rows
+    while len(chars) < TARGET_ROWS:
+        chars.append(" " * TARGET_COLS)
+
+    # Build color runs: list of (row, start_col, end_col_exclusive, fg_hex, bg_hex)
+    # Group consecutive cells with same colors into runs
+    color_runs = []
+    for r in range(min(TARGET_ROWS, src_rows)):
+        run_start = 0
+        run_fg = ""
+        run_bg = ""
+        for c in range(min(TARGET_COLS, src_cols)):
             key = f"{c},{r}"
             fg_hex = DARK_PALETTE.get(fg.get(key, ""), "")
             bg_hex = DARK_PALETTE.get(bg.get(key, ""), "")
-            row.append((ch, fg_hex, bg_hex))
-        grid.append(row)
+            if (fg_hex, bg_hex) != (run_fg, run_bg):
+                if run_start < c and (run_fg or run_bg):
+                    color_runs.append([r, run_start, c, run_fg, run_bg])
+                run_start = c
+                run_fg = fg_hex
+                run_bg = bg_hex
+        # Final run
+        if run_start < min(TARGET_COLS, src_cols) and (run_fg or run_bg):
+            color_runs.append([r, run_start, min(TARGET_COLS, src_cols), run_fg, run_bg])
 
-    # Crop+scale to TARGET_COLS × TARGET_ROWS
-    rows_out = []
-    for r in range(min(TARGET_ROWS, src_rows)):
-        parts = []
-        for c in range(min(TARGET_COLS, src_cols)):
-            ch, fg_hex, bg_hex = grid[r][c]
-            styles = []
-            if fg_hex:
-                styles.append(fg_hex)
-            if bg_hex:
-                styles.append(f"on {bg_hex}")
-            if styles:
-                parts.append(f"[{','.join(styles)}]{ch}[/]")
-            else:
-                parts.append(ch)
-        rows_out.append("".join(parts))
-
-    # Pad rows to TARGET_ROWS
-    while len(rows_out) < TARGET_ROWS:
-        rows_out.append(" " * TARGET_COLS)
-
-    return "\n".join(rows_out)
+    return {
+        "chars": chars,
+        "colors": color_runs,
+        "duration": round(frame.get("duration", 42)),
+    }
 
 
 def main():
     print(f"Reading {TSX}...")
     lines = TSX.read_text().splitlines()
     json_str = extract_frame_data(lines)
-    print(f"Parsing {len(json_str)} bytes of JSON...")
+    print(f"Parsing frames...")
     frames_data = json.loads(json_str)
     print(f"Found {len(frames_data)} frames")
 
-    output_frames = []
-    output_durations = []
+    all_chars = []
+    all_colors = []
+    all_durations = []
     for i, frame in enumerate(frames_data):
-        rich_frame = render_frame_to_rich(frame)
-        output_frames.append(rich_frame)
-        dur_ms = round(frame.get("duration", 42))
-        output_durations.append(dur_ms)
-        if (i + 1) % 10 == 0:
-            print(f"  {i+1}/{len(frames_data)} frames rendered...")
+        d = build_frame_data(frame)
+        all_chars.append(d["chars"])
+        all_colors.append(d["colors"])
+        all_durations.append(d["duration"])
+        if (i + 1) % 20 == 0:
+            print(f"  {i+1}/{len(frames_data)} frames processed...")
 
-    data = {"frames": output_frames, "durations": output_durations}
+    data = {
+        "chars": all_chars,
+        "colors": all_colors,
+        "durations": all_durations,
+    }
     json_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")
     compressed = gzip.compress(json_bytes, compresslevel=9)
 
