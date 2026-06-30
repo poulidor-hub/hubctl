@@ -7,6 +7,7 @@ from rich.text import Text
 
 from hubctl_cli import actions, hub_state, keys, setup_wizard, widgets
 from hubctl_cli.canvas import Canvas
+from hubctl_cli.hub_state import WORKSHOP_DIR
 
 _ACTION_CONSOLE = Console()
 
@@ -22,6 +23,7 @@ _MENU = [
     "9. Dev/Prod (mode app)",
     "10. Setup (configurer le hub)",
     "11. Init (cloner tous les dépôts)",
+    "12. Workshop (déplacer app en atelier)",
     "0. Quitter",
 ]
 
@@ -390,7 +392,57 @@ def _handle(n: str, canvas: Canvas, state: dict, vault, *, dry_run: bool) -> boo
         with canvas.paused():
             actions.action_init(_ACTION_CONSOLE, dry_run=dry_run)
         return True
+    if n == "12":
+        _workshop_menu(canvas, dry_run)
+        return True
     return False
+
+
+def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
+    """Sous-menu pour déplacer des apps entre APPS/ et APP_Workshop/."""
+    while True:
+        apps_prod = hub_state.get_apps()
+        apps_ws = hub_state.get_workshop_apps()
+
+        choices = []
+        if apps_prod:
+            choices.append("── APPS/ (production) ──")
+            for a in apps_prod:
+                choices.append(f"  [→] {a.name}  → mettre en atelier")
+        if apps_ws:
+            choices.append("── APP_Workshop/ (développement) ──")
+            for a in apps_ws:
+                choices.append(f"  [←] {a.name}  → remettre en production")
+        if not apps_prod and not apps_ws:
+            choices.append("Aucune app trouvée.")
+        choices.append("← Retour")
+
+        sel = widgets.select(canvas, "Workshop — déplacer une app :", choices)
+        if sel is widgets.ESC or sel is None or sel == "← Retour":
+            return
+
+        if sel.startswith("  [→]"):
+            app_name = sel.split()[1]
+            msg = f"Déplacer « {app_name} » de APPS/ vers APP_Workshop/ ({app_name}-ws) ?"
+            if widgets.confirm(canvas, msg, default=False) is True:
+                with canvas.paused():
+                    actions.action_workshop_move(
+                        _ACTION_CONSOLE, "to_workshop", app_name, dry_run=dry_run,
+                    )
+                pause(canvas)
+                return
+
+        elif sel.startswith("  [←]"):
+            app_name = sel.split()[1]
+            base = app_name[:-3] if app_name.endswith("-ws") else app_name
+            msg = f"Remettre « {app_name} » en production dans APPS/ ({base}) ?"
+            if widgets.confirm(canvas, msg, default=False) is True:
+                with canvas.paused():
+                    actions.action_workshop_move(
+                        _ACTION_CONSOLE, "to_production", app_name, dry_run=dry_run,
+                    )
+                pause(canvas)
+                return
 
 
 def _devprod_toggle(canvas: Canvas, dry_run: bool) -> None:

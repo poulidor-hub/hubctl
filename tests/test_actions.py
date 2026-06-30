@@ -204,3 +204,177 @@ def test_find_free_ports_skip_occupied():
     assert api == 8003  # short-circuit: 3 True skip offsets 0-2, then 3 False at offset 3
     assert fe == 83
     assert https == 446
+
+
+# ── Workshop move tests ──
+
+from pathlib import Path
+from rich.console import Console
+
+
+def _fake_console():
+    return Console(force_terminal=True, width=120)
+
+
+def test_action_workshop_move_bad_direction():
+    with mock.patch.object(actions, "_console", _fake_console()):
+        try:
+            actions.action_workshop_move(_fake_console(), "invalid", "testapp", dry_run=True)
+            assert False, "should have raised ValueError"
+        except ValueError as e:
+            assert "direction" in str(e)
+
+
+def test_workshop_move_missing_dev_mode(tmp_path):
+    """Should abort when HUB_base/.dev-mode is missing."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"
+    ws_dir.mkdir()
+
+    app_dir = apps_dir / "testapp"
+    app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir):
+        with mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir):
+            with mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+                with mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+                    actions.action_workshop_move(
+                        _fake_console(), "to_workshop", "testapp", dry_run=True,
+                    )
+    # Should return without error (early exit on missing .dev-mode)
+    assert not (ws_dir / "testapp-ws").exists()
+
+
+def test_workshop_move_dry_run_to_workshop(tmp_path):
+    """Full dry-run flow: APPS → Workshop."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"
+    ws_dir.mkdir()
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
+
+    app_dir = apps_dir / "testapp"
+    app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir):
+        with mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir):
+            with mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+                with mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+                    actions.action_workshop_move(
+                        _fake_console(), "to_workshop", "testapp", dry_run=True,
+                    )
+
+    # Dry-run: destination should NOT exist
+    assert not (ws_dir / "testapp-ws").exists()
+    # Source should still exist (dry-run doesn't delete)
+    assert (apps_dir / "testapp").exists()
+
+
+def test_workshop_move_dry_run_to_production(tmp_path):
+    """Full dry-run flow: APP_Workshop → APPS (strip -ws suffix)."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"
+    ws_dir.mkdir()
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
+
+    app_dir = ws_dir / "testapp-ws"
+    app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+    (app_dir / ".env").write_text("APP_SLUG=testapp-ws\nAPI_PORT=9002\n")
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir):
+        with mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir):
+            with mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+                with mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+                    actions.action_workshop_move(
+                        _fake_console(), "to_production", "testapp-ws", dry_run=True,
+                    )
+
+    # Dry-run: destination should NOT exist
+    assert not (apps_dir / "testapp").exists()
+    # Source should still exist
+    assert (ws_dir / "testapp-ws").exists()
+
+
+def test_workshop_move_source_missing(tmp_path):
+    """Should exit early when source directory does not exist."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir):
+        with mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir):
+            with mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+                actions.action_workshop_move(
+                    _fake_console(), "to_workshop", "nonexistent", dry_run=True,
+                )
+    # Should not raise
+
+
+def test_workshop_move_dest_exists(tmp_path):
+    """Should exit early when destination already exists."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"
+    ws_dir.mkdir()
+
+    (apps_dir / "testapp").mkdir()
+    (ws_dir / "testapp-ws").mkdir()  # destination already exists
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir):
+        with mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir):
+            with mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+                with mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+                    actions.action_workshop_move(
+                        _fake_console(), "to_workshop", "testapp", dry_run=True,
+                    )
+    # Should exit early, no crash
+
+
+def test_workshop_move_slug_from_env(tmp_path):
+    """When APP_SLUG differs from folder name, the .env value is used for rename."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"
+    ws_dir.mkdir()
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
+
+    app_dir = apps_dir / "exemple-app"
+    app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+    (app_dir / ".env").write_text("APP_SLUG=citrondorge\nAPI_PORT=9003\n")
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir):
+        with mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir):
+            with mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+                with mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+                    actions.action_workshop_move(
+                        _fake_console(), "to_workshop", "exemple-app", dry_run=True,
+                    )
+
+    # Dry-run doesn't write files, so we only verify no crash
+    assert (apps_dir / "exemple-app").exists()

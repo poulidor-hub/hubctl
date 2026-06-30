@@ -8,6 +8,7 @@ from pathlib import Path
 PARC_ROOT = Path(__file__).resolve().parent.parent
 HUB_DIR = PARC_ROOT / "HUB_base"
 APPS_DIR = PARC_ROOT / "APPS"
+WORKSHOP_DIR = PARC_ROOT / "APP_Workshop"
 
 
 @dataclass
@@ -76,6 +77,21 @@ def get_apps() -> list[AppInfo]:
         return []
     apps = []
     for d in sorted(apps_dir.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        apps.append(AppInfo(
+            name=d.name, path=d, version=_read_version(d),
+            git_dirty=_git_dirty(d), size_bytes=_dir_size(d),
+        ))
+    return apps
+
+
+def get_workshop_apps() -> list[AppInfo]:
+    ws_dir = PARC_ROOT / "APP_Workshop"
+    if not ws_dir.exists():
+        return []
+    apps = []
+    for d in sorted(ws_dir.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
         apps.append(AppInfo(

@@ -12,7 +12,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from hubctl_cli import hub_state, prompts, utils
+from hubctl_cli import hub_state, prompts, utils, env_manager
 
 APP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -455,3 +455,179 @@ def action_start_stop(console, sub: str, *, dry_run: bool) -> None:
         hub_make("down", dry_run=dry_run, console=console)
         if sub == "restart":
             hub_make("up-prod", dry_run=dry_run, console=console)
+
+
+def action_workshop_move(console, direction: str, app_name: str, *, dry_run: bool) -> None:
+    """Déplace une app entre APPS/ et APP_Workshop/.
+
+    direction: "to_workshop" (APPS → APP_Workshop) ou "to_production" (APP_Workshop → APPS)
+    """
+    con = console or _console
+
+    if direction not in ("to_workshop", "to_production"):
+        raise ValueError(f"direction must be 'to_workshop' or 'to_production', got {direction!r}")
+
+    # ── 1. CHECK ──
+    dev_marker = hub_state.HUB_DIR / ".dev-mode"
+    if not dev_marker.exists():
+        con.print("[red]✗ Mode dev requis : HUB_base/.dev-mode absent.[/red]")
+        con.print("[dim]Passez en mode dev via le menu 9 (Dev/Prod) ou créez le fichier HUB_base/.dev-mode[/dim]")
+        return
+
+    if hub_state.check_docker() is False:
+        con.print("[red]✗ Docker injoignable.[/red]")
+        return
+
+    if direction == "to_workshop":
+        source_dir = hub_state.APPS_DIR / app_name
+        dest_dir = hub_state.WORKSHOP_DIR / f"{app_name}-ws"
+        source_slug = app_name
+        dest_slug = f"{app_name}-ws"
+    else:
+        base_name = app_name[:-3] if app_name.endswith("-ws") else app_name
+        source_dir = hub_state.WORKSHOP_DIR / app_name
+        dest_dir = hub_state.APPS_DIR / base_name
+        source_slug = app_name
+        dest_slug = base_name
+
+    if not source_dir.exists():
+        con.print(f"[red]✗ Source introuvable : {source_dir}[/red]")
+        return
+    if dest_dir.exists():
+        con.print(f"[red]✗ Destination existe déjà : {dest_dir}[/red]")
+        return
+
+    compose_file = source_dir / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {source_dir}[/red]")
+        return
+
+    # ── 2. DOWN ──
+    con.print(f"[bold]→ Arrêt de {source_slug}…[/bold]")
+    rc = utils.run_shell(
+        ["docker", "compose", "-f", str(compose_file), "down"],
+        cwd=str(source_dir), dry_run=dry_run, console=con,
+    )
+    if not dry_run and rc != 0:
+        con.print(f"[yellow]⚠ docker compose down a retourné {rc} (peut être déjà arrêté).[/yellow]")
+
+    # ── 3. COPY FILES ──
+    con.print(f"[bold]→ Copie des fichiers : {source_dir.name} → {dest_dir.name}[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ cp -r {source_dir} {dest_dir} (dry-run)[/dim]")
+    else:
+        shutil.copytree(str(source_dir), str(dest_dir), symlinks=True)
+
+    # ── 4. VOLUME COPY ──
+    src_vol = f"{source_slug}-postgres-data"
+    dst_vol = f"{dest_slug}-postgres-data"
+    con.print(f"[bold]→ Copie du volume : {src_vol} → {dst_vol}[/bold]")
+    if not dry_run:
+        subprocess.run(
+            ["docker", "volume", "create", dst_vol],
+            capture_output=True, timeout=10,
+        )
+        rc = utils.run_shell(
+            ["docker", "run", "--rm",
+             "-v", f"{src_vol}:/from:ro",
+             "-v", f"{dst_vol}:/to",
+             "alpine", "cp", "-a", "/from/.", "/to/"],
+            dry_run=dry_run, console=con, timeout=60,
+        )
+        if rc != 0:
+            con.print(f"[yellow]⚠ Copie du volume a échoué (volume source inexistant ?). La DB démarrera vide.[/yellow]")
+    else:
+        con.print(f"[dim]$ docker volume create {dst_vol} (dry-run)[/dim]")
+        con.print(f"[dim]$ docker run --rm -v {src_vol}:/from:ro -v {dst_vol}:/to alpine cp -a /from/. /to/ (dry-run)[/dim]")
+
+    # ── 5. RENAME SLUG ──
+    env_path = dest_dir / ".env"
+    con.print(f"[bold]→ Renommage slug : {source_slug} → {dest_slug}[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ sed APP_SLUG={source_slug} → {dest_slug} dans {env_path} (dry-run)[/dim]")
+    else:
+        existing = env_manager.read_env(env_path)
+        old_slug = existing.get("APP_SLUG", source_slug)
+        env_manager.write_env(env_path, {"APP_SLUG": dest_slug})
+        con.print(f"  APP_SLUG : {old_slug} → {dest_slug}")
+
+    # ── 6. BUILD & UP ──
+    dest_compose = dest_dir / "docker-compose.yml"
+    con.print(f"[bold]→ Build & démarrage de {dest_slug}…[/bold]")
+    rc = utils.run_shell(
+        ["docker", "compose", "-f", str(dest_compose), "build"],
+        cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=120,
+    )
+    if not dry_run and rc != 0:
+        con.print(f"[red]✗ Build échoué pour {dest_slug}. ROLLBACK: suppression de {dest_dir.name}[/red]")
+        shutil.rmtree(str(dest_dir))
+        return
+
+    rc = utils.run_shell(
+        ["docker", "compose", "-f", str(dest_compose), "up", "-d"],
+        cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60,
+    )
+    if not dry_run and rc != 0:
+        con.print(f"[red]✗ docker compose up échoué pour {dest_slug}. ROLLBACK.[/red]")
+        shutil.rmtree(str(dest_dir))
+        return
+
+    # ── 7. HEALTH CHECK ──
+    env_vars = env_manager.read_env(env_path) if not dry_run else {}
+    api_port = env_vars.get("API_PORT", "8000")
+    health_url = f"http://localhost:{api_port}/api/health"
+    con.print(f"[bold]→ Vérification santé : {health_url} (retry 5×2s)…[/bold]")
+    healthy = False
+    if not dry_run:
+        for i in range(1, 6):
+            try:
+                result = subprocess.run(
+                    ["curl", "-sf", health_url],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    con.print(f"[green]✓ Santé OK (tentative {i})[/green]")
+                    healthy = True
+                    break
+            except (subprocess.SubprocessError, FileNotFoundError):
+                pass
+            con.print(f"  Retry {i}/5…")
+            time.sleep(2)
+    else:
+        con.print(f"[dim]$ curl -sf {health_url} (dry-run)[/dim]")
+        healthy = True
+
+    if not healthy:
+        con.print(f"[red]✗ Health check échoué pour {dest_slug}. ROLLBACK.[/red]")
+        if not dry_run:
+            subprocess.run(
+                ["docker", "compose", "-f", str(dest_compose), "down"],
+                cwd=str(dest_dir), capture_output=True, timeout=30,
+            )
+            shutil.rmtree(str(dest_dir))
+        return
+
+    # ── 8. BACKUP ──
+    backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive = backups / f"{source_slug}-{stamp}.tar.gz"
+    con.print(f"[bold]→ Backup : {source_dir.name} → {archive.name}[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ tar czf {archive} -C {source_dir.parent} {source_dir.name} (dry-run)[/dim]")
+    else:
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(str(source_dir), arcname=source_dir.name)
+        con.print(f"[green]✓ Backup :[/green] {archive}")
+
+    # ── 9. DELETE ──
+    con.print(f"[bold]→ Suppression de la source : {source_dir.name}[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ rm -rf {source_dir} (dry-run)[/dim]")
+    else:
+        trash = hub_state.PARC_ROOT / "hubctl_cli" / "_trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source_dir), str(trash / f"{source_slug}-{stamp}"))
+        con.print(f"[green]✓ Source déplacée dans la corbeille : _trash/{source_slug}-{stamp}[/green]")
+
+    con.print(f"[green]✓ Workshop move « {source_slug} » → « {dest_slug} » terminé ![/green]")
