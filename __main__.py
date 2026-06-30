@@ -57,6 +57,9 @@ def _run(args) -> int:
     try:
         canvas.open()
 
+        from hubctl_cli.actions import cleanup_orphan_tests
+        cleanup_orphan_tests()
+
         while canvas.is_too_small:
             canvas.render(None)
             if _poll_quit():
