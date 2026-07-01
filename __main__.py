@@ -9,6 +9,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
+from hubctl_cli.vault_manager import VaultManager
 from hubctl_cli import hub_state
 from hubctl_cli import keys
 
@@ -95,9 +96,14 @@ def _run(args) -> int:
 
         vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
         vault = Vault(vault_path)
+        vault_mgr = VaultManager(vault)
         if not hub_state.HUB_DIR.exists():
             menu._offer_init_fresh(canvas, dry_run=args.dry_run)
-        menu.main_loop(canvas, state, vault, dry_run=args.dry_run)
+        mode = menu._choose_mode(canvas, vault_mgr)
+        hub_state.set_mode(mode)
+        if mode == "dev" and hub_state.APPS_DIR.exists():
+            menu._offer_snapshot(canvas, vault_mgr, dry_run=args.dry_run)
+        menu.main_loop(canvas, state, vault_mgr, dry_run=args.dry_run)
         return 0
 
     except (KeyboardInterrupt, EOFError):

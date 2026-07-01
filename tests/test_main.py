@@ -54,6 +54,9 @@ def test_keyboard_interrupt_during_intro_goes_to_menu():
          mock.patch.object(m, "Canvas", return_value=fake_canvas), \
          mock.patch.object(m.animation, "play_intro", side_effect=KeyboardInterrupt), \
          mock.patch.object(m, "Vault"), \
+         mock.patch.object(m, "VaultManager"), \
+         mock.patch.object(m.menu, "_choose_mode", return_value="prod"), \
+         mock.patch.object(m.menu, "_offer_snapshot"), \
          mock.patch.object(m.menu, "main_loop") as ml:
         rc = m.main([])
     assert rc == 0

@@ -42,11 +42,15 @@ def test_repo_name_from_url():
     assert actions.repo_name_from_url("nom avec espaces/") is None
 
 
-def test_menu_main_choices_contains_all_actions():
+def test_menu_tree_contains_all_actions():
     from hubctl_cli import menu
-    choices = menu.build_main_choices()
-    joined = " ".join(choices).lower()
-    for kw in ["apps", "hub", "configuration", "quitter"]:
+    all_labels = []
+    for ctx_name, ctx in menu.MENU_TREE.items():
+        for _digit, (label, _target) in ctx.items():
+            all_labels.append(label.lower())
+    joined = " ".join(all_labels)
+    for kw in ["apps", "hub", "configuration", "quitter", "update", "ajouter", "supprimer",
+                "logs", "start", "stop", "coffre", "setup", "réseau", "admin"]:
         assert kw in joined
 
 
@@ -54,7 +58,16 @@ def _menu_canvas():
     c = mock.MagicMock()
     c.inner_cols = 98
     c.inner_rows = 28
+    c.set_layout = mock.MagicMock()
     return c
+
+
+def _mock_vault_mgr():
+    mgr = mock.MagicMock()
+    mgr.managed_env = False
+    mgr.vault = mock.MagicMock()
+    mgr.vault.is_locked = True
+    return mgr
 
 
 def test_pause_waits_for_enter():
@@ -66,44 +79,71 @@ def test_pause_waits_for_enter():
     assert canvas.render.call_count >= 1
 
 
-def test_main_loop_clears_screen_then_quits():
+def test_main_loop_quits_on_zero_key():
     from hubctl_cli import menu
+    menu._ui_state["prompt_buf"] = ""
+    menu._nav_stack = ["main"]
     canvas = _menu_canvas()
-    with mock.patch.object(menu, "_retro_select", return_value="0. Quitter"), \
-         mock.patch.object(menu.widgets, "select", return_value="0. Quitter"):
-        menu.main_loop(canvas, {"docker": False, "services": []}, vault=None, dry_run=True)
+    vault_mgr = _mock_vault_mgr()
+    with mock.patch("sys.stdin.fileno", return_value=0), \
+         mock.patch.object(menu.keys, "read_key",
+                           side_effect=[menu.keys.KeyChar("0"),
+                                        menu.keys.KeyEnter()]):
+        menu.main_loop(canvas, {"docker": False, "services": [], "hub_version": "v0.1", "apps": []},
+                       vault_mgr, dry_run=True)
     canvas.render.assert_called()
 
 
-def test_main_loop_escape_quits():
+def test_main_loop_escape_confirms_then_quits():
     from hubctl_cli import menu
+    menu._ui_state["prompt_buf"] = ""
+    menu._nav_stack = ["main"]
     canvas = _menu_canvas()
-    with mock.patch.object(menu, "_retro_select", return_value=menu.widgets.ESC), \
-         mock.patch.object(menu.widgets, "select", return_value=menu.widgets.ESC):
-        menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
+    vault_mgr = _mock_vault_mgr()
+    with mock.patch("sys.stdin.fileno", return_value=0), \
+         mock.patch.object(menu.keys, "read_key",
+                           side_effect=[menu.keys.KeyEsc()]), \
+         mock.patch.object(menu.widgets, "confirm", return_value=True):
+        menu.main_loop(canvas, {"docker": False, "services": [], "apps": []},
+                       vault_mgr, dry_run=True)
     canvas.render.assert_called()
 
 
-def test_main_loop_ctrlc_at_menu_stays_then_quits():
+def test_main_loop_ctrlc_at_menu_exits():
     from hubctl_cli import menu
+    menu._ui_state["prompt_buf"] = ""
+    menu._nav_stack = ["main"]
     canvas = _menu_canvas()
-    with mock.patch.object(menu, "_retro_select",
-                           side_effect=[KeyboardInterrupt(), "0. Quitter"]) as sel, \
-         mock.patch.object(menu.widgets, "select", return_value="0. Quitter"):
-        menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
-    assert sel.call_count == 2
+    vault_mgr = _mock_vault_mgr()
+    import pytest
+    with mock.patch("sys.stdin.fileno", return_value=0), \
+         mock.patch.object(menu.keys, "read_key",
+                           side_effect=[menu.keys.KeyCtrlC()]):
+        with pytest.raises(KeyboardInterrupt):
+            menu.main_loop(canvas, {"docker": False, "services": [], "apps": []},
+                           vault_mgr, dry_run=True)
 
 
-def test_main_loop_action_keyboardinterrupt_returns_to_menu():
+def test_main_loop_action_returns_to_menu_after_action():
     from hubctl_cli import menu
+    menu._ui_state["prompt_buf"] = ""
+    menu._nav_stack = ["main"]
     canvas = _menu_canvas()
-    with mock.patch.object(menu, "_retro_select",
-                           side_effect=["2. Hub", menu.widgets.ESC]), \
-         mock.patch.object(menu, "_submenu_hub",
-                           side_effect=KeyboardInterrupt) as sm, \
-         mock.patch.object(menu, "pause"):
-        menu.main_loop(canvas, {"docker": False}, vault=None, dry_run=True)
-    sm.assert_called_once()
+    vault_mgr = _mock_vault_mgr()
+
+    with mock.patch("sys.stdin.fileno", return_value=0), \
+         mock.patch.object(menu.keys, "read_key",
+                           side_effect=[menu.keys.KeyChar("6"),
+                                        menu.keys.KeyEnter(),
+                                        menu.keys.KeyChar("0"),
+                                        menu.keys.KeyEnter()]), \
+         mock.patch.object(menu, "_dispatch",
+                           side_effect=[False, True]) as dispatch_mock:
+        menu.main_loop(canvas, {"docker": False, "services": [], "apps": []},
+                       vault_mgr, dry_run=True)
+    assert dispatch_mock.call_count == 2
+    assert dispatch_mock.call_args_list[0].args[0] == "6"
+    assert dispatch_mock.call_args_list[1].args[0] == "0"
 
 
 # ── action_init tests ──

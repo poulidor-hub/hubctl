@@ -727,6 +727,39 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
 
 # ── Détection clone frais ──
 
+def _offer_snapshot(canvas: Canvas, vault_mgr, *, dry_run: bool) -> None:
+    apps = hub_state.get_apps()
+    if not apps:
+        return
+    with _modal(canvas):
+        canvas.render(Text(
+            "📸 Premier passage en DEV\n\n"
+            "Veux-tu snapshooter des apps de APPS/ vers APP_Workshop/\n"
+            "pour tester avec des données réelles ?\n\n"
+            "(Utilise workshop_move — code + volumes Docker)",
+            style="bold cyan"
+        ))
+        choices = ["📦 Tout snapshooter"] + [f"  {a.name}" for a in apps] + ["Non, plus tard"]
+        sel = widgets.select(canvas, "Snapshot :", choices)
+        if sel is widgets.ESC or sel is None or sel == "Non, plus tard":
+            return
+        if sel == "📦 Tout snapshooter":
+            for a in apps:
+                if not _workshop_move_one(canvas, a.name, "to_workshop", vault_mgr, dry_run):
+                    break
+        else:
+            app_name = sel.strip().split()[0] if sel.strip() else ""
+            if app_name:
+                _workshop_move_one(canvas, app_name, "to_workshop", vault_mgr, dry_run)
+
+
+def _workshop_move_one(canvas: Canvas, app_name: str, direction: str, vault_mgr, dry_run: bool) -> bool:
+    return _run_action(
+        canvas, f"Snapshot {app_name}",
+        actions.action_workshop_move, _ACTION_CONSOLE, direction, app_name, dry_run=dry_run,
+    )
+
+
 def _choose_mode(canvas: Canvas, vault_mgr) -> str:
     with _modal(canvas):
         lines = [
