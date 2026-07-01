@@ -10,6 +10,23 @@ HUB_DIR = PARC_ROOT / "HUB_base"
 APPS_DIR = PARC_ROOT / "APPS"
 WORKSHOP_DIR = PARC_ROOT / "APP_Workshop"
 
+_mode: str = "prod"
+
+
+def set_mode(mode: str) -> None:
+    global _mode
+    _mode = mode
+
+
+def get_mode() -> str:
+    return _mode
+
+
+def get_active_apps() -> list[AppInfo]:
+    if _mode == "dev":
+        return get_workshop_apps()
+    return get_apps()
+
 
 @dataclass
 class AppInfo:
