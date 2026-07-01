@@ -15,13 +15,6 @@ _ACTION_CONSOLE = Console()
 _vault_mgr: VaultManager | None = None
 
 MENU_TREE: dict[str, OrderedDict] = {
-    "main": OrderedDict([
-        ("1", ("Apps (gérer les applications)", "apps")),
-        ("2", ("Hub (actions sur le hub)", "hub")),
-        ("3", ("Configuration (setup, réseau, coffre)", "config")),
-        ("4", ("Scénarios (tests & maintenance)", "scenarios")),
-        ("0", ("Quitter", None)),
-    ]),
     "apps": OrderedDict([
         ("1", ("Update app", "update_app")),
         ("2", ("Ajouter une app", "add_app")),
@@ -248,7 +241,38 @@ def _build_logs() -> Text:
 
 
 def _current_context() -> OrderedDict:
-    return MENU_TREE.get(_nav_stack[-1], MENU_TREE["main"])
+    ctx_name = _nav_stack[-1]
+    if ctx_name == "main":
+        return _build_main_menu()
+    if ctx_name == "config":
+        return _build_config_menu()
+    return MENU_TREE.get(ctx_name, _build_main_menu())
+
+
+def _build_main_menu() -> OrderedDict:
+    label = "Passer en DEV" if hub_state.get_mode() == "prod" else "Passer en PROD"
+    return OrderedDict([
+        ("1", ("Apps (gérer les applications)", "apps")),
+        ("2", ("Hub (actions sur le hub)", "hub")),
+        ("3", ("Configuration (setup, réseau, coffre)", "config")),
+        ("4", ("Scénarios (tests & maintenance)", "scenarios")),
+        ("5", (label, "toggle_mode")),
+        ("0", ("Quitter", None)),
+    ])
+
+
+def _build_config_menu() -> OrderedDict:
+    items = OrderedDict([
+        ("1", ("Quick setup", "quick_setup")),
+        ("2", ("Réseau (whitelist, CORS)", "network")),
+        ("3", ("Admin (identifiants)", "admin")),
+        ("4", ("Mode & avancé", "advanced")),
+        ("5", ("Coffre (Secrets)", "coffre")),
+    ])
+    if hub_state.get_mode() == "dev":
+        items["6"] = ("Workshop", "workshop")
+    items["0"] = ("← Retour", "__back__")
+    return items
 
 
 def _build_menu_static() -> Text:
@@ -415,9 +439,10 @@ def _status_banner(state: dict) -> Text:
 
 def choose_app(canvas: Canvas):
     with _modal(canvas):
-        apps = hub_state.get_apps()
+        apps = hub_state.get_active_apps()
+        active_dir = "APP_Workshop" if hub_state.get_mode() == "dev" else "APPS"
         if not apps:
-            canvas.render(Text("Aucune app dans APPS/.", style="yellow"))
+            canvas.render(Text(f"Aucune app dans {active_dir}/.", style="yellow"))
             pause(canvas)
             return None
         choice = widgets.select(canvas, "Quelle app ?", [a.name for a in apps] + ["← Retour"])
@@ -431,11 +456,12 @@ def view_apps(canvas: Canvas, state: dict) -> None:
         d = hub_state.get_disk_usage()
         gb_free = d.free / 1024 ** 3
         gb_total = d.total / 1024 ** 3
+        active_dir = "APP_Workshop" if hub_state.get_mode() == "dev" else "APPS"
         lines = [
-            Text(f"ESPACE DISQUE\n{gb_free:.1f} / {gb_total:.1f} Go libres ({d.percent_free}%)\n", style="bold"),
-            Text("Apps du parc\n", style="bold"),
+            Text(f"ESPACE DISQUE ({active_dir})\n{gb_free:.1f} / {gb_total:.1f} Go libres ({d.percent_free}%)\n", style="bold"),
+            Text(f"Apps ({active_dir})\n", style="bold"),
         ]
-        for a in hub_state.get_apps():
+        for a in hub_state.get_active_apps():
             size_mb = a.size_bytes / 1024 ** 2
             dirty = "M" if a.git_dirty else " "
             lines.append(Text(f"  {a.name:20s}  v{a.version:12s}  [{dirty}]  {size_mb:5.0f} Mo"))
@@ -1023,6 +1049,21 @@ def _exec_workshop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> 
     return True
 
 
+def _exec_toggle_mode(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> bool:
+    new_mode = "dev" if hub_state.get_mode() == "prod" else "prod"
+    with _modal(canvas):
+        if widgets.confirm(canvas, f"Passer en mode {new_mode.upper()} ?", default=True) is not True:
+            return False
+    if new_mode == "dev" and hub_state.APPS_DIR.exists():
+        _offer_snapshot(canvas, vault_mgr, dry_run=dry_run)
+    hub_state.set_mode(new_mode)
+    global _nav_stack
+    _nav_stack = ["main"]
+    canvas.render(Text(f"✓ Mode {new_mode.upper()} activé.", style="bold green"))
+    pause(canvas)
+    return False
+
+
 ACTION_HANDLERS = {
     "update_app": _exec_update_app,
     "add_app": _exec_add_app,
@@ -1040,6 +1081,7 @@ ACTION_HANDLERS = {
     "advanced": _exec_advanced,
     "coffre": _exec_coffre,
     "workshop": _exec_workshop,
+    "toggle_mode": _exec_toggle_mode,
     "sc_diag_quick": _sc_diag_quick,
     "sc_update_full": _sc_update_full,
     "sc_app_rescue": _sc_app_rescue,

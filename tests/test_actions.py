@@ -43,14 +43,19 @@ def test_repo_name_from_url():
 
 
 def test_menu_tree_contains_all_actions():
-    from hubctl_cli import menu
+    from hubctl_cli import menu, hub_state
+    hub_state.set_mode("dev")
     all_labels = []
     for ctx_name, ctx in menu.MENU_TREE.items():
         for _digit, (label, _target) in ctx.items():
             all_labels.append(label.lower())
+    for builder in (menu._build_main_menu, menu._build_config_menu):
+        for _digit, (label, _target) in builder().items():
+            all_labels.append(label.lower())
     joined = " ".join(all_labels)
     for kw in ["apps", "hub", "configuration", "quitter", "update", "ajouter", "supprimer",
-                "logs", "start", "stop", "coffre", "setup", "réseau", "admin"]:
+                "logs", "start", "stop", "coffre", "setup", "réseau", "admin", "workshop",
+                "scénarios", "passer en"]:
         assert kw in joined
 
 
