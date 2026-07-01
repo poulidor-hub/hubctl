@@ -1,5 +1,7 @@
 from __future__ import annotations
+import os
 import re
+import tempfile
 from pathlib import Path
 
 _KEY_RE = re.compile(r"^([A-Z_][A-Z0-9_]*)=(.*)$")
@@ -16,10 +18,26 @@ def read_env(path: Path) -> dict[str, str]:
     return result
 
 
+def backup_env(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    bak = path.with_suffix(path.suffix + ".bak")
+    bak.write_text(path.read_text())
+    return bak
+
+
+def restore_env(path: Path) -> bool:
+    bak = path.with_suffix(path.suffix + ".bak")
+    if not bak.exists():
+        return False
+    bak.rename(path)
+    return True
+
+
 def write_env(path: Path, updates: dict[str, str]) -> None:
     if not path.exists():
         lines = [f"{k}={v}" for k, v in updates.items()]
-        path.write_text("\n".join(lines) + "\n")
+        _atomic_write(path, "\n".join(lines) + "\n")
         return
 
     remaining = dict(updates)
@@ -34,7 +52,18 @@ def write_env(path: Path, updates: dict[str, str]) -> None:
     for k, v in remaining.items():
         new_lines.append(f"{k}={v}")
 
-    path.write_text("\n".join(new_lines) + "\n")
+    _atomic_write(path, "\n".join(new_lines) + "\n")
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".")
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, str(path))
 
 
 def env_defaults(mode: str) -> dict[str, str]:

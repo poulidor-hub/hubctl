@@ -50,6 +50,26 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None) -> int:
     )
 
 
+def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
+    secrets_dir = hub_state.HUB_DIR / "secrets"
+    priv = secrets_dir / "jwt_private_key.pem"
+    pub = secrets_dir / "jwt_public_key.pem"
+    if priv.exists() and pub.exists():
+        return
+
+    con = console or _console
+    env_path = hub_state.HUB_DIR / ".env"
+    current = env_manager.read_env(env_path)
+    if current.get("AUTO_GENERATE_KEYS", "").lower() != "true":
+        if dry_run:
+            con.print("[dim][dry-run] AUTO_GENERATE_KEYS → true[/dim]")
+        else:
+            env_manager.write_env(env_path, {"AUTO_GENERATE_KEYS": "true"})
+        con.print("[yellow]🔐 Clés JWT absentes → AUTO_GENERATE_KEYS=true (DEV)[/yellow]")
+    else:
+        con.print("[dim]AUTO_GENERATE_KEYS déjà activé, les clés seront générées au démarrage.[/dim]")
+
+
 def _port_in_use(port: int) -> bool:
     try:
         result = subprocess.run(
@@ -280,6 +300,9 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
     if not disk_guard(con):
         return
 
+    if target == "hub":
+        _ensure_jwt_keys(console, dry_run=dry_run)
+
     target_path = hub_state.HUB_DIR if target == "hub" else hub_state.APPS_DIR / target
     compose_file = target_path / "docker-compose.yml"
     if not compose_file.exists():
@@ -376,6 +399,7 @@ def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
 
 def action_repair(console, *, dry_run: bool) -> None:
     con = console or _console
+    _ensure_jwt_keys(console, dry_run=dry_run)
     con.print("[bold]Diagnostic (lecture seule)[/bold]")
     hub_make("ps", dry_run=False, console=console)
     d = hub_state.get_disk_usage()
@@ -449,6 +473,9 @@ def cleanup_orphan_tests(console=None) -> None:
 
 
 def action_start_stop(console, sub: str, *, dry_run: bool) -> None:
+    if sub in ("start", "restart"):
+        _ensure_jwt_keys(console, dry_run=dry_run)
+
     if sub == "start":
         hub_make("up-prod", dry_run=dry_run, console=console)
     elif sub in ("stop", "restart"):
@@ -470,15 +497,8 @@ def action_workshop_move(console, direction: str, app_name: str, *, dry_run: boo
     # ── 1. CHECK ──
     dev_marker = hub_state.HUB_DIR / ".dev-mode"
     if not dev_marker.exists():
-        con.print("[yellow]⚠ Mode dev requis — HUB_base/.dev-mode absent.[/yellow]")
-        if dry_run:
-            con.print("[dim]  (dry-run : passage automatique en mode dev)[/dim]")
-        elif not utils.confirm("Passer en mode dev ? (crée HUB_base/.dev-mode)", default=True, console=con):
-            con.print("[yellow]Annulé — le mode dev est obligatoire pour cette opération.[/yellow]")
-            return
-        if not dry_run:
-            dev_marker.touch()
-            con.print("[green]✓ Mode dev activé[/green]")
+        dev_marker.touch()
+        con.print("[dim].dev-mode créé (compatibilité)[/dim]")
 
     if hub_state.check_docker() is False:
         con.print("[red]✗ Docker injoignable.[/red]")

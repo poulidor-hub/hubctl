@@ -19,8 +19,7 @@ MENU_TREE: dict[str, OrderedDict] = {
         ("1", ("Update app", "update_app")),
         ("2", ("Ajouter une app", "add_app")),
         ("3", ("Supprimer une app", "remove_app")),
-        ("4", ("Dev/Prod (Mode app)", "devprod")),
-        ("5", ("Logs app", "logs_app")),
+        ("4", ("Logs app", "logs_app")),
         ("0", ("← Retour", "__back__")),
     ]),
     "hub": OrderedDict([
@@ -666,52 +665,6 @@ def _run_action(canvas: Canvas, label: str, fn, *args, **kw) -> bool:
     return success
 
 
-def _devprod_toggle(canvas: Canvas, dry_run: bool) -> None:
-    with _modal(canvas):
-        apps = hub_state.get_apps()
-        if not apps:
-            canvas.render(Text("Aucune app dans APPS/.", style="yellow"))
-            pause(canvas)
-            return
-        choices = []
-        for a in apps:
-            marker = a.path / ".dev-mode"
-            mode = "dev" if marker.exists() else "prod"
-            choices.append(f"{a.name}  [{mode}]")
-        choices.append("← Retour")
-        sel = widgets.select(canvas, "Dev/Prod — choisir une app :", choices)
-        if sel is widgets.ESC or sel is None or sel == "← Retour":
-            return
-        app_name = sel.split()[0]
-        marker = hub_state.APPS_DIR / app_name / ".dev-mode"
-        current = "dev" if marker.exists() else "prod"
-        new_mode = "production" if current == "dev" else "développement"
-        msg = f"Basculer « {app_name} » de {current} → {new_mode} ?"
-        if widgets.confirm(canvas, msg, default=True) is not True:
-            return
-        if dry_run:
-            canvas.render(Text(f"[dry-run] {app_name} : {current} → {new_mode}"))
-        else:
-            if current == "dev":
-                marker.unlink(missing_ok=True)
-            else:
-                marker.touch()
-            canvas.render(Text(f"✓ {app_name} → {new_mode}"))
-        pause(canvas)
-
-
-def _ensure_dev_mode(canvas: Canvas, dry_run: bool) -> None:
-    dev_marker = hub_state.HUB_DIR / ".dev-mode"
-    if dev_marker.exists():
-        return
-    if dry_run:
-        canvas.render(Text("[dry-run] Mode dev activé automatiquement", style="dim"))
-        return
-    if widgets.confirm(canvas, "Mode dev requis — activer ? (crée HUB_base/.dev-mode)", default=True) is True:
-        dev_marker.touch()
-        canvas.render(Text("✓ Mode dev activé", style="green"))
-
-
 def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
     while True:
         with _modal(canvas):
@@ -736,7 +689,6 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                 app_name = sel.split()[1]
                 msg = f"Déplacer « {app_name} » de APPS/ vers APP_Workshop/ ({app_name}-ws) ?"
                 if widgets.confirm(canvas, msg, default=False) is True:
-                    _ensure_dev_mode(canvas, dry_run)
                     _run_action(canvas, f"Workshop → {app_name}",
                                 actions.action_workshop_move, _ACTION_CONSOLE, "to_workshop", app_name, dry_run=dry_run)
                     return
@@ -745,7 +697,6 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                 base = app_name[:-3] if app_name.endswith("-ws") else app_name
                 msg = f"Remettre « {app_name} » en production dans APPS/ ({base}) ?"
                 if widgets.confirm(canvas, msg, default=False) is True:
-                    _ensure_dev_mode(canvas, dry_run)
                     _run_action(canvas, f"Workshop ← {base}",
                                 actions.action_workshop_move, _ACTION_CONSOLE, "to_production", app_name, dry_run=dry_run)
                     return
@@ -885,22 +836,6 @@ def _init_vault(canvas: Canvas, vault) -> None:
             pause(canvas)
 
 
-def _unlock_vault(canvas: Canvas, vault) -> None:
-    with _modal(canvas):
-        canvas.render(Text("🔐 Déverrouillage du coffre\n\nEntre ta passphrase pour activer la gestion des .env.", style="bold cyan"))
-        pw = widgets.password(canvas, "Passphrase du coffre :")
-        if pw is widgets.ESC or pw is None or not pw:
-            canvas.render(Text("Coffre verrouillé — gestion des .env désactivée.", style="yellow"))
-            pause(canvas)
-            return
-        if not vault.unlock(pw):
-            canvas.render(Text("Passphrase incorrecte.", style="red"))
-            pause(canvas)
-            return
-        canvas.render(Text("✓ Coffre déverrouillé.", style="bold green"))
-        pause(canvas)
-
-
 def _offer_init_fresh(canvas: Canvas, *, dry_run: bool) -> None:
     canvas.render(Text(
         "\n\nAucun dépôt HUB détecté.\n"
@@ -957,11 +892,6 @@ def _exec_remove_app(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool, p
     if not app:
         return False
     return _run_action(canvas, f"Suppression {app}", actions.action_remove_app, _ACTION_CONSOLE, app, vault_mgr.vault if vault_mgr else None, dry_run=dry_run)
-
-
-def _exec_devprod(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> bool:
-    _devprod_toggle(canvas, dry_run)
-    return True
 
 
 def _exec_logs_app(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> bool:
@@ -1068,7 +998,6 @@ ACTION_HANDLERS = {
     "update_app": _exec_update_app,
     "add_app": _exec_add_app,
     "remove_app": _exec_remove_app,
-    "devprod": _exec_devprod,
     "logs_app": _exec_logs_app,
     "update_hub": _exec_update_hub,
     "repair": _exec_repair,
