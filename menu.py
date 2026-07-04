@@ -8,11 +8,11 @@ from collections import OrderedDict
 from rich.console import Console
 from rich.text import Text
 
-from hubctl_cli import actions, hub_state, keys, setup_wizard, widgets
+from hubctl_cli import actions, hub_state, keys, setup_wizard, utils, widgets
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.vault_manager import VaultManager
 
-_ACTION_CONSOLE = Console()
+_ACTION_CONSOLE = Console(file=utils.StreamWriter(), force_terminal=False, width=88)
 _vault_mgr: VaultManager | None = None
 
 _APPS_WINDOW = 4

@@ -2,6 +2,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+import sys
 import threading
 from queue import Queue
 from typing import Callable
@@ -16,6 +17,32 @@ _current_proc: subprocess.Popen | None = None
 def set_stream_callback(cb: Callable[[str], None] | None) -> None:
     global _stream_callback
     _stream_callback = cb
+
+
+class StreamWriter:
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def write(self, s: str) -> int:
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if _stream_callback is not None:
+                _stream_callback(line)
+            else:
+                sys.__stdout__.write(line + "\n")
+        return len(s)
+
+    def flush(self) -> None:
+        if self._buf:
+            if _stream_callback is not None:
+                _stream_callback(self._buf)
+            else:
+                sys.__stdout__.write(self._buf)
+            self._buf = ""
+
+    def isatty(self) -> bool:
+        return False
 
 
 def cancel_current() -> None:
