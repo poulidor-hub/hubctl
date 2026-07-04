@@ -16,27 +16,46 @@ def key_hints(pairs: list[tuple[str, str]]) -> Text:
     return Text(" · ".join(f"{glyph} {label}" for glyph, label in pairs), style="dim")
 
 
-def select(canvas, message: str, choices: list[str]):
+def select(canvas, message: str, choices: list[str], *, disabled: set[str] | None = None):
     fd = sys.stdin.fileno()
+    disabled = disabled or set()
     per_page = 9
     n = len(choices)
     pages = max(1, (n + per_page - 1) // per_page)
-    selected = 0
+
+    def enabled(i: int) -> bool:
+        return choices[i] not in disabled
+
+    def first_enabled() -> int:
+        for i in range(n):
+            if enabled(i):
+                return i
+        return 0
+
+    def step(idx: int, direction: int) -> int:
+        for _ in range(n):
+            idx = (idx + direction) % n
+            if enabled(idx):
+                return idx
+        return idx
+
+    selected = first_enabled()
 
     while True:
         page = selected // per_page
         start = page * per_page
         visible = choices[start:start + per_page]
-        canvas.render(_build_select(message, visible, selected - start, page, pages))
+        canvas.render(_build_select(message, visible, selected - start, page, pages, disabled))
         key = keys.read_key(fd, timeout=0.15)
         if key is None:
             continue
         if isinstance(key, keys.KeyUp):
-            selected = (selected - 1) % n
+            selected = step(selected, -1)
         elif isinstance(key, keys.KeyDown):
-            selected = (selected + 1) % n
+            selected = step(selected, 1)
         elif isinstance(key, keys.KeyEnter):
-            return choices[selected]
+            if enabled(selected):
+                return choices[selected]
         elif isinstance(key, keys.KeyEsc):
             return ESC
         elif isinstance(key, keys.KeyCtrlC):
@@ -51,7 +70,7 @@ def select(canvas, message: str, choices: list[str]):
                 selected = min(((page - 1) % pages) * per_page, n - 1)
             elif ch.isdigit():
                 pos = int(ch) - 1
-                if 0 <= pos < len(visible):
+                if 0 <= pos < len(visible) and enabled(start + pos):
                     selected = start + pos
 
 
@@ -109,14 +128,17 @@ def _text_input(canvas, message: str, mask: str | None = None):
             buf.append(key.char)
 
 
-def _build_select(message, visible, sel_idx, page, pages):
+def _build_select(message, visible, sel_idx, page, pages, disabled=None):
+    disabled = disabled or set()
     lines = [Text(message, style="bold")]
     if pages > 1:
         lines.append(Text(f"page {page + 1}/{pages}", style="dim"))
     lines.append(Text(""))
     for i, choice in enumerate(visible):
         num = i + 1
-        if i == sel_idx:
+        if choice in disabled:
+            lines.append(Text(f"   {num}. {choice}", style="dim"))
+        elif i == sel_idx:
             lines.append(Text(f" ▸ {num}. {choice}", style="reverse"))
         else:
             lines.append(Text(f"   {num}. {choice}"))

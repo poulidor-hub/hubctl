@@ -98,6 +98,34 @@ def test_select_ctrl_c_raises(monkeypatch):
         widgets.select(c, "Pick:", ["A"])
 
 
+def test_select_initial_highlight_skips_disabled(monkeypatch):
+    c = _fake_canvas()
+    _patch_keys(monkeypatch, [KeyEnter()])
+    result = widgets.select(c, "Pick:", ["A", "B", "C"], disabled={"A"})
+    assert result == "B"
+
+
+def test_select_down_skips_disabled(monkeypatch):
+    c = _fake_canvas()
+    _patch_keys(monkeypatch, [KeyDown(), KeyEnter()])
+    result = widgets.select(c, "Pick:", ["A", "B", "C"], disabled={"B"})
+    assert result == "C"
+
+
+def test_select_digit_on_disabled_ignored(monkeypatch):
+    c = _fake_canvas()
+    _patch_keys(monkeypatch, [KeyChar("1"), KeyEnter()])
+    result = widgets.select(c, "Pick:", ["A", "B"], disabled={"A"})
+    assert result == "B"
+
+
+def test_select_backward_compatible_without_disabled(monkeypatch):
+    c = _fake_canvas()
+    _patch_keys(monkeypatch, [KeyEnter()])
+    result = widgets.select(c, "Pick:", ["A", "B"])
+    assert result == "A"
+
+
 def test_confirm_enter_default_true(monkeypatch):
     c = _fake_canvas()
     _patch_keys(monkeypatch, [KeyEnter()])
