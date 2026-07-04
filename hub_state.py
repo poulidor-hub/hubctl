@@ -2,8 +2,11 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from hubctl_cli import env_manager
 
 PARC_ROOT = Path(__file__).resolve().parent.parent
 HUB_DIR = PARC_ROOT / "HUB_base"
@@ -123,6 +126,46 @@ def get_workshop_apps() -> list[AppInfo]:
             legacy=_is_legacy(d),
         ))
     return apps
+
+
+_api_status_cache: dict[str, tuple[str, float]] = {}
+_API_STATUS_TTL = 5.0
+
+
+def _probe_api(port: str) -> str:
+    url = f"http://localhost:{port}/api/health"
+    try:
+        r = subprocess.run(
+            ["curl", "-s", "--max-time", "1", "-o", "/dev/null", "-w", "%{http_code}", url],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+        return "stopped"
+    code = (r.stdout or "").strip()
+    if code.startswith("2"):
+        return "running"
+    if code == "000" or not code:
+        return "stopped"
+    return "warning"
+
+
+def app_api_status(app: AppInfo) -> str:
+    if app.legacy:
+        return "legacy"
+    now = time.monotonic()
+    cached = _api_status_cache.get(app.name)
+    if cached and now - cached[1] < _API_STATUS_TTL:
+        return cached[0]
+    env_path = app.path / ".env"
+    env = env_manager.read_env(env_path) if env_path.exists() else {}
+    port = env.get("API_PORT", "8000")
+    status = _probe_api(port)
+    _api_status_cache[app.name] = (status, now)
+    return status
+
+
+def get_apps_api_status() -> list[tuple[str, str]]:
+    return [(a.name, app_api_status(a)) for a in get_active_apps()]
 
 
 def get_hub_services() -> list[ServiceInfo]:

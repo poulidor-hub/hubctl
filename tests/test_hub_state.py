@@ -61,3 +61,48 @@ def test_get_apps_sets_legacy_flag(tmp_path, monkeypatch):
          mock.patch.object(hub_state, "_dir_size", return_value=0):
         result = {a.name: a.legacy for a in hub_state.get_apps()}
     assert result == {"compat": False, "old": True}
+
+
+from pathlib import Path
+
+
+def _app(tmp_path, name, legacy=False):
+    from hubctl_cli.hub_state import AppInfo
+    return AppInfo(name=name, path=tmp_path, version="1", git_dirty=False,
+                   size_bytes=0, legacy=legacy)
+
+
+def test_app_api_status_legacy_skips_probe(tmp_path):
+    hub_state._api_status_cache.clear()
+    with mock.patch("subprocess.run") as run:
+        status = hub_state.app_api_status(_app(tmp_path, "old", legacy=True))
+    assert status == "legacy"
+    run.assert_not_called()
+
+
+def test_app_api_status_running_on_2xx(tmp_path, monkeypatch):
+    hub_state._api_status_cache.clear()
+    monkeypatch.setattr(hub_state.env_manager, "read_env", lambda p: {"API_PORT": "8100"})
+    with mock.patch("subprocess.run",
+                    return_value=mock.Mock(returncode=0, stdout="200")):
+        status = hub_state.app_api_status(_app(tmp_path, "compat"))
+    assert status == "running"
+
+
+def test_app_api_status_stopped_when_unreachable(tmp_path, monkeypatch):
+    hub_state._api_status_cache.clear()
+    monkeypatch.setattr(hub_state.env_manager, "read_env", lambda p: {})
+    with mock.patch("subprocess.run",
+                    return_value=mock.Mock(returncode=0, stdout="000")):
+        status = hub_state.app_api_status(_app(tmp_path, "compat"))
+    assert status == "stopped"
+
+
+def test_app_api_status_uses_cache_within_ttl(tmp_path, monkeypatch):
+    hub_state._api_status_cache.clear()
+    monkeypatch.setattr(hub_state.env_manager, "read_env", lambda p: {})
+    with mock.patch("subprocess.run",
+                    return_value=mock.Mock(returncode=0, stdout="200")) as run:
+        hub_state.app_api_status(_app(tmp_path, "compat"))
+        hub_state.app_api_status(_app(tmp_path, "compat"))
+    assert run.call_count == 1
