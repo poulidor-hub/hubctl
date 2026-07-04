@@ -86,7 +86,6 @@ def test_pause_waits_for_enter():
 
 def test_main_loop_quits_on_zero_key():
     from hubctl_cli import menu
-    menu._ui_state["prompt_buf"] = ""
     menu._nav_stack = ["main"]
     canvas = _menu_canvas()
     vault_mgr = _mock_vault_mgr()
@@ -101,7 +100,6 @@ def test_main_loop_quits_on_zero_key():
 
 def test_main_loop_escape_confirms_then_quits():
     from hubctl_cli import menu
-    menu._ui_state["prompt_buf"] = ""
     menu._nav_stack = ["main"]
     canvas = _menu_canvas()
     vault_mgr = _mock_vault_mgr()
@@ -116,7 +114,6 @@ def test_main_loop_escape_confirms_then_quits():
 
 def test_main_loop_ctrlc_at_menu_exits():
     from hubctl_cli import menu
-    menu._ui_state["prompt_buf"] = ""
     menu._nav_stack = ["main"]
     canvas = _menu_canvas()
     vault_mgr = _mock_vault_mgr()
