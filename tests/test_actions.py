@@ -29,9 +29,35 @@ def test_app_make_targets_app_dir():
 
 def test_disk_guard_blocks_when_critical():
     fake = mock.Mock(percent_free=3.0, free=1, total=100)
-    with mock.patch.object(actions.hub_state, "get_disk_usage", return_value=fake), \
-         mock.patch.object(actions.prompts, "yesno", return_value=False):
+    with mock.patch.object(actions.hub_state, "get_disk_usage", return_value=fake):
         assert actions.disk_guard() is False
+
+
+def test_disk_guard_ok_when_low_but_not_critical():
+    fake = mock.Mock(percent_free=10.0, free=1, total=100)
+    with mock.patch.object(actions.hub_state, "get_disk_usage", return_value=fake):
+        assert actions.disk_guard() is True
+
+
+def test_disk_guard_ok_when_plenty():
+    fake = mock.Mock(percent_free=50.0, free=1, total=100)
+    with mock.patch.object(actions.hub_state, "get_disk_usage", return_value=fake):
+        assert actions.disk_guard() is True
+
+
+def test_remove_app_non_interactive(tmp_path, monkeypatch):
+    apps = tmp_path / "APPS"
+    (apps / "shop").mkdir(parents=True)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    console = mock.Mock()
+    with mock.patch.object(actions, "app_make") as am, \
+         mock.patch("tarfile.open"), \
+         mock.patch("shutil.move") as mv:
+        actions.action_remove_app(console, "shop", None, dry_run=False)
+    am.assert_called_once()
+    mv.assert_called_once()
+    assert not hasattr(actions, "prompts")
 
 
 def test_repo_name_from_url():

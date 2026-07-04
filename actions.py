@@ -12,7 +12,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from hubctl_cli import hub_state, prompts, utils, env_manager
+from hubctl_cli import hub_state, utils, env_manager
 
 APP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -93,8 +93,8 @@ def disk_guard(console=None) -> bool:
     d = hub_state.get_disk_usage()
     gb = d.free / 1024 ** 3
     if d.percent_free < 5:
-        con.print(f"[red]⚠ Espace critique : {d.percent_free}% libre ({gb:.1f} Go).[/red]")
-        return prompts.yesno("Forcer malgré l'espace critique ?", default=False) is True
+        con.print(f"[red]⚠ Espace critique : {d.percent_free}% libre ({gb:.1f} Go). Abandon.[/red]")
+        return False
     if d.percent_free < 15:
         con.print(f"[yellow]⚠ Espace faible : {d.percent_free}% libre ({gb:.1f} Go).[/yellow]")
     return True
@@ -368,12 +368,6 @@ def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
         f"[bold red]Suppression de « {app_name} »[/bold red] : "
         "sync du coffre + backup tar.gz, arrêt conteneur, mise en corbeille."
     )
-    keep = "Annuler"
-    go = f"Oui, supprimer « {app_name} » (vers la corbeille)"
-    choice = prompts.select(f"Confirmer la suppression de « {app_name} » ?", [keep, go])
-    if choice is prompts.ESC or choice is None or choice == keep:
-        console.print("[yellow]Annulé.[/yellow]")
-        return
 
     if vault is not None and not vault.is_locked:
         vault.sync(); vault.save()
