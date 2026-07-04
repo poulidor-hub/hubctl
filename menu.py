@@ -468,7 +468,7 @@ def view_apps(canvas: Canvas, state: dict) -> None:
         for a in hub_state.get_active_apps():
             size_mb = a.size_bytes / 1024 ** 2
             dirty = "M" if a.git_dirty else " "
-            lines.append(Text(f"  {a.name:20s}  v{a.version:12s}  [{dirty}]  {size_mb:5.0f} Mo"))
+            lines.append(Text(f"{a.name[:16]:16s} v{a.version[:6]:6s} {dirty} {size_mb:4.0f}M"))
         canvas.render(Text("\n").join(lines))
         pause(canvas)
 
