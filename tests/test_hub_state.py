@@ -32,3 +32,32 @@ def test_get_apps_lists_apps_dir(tmp_path, monkeypatch):
     assert len(result) == 1
     assert result[0].name == "demo"
     assert result[0].version == "1.2.3"
+
+
+def test_is_legacy_true_when_makefile_missing(tmp_path):
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    assert hub_state._is_legacy(tmp_path) is True
+
+
+def test_is_legacy_true_when_compose_missing(tmp_path):
+    (tmp_path / "Makefile").write_text("up:\n")
+    assert hub_state._is_legacy(tmp_path) is True
+
+
+def test_is_legacy_false_when_both_present(tmp_path):
+    (tmp_path / "Makefile").write_text("up:\n")
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    assert hub_state._is_legacy(tmp_path) is False
+
+
+def test_get_apps_sets_legacy_flag(tmp_path, monkeypatch):
+    apps = tmp_path / "APPS"
+    (apps / "compat").mkdir(parents=True)
+    (apps / "compat" / "Makefile").write_text("up:\n")
+    (apps / "compat" / "docker-compose.yml").write_text("services: {}\n")
+    (apps / "old").mkdir(parents=True)
+    monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
+    with mock.patch.object(hub_state, "_git_dirty", return_value=False), \
+         mock.patch.object(hub_state, "_dir_size", return_value=0):
+        result = {a.name: a.legacy for a in hub_state.get_apps()}
+    assert result == {"compat": False, "old": True}

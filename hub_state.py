@@ -35,6 +35,7 @@ class AppInfo:
     version: str
     git_dirty: bool
     size_bytes: int
+    legacy: bool = False
 
 
 @dataclass
@@ -88,6 +89,10 @@ def _dir_size(path: Path) -> int:
     return total
 
 
+def _is_legacy(path: Path) -> bool:
+    return not ((path / "Makefile").exists() and (path / "docker-compose.yml").exists())
+
+
 def get_apps() -> list[AppInfo]:
     apps_dir = PARC_ROOT / "APPS"
     if not apps_dir.exists():
@@ -99,6 +104,7 @@ def get_apps() -> list[AppInfo]:
         apps.append(AppInfo(
             name=d.name, path=d, version=_read_version(d),
             git_dirty=_git_dirty(d), size_bytes=_dir_size(d),
+            legacy=_is_legacy(d),
         ))
     return apps
 
@@ -114,6 +120,7 @@ def get_workshop_apps() -> list[AppInfo]:
         apps.append(AppInfo(
             name=d.name, path=d, version=_read_version(d),
             git_dirty=_git_dirty(d), size_bytes=_dir_size(d),
+            legacy=_is_legacy(d),
         ))
     return apps
 
