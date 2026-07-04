@@ -2,11 +2,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
-
-from hubctl_cli import env_manager
 
 PARC_ROOT = Path(__file__).resolve().parent.parent
 HUB_DIR = PARC_ROOT / "HUB_base"
@@ -46,6 +43,14 @@ class ServiceInfo:
     name: str
     state: str
     health: str
+
+
+@dataclass
+class AppStatus:
+    name: str
+    status: str
+    uptime: str
+    legacy: bool
 
 
 @dataclass
@@ -128,44 +133,63 @@ def get_workshop_apps() -> list[AppInfo]:
     return apps
 
 
-_api_status_cache: dict[str, tuple[str, float]] = {}
-_API_STATUS_TTL = 5.0
+def _norm(s: str) -> str:
+    return "".join(c for c in s.lower() if c.isalnum())
 
 
-def _probe_api(port: str) -> str:
-    url = f"http://localhost:{port}/api/health"
+def _docker_api_containers() -> dict[str, tuple[str, str]]:
     try:
-        r = subprocess.run(
-            ["curl", "-s", "--max-time", "1", "-o", "/dev/null", "-w", "%{http_code}", url],
-            capture_output=True, text=True, timeout=3,
+        out = subprocess.run(
+            ["docker", "ps", "-a", "--format", "json"],
+            capture_output=True, text=True, timeout=10,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-        return "stopped"
-    code = (r.stdout or "").strip()
-    if code.startswith("2"):
-        return "running"
-    if code == "000" or not code:
-        return "stopped"
-    return "warning"
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return {}
+    result: dict[str, tuple[str, str]] = {}
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        labels = item.get("Labels", "") or ""
+        label_map: dict[str, str] = {}
+        for kv in labels.split(","):
+            if "=" in kv:
+                k, _, v = kv.partition("=")
+                label_map[k.strip()] = v.strip()
+        if label_map.get("com.docker.compose.service") != "api":
+            continue
+        project = label_map.get("com.docker.compose.project", "")
+        if project:
+            result[_norm(project)] = (item.get("State", ""), item.get("Status", ""))
+    return result
 
 
-def app_api_status(app: AppInfo) -> str:
-    if app.legacy:
-        return "legacy"
-    now = time.monotonic()
-    cached = _api_status_cache.get(app.name)
-    if cached and now - cached[1] < _API_STATUS_TTL:
-        return cached[0]
-    env_path = app.path / ".env"
-    env = env_manager.read_env(env_path) if env_path.exists() else {}
-    port = env.get("API_PORT", "8000")
-    status = _probe_api(port)
-    _api_status_cache[app.name] = (status, now)
-    return status
-
-
-def get_apps_api_status() -> list[tuple[str, str]]:
-    return [(a.name, app_api_status(a)) for a in get_active_apps()]
+def get_apps_status() -> list[AppStatus]:
+    active_dir = WORKSHOP_DIR if _mode == "dev" else APPS_DIR
+    if not active_dir.exists():
+        return []
+    containers = _docker_api_containers()
+    rows: list[AppStatus] = []
+    for d in sorted(active_dir.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        if _is_legacy(d):
+            rows.append(AppStatus(d.name, "legacy", "—", True))
+            continue
+        c = containers.get(_norm(d.name))
+        if c is None:
+            rows.append(AppStatus(d.name, "stopped", "—", False))
+            continue
+        c_state, c_status = c
+        if c_state == "running":
+            rows.append(AppStatus(d.name, "running", c_status or "Up", False))
+        else:
+            rows.append(AppStatus(d.name, "stopped", c_status or "—", False))
+    return rows
 
 
 def get_hub_services() -> list[ServiceInfo]:
