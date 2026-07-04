@@ -185,7 +185,11 @@ def _build_resources(state: dict) -> Text:
 
     text.append("\n")
     apps = state.get("apps") or []
-    text.append(f"Apps : {len(apps)}", style="bold green")
+    legacy_count = sum(1 for a in apps if getattr(a, "legacy", False))
+    if legacy_count:
+        text.append(f"Apps : {len(apps)} ({legacy_count} legacy)", style="bold green")
+    else:
+        text.append(f"Apps : {len(apps)}", style="bold green")
 
     divs = state.get("_vault_divergences")
     if divs:
@@ -449,10 +453,22 @@ def choose_app(canvas: Canvas):
             canvas.render(Text(f"Aucune app dans {active_dir}/.", style="yellow"))
             pause(canvas)
             return None
-        choice = widgets.select(canvas, "Quelle app ?", [a.name for a in apps] + ["← Retour"])
+        disabled: set[str] = set()
+        labels: list[str] = []
+        label_to_name: dict[str, str] = {}
+        for a in apps:
+            if a.legacy:
+                lbl = f"{a.name} (legacy)"
+                disabled.add(lbl)
+            else:
+                lbl = a.name
+            labels.append(lbl)
+            label_to_name[lbl] = a.name
+        labels.append("← Retour")
+        choice = widgets.select(canvas, "Quelle app ?", labels, disabled=disabled)
         if choice is widgets.ESC or choice is None or choice == "← Retour":
             return None
-        return choice
+        return label_to_name.get(choice, choice)
 
 
 def view_apps(canvas: Canvas, state: dict) -> None:
@@ -468,7 +484,8 @@ def view_apps(canvas: Canvas, state: dict) -> None:
         for a in hub_state.get_active_apps():
             size_mb = a.size_bytes / 1024 ** 2
             dirty = "M" if a.git_dirty else " "
-            lines.append(Text(f"{a.name[:16]:16s} v{a.version[:6]:6s} {dirty} {size_mb:4.0f}M"))
+            tag = " ⚠legacy" if a.legacy else ""
+            lines.append(Text(f"{a.name[:16]:16s} v{a.version[:6]:6s} {dirty} {size_mb:4.0f}M{tag}"))
         canvas.render(Text("\n").join(lines))
         pause(canvas)
 

@@ -44,3 +44,23 @@ def test_install_layout_sets_four_builders():
     c.set_layout.assert_called_once()
     _, kwargs = c.set_layout.call_args
     assert {"z3_builder", "z1_builder", "z4_builder", "z2_builder"} <= set(kwargs)
+
+
+def test_build_resources_shows_legacy_count():
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+    apps = [
+        AppInfo("a", Path("."), "1", False, 0, legacy=False),
+        AppInfo("b", Path("."), "1", False, 0, legacy=True),
+    ]
+    text = menu._build_resources({"apps": apps}).plain
+    assert "Apps : 2 (1 legacy)" in text
+
+
+def test_build_resources_no_legacy_suffix_when_none():
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+    apps = [AppInfo("a", Path("."), "1", False, 0, legacy=False)]
+    text = menu._build_resources({"apps": apps}).plain
+    assert "Apps : 1" in text
+    assert "legacy" not in text
