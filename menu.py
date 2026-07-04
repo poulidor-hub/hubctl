@@ -226,6 +226,22 @@ def _build_services(state: dict) -> Text:
             text.append(badge)
             text.append("\n")
 
+    app_rows = hub_state.get_apps_api_status()
+    if app_rows:
+        text.append("\n")
+        text.append("[ APPS ]\n", style="bold blue")
+        badges = {
+            "running": ("green", "[ RUNNING ]"),
+            "stopped": ("red", "[ STOPPED ]"),
+            "warning": ("yellow", "[ WARNING ]"),
+            "legacy": ("bright_black", "[ LEGACY ]"),
+        }
+        for name, status in app_rows[:8]:
+            color, badge = badges.get(status, ("yellow", "[ ? ]"))
+            text.append(f"{name[:14]:<15s}", style=color)
+            text.append(badge, style=color)
+            text.append("\n")
+
     return text
 
 

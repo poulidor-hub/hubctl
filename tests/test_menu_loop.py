@@ -64,3 +64,12 @@ def test_build_resources_no_legacy_suffix_when_none():
     text = menu._build_resources({"apps": apps}).plain
     assert "Apps : 1" in text
     assert "legacy" not in text
+
+
+def test_build_services_lists_apps_with_api_status(monkeypatch):
+    monkeypatch.setattr(menu.hub_state, "get_apps_api_status",
+                        lambda: [("shop", "running"), ("old", "legacy")])
+    text = menu._build_services({"docker": True, "services": []}).plain
+    assert "APPS" in text
+    assert "shop" in text and "RUNNING" in text
+    assert "old" in text and "LEGACY" in text
