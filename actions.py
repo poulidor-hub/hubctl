@@ -376,7 +376,7 @@ def action_attach_app(console, app_name: str, *, dry_run: bool) -> None:
         utils.run_shell(["python", "INITIALISE.py"], cwd=str(path), dry_run=dry_run, console=con)
     con.print(f"[bold]→ Build de « {app_name} »[/bold]")
     rc = utils.run_shell(["docker", "compose", "-f", str(compose), "build"],
-                         cwd=str(path), dry_run=dry_run, console=con, timeout=120)
+                         cwd=str(path), dry_run=dry_run, console=con, timeout=600)
     if not dry_run and rc != 0:
         con.print("[red]✗ Build échoué[/red]")
         return
