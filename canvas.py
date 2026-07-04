@@ -45,6 +45,12 @@ def _make_col_sep(w1: int, w2: int, w3: int, left: str, tee: str, right: str) ->
     return left + "─" * w1 + tee + "─" * w2 + tee + "─" * w3 + right
 
 
+def clip_cell(t: Text, width: int) -> Text:
+    out = t.copy()
+    out.truncate(width, overflow="ellipsis")
+    return out
+
+
 class Canvas:
     def __init__(self, *, title: str = "HUBCTL · POULIDOR", target_cols: int = 100, target_rows: int = 30):
         self.title = title
@@ -156,9 +162,9 @@ class Canvas:
 
         middle = Text()
         for i in range(max_lines):
-            l_t = res_texts[i] if i < len(res_texts) else Text("")
-            c_t = svc_texts[i] if i < len(svc_texts) else Text("")
-            r_t = menu_texts[i] if i < len(menu_texts) else Text("")
+            l_t = clip_cell(res_texts[i] if i < len(res_texts) else Text(""), w1)
+            c_t = clip_cell(svc_texts[i] if i < len(svc_texts) else Text(""), w2)
+            r_t = clip_cell(menu_texts[i] if i < len(menu_texts) else Text(""), w3)
 
             l_plain = l_t.plain
             c_plain = c_t.plain
