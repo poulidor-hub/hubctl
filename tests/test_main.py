@@ -61,3 +61,24 @@ def test_keyboard_interrupt_during_intro_goes_to_menu():
         rc = m.main([])
     assert rc == 0
     ml.assert_called_once()
+
+
+def test_layout_installed_before_choose_mode():
+    fake_canvas = mock.Mock()
+    fake_canvas.is_too_small = False
+    order = []
+    with mock.patch.object(m, "_interactive", return_value=True), \
+         mock.patch.object(m, "Canvas", return_value=fake_canvas), \
+         mock.patch.object(m.animation, "play_intro"), \
+         mock.patch.object(m.animation, "preload_with_bar", return_value={}), \
+         mock.patch.object(m, "Vault"), \
+         mock.patch.object(m, "VaultManager"), \
+         mock.patch.object(m.menu, "install_layout",
+                           side_effect=lambda *a, **k: order.append("layout")), \
+         mock.patch.object(m.menu, "_choose_mode",
+                           side_effect=lambda *a, **k: order.append("mode") or "prod"), \
+         mock.patch.object(m.menu, "_offer_snapshot"), \
+         mock.patch.object(m.menu, "main_loop"):
+        rc = m.main(["--no-anim"])
+    assert rc == 0
+    assert order.index("layout") < order.index("mode")

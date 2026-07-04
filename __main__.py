@@ -99,6 +99,7 @@ def _run(args) -> int:
         vault_mgr = VaultManager(vault)
         if not hub_state.HUB_DIR.exists():
             menu._offer_init_fresh(canvas, dry_run=args.dry_run)
+        menu.install_layout(canvas, state)
         mode = menu._choose_mode(canvas, vault_mgr)
         hub_state.set_mode(mode)
         if mode == "dev" and hub_state.APPS_DIR.exists():
