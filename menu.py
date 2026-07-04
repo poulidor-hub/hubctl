@@ -1,6 +1,7 @@
 from __future__ import annotations
 import contextlib
 import sys
+import threading
 import time
 from collections import OrderedDict
 
@@ -1108,6 +1109,19 @@ def install_layout(canvas: Canvas, state: dict) -> None:
     )
 
 
+def _refresh_apps_status(state: dict) -> None:
+    try:
+        state["app_status"] = hub_state.get_apps_status()
+    except Exception:
+        pass
+
+
+def _apps_poll_worker(state: dict, stop_event: threading.Event, interval: float = 3.0) -> None:
+    while not stop_event.is_set():
+        _refresh_apps_status(state)
+        stop_event.wait(interval)
+
+
 def main_loop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> None:
     global _nav_stack, _vault_mgr
     _nav_stack = ["main"]
@@ -1124,44 +1138,53 @@ def main_loop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> None:
     install_layout(canvas, state)
     fd = sys.stdin.fileno()
 
+    stop_event = threading.Event()
+    poller = threading.Thread(
+        target=_apps_poll_worker, args=(state, stop_event), daemon=True
+    )
+    poller.start()
+
     selected = 0
     prev_nav: tuple | None = None
 
-    while True:
-        ctx = _current_context()
-        item_keys = list(ctx.keys())
-        nav_sig = tuple(_nav_stack)
-        if nav_sig != prev_nav:
-            selected = 0
-            prev_nav = nav_sig
-        if selected >= len(item_keys):
-            selected = 0
-
-        canvas.render(_build_menu_static(selected))
-
-        key = keys.read_key(fd, timeout=0.12)
-        if key is None:
-            continue
-
-        if isinstance(key, keys.KeyCtrlC):
-            raise KeyboardInterrupt()
-
-        if isinstance(key, keys.KeyUp):
-            selected = (selected - 1) % len(item_keys)
-        elif isinstance(key, keys.KeyDown):
-            selected = (selected + 1) % len(item_keys)
-        elif isinstance(key, keys.KeyEnter):
-            if _dispatch(item_keys[selected], canvas, state, vault_mgr, dry_run=dry_run):
-                return
-            selected = 0
-        elif isinstance(key, keys.KeyEsc):
-            if len(_nav_stack) > 1:
-                _nav_stack.pop()
+    try:
+        while True:
+            ctx = _current_context()
+            item_keys = list(ctx.keys())
+            nav_sig = tuple(_nav_stack)
+            if nav_sig != prev_nav:
                 selected = 0
-            else:
-                if widgets.confirm(canvas, "Quitter hubctl ?", default=False) is True:
-                    canvas.render(Text("À bientôt.", style="bold"))
+                prev_nav = nav_sig
+            if selected >= len(item_keys):
+                selected = 0
+
+            canvas.render(_build_menu_static(selected))
+
+            key = keys.read_key(fd, timeout=0.12)
+            if key is None:
+                continue
+
+            if isinstance(key, keys.KeyCtrlC):
+                raise KeyboardInterrupt()
+
+            if isinstance(key, keys.KeyUp):
+                selected = (selected - 1) % len(item_keys)
+            elif isinstance(key, keys.KeyDown):
+                selected = (selected + 1) % len(item_keys)
+            elif isinstance(key, keys.KeyEnter):
+                if _dispatch(item_keys[selected], canvas, state, vault_mgr, dry_run=dry_run):
                     return
-        elif isinstance(key, keys.KeyChar):
-            if key.char in item_keys:
-                selected = item_keys.index(key.char)
+                selected = 0
+            elif isinstance(key, keys.KeyEsc):
+                if len(_nav_stack) > 1:
+                    _nav_stack.pop()
+                    selected = 0
+                else:
+                    if widgets.confirm(canvas, "Quitter hubctl ?", default=False) is True:
+                        canvas.render(Text("À bientôt.", style="bold"))
+                        return
+            elif isinstance(key, keys.KeyChar):
+                if key.char in item_keys:
+                    selected = item_keys.index(key.char)
+    finally:
+        stop_event.set()

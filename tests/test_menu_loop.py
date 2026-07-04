@@ -94,3 +94,21 @@ def test_build_services_scrolls_window(monkeypatch):
         assert name in text
     assert "a0" not in text
     assert "a1" not in text
+
+
+def test_refresh_apps_status_updates_state(monkeypatch):
+    from hubctl_cli.hub_state import AppStatus
+    monkeypatch.setattr(menu.hub_state, "get_apps_status",
+                        lambda: [AppStatus("x", "running", "Up", False)])
+    state = {}
+    menu._refresh_apps_status(state)
+    assert state["app_status"][0].name == "x"
+
+
+def test_refresh_apps_status_swallows_errors(monkeypatch):
+    def boom():
+        raise RuntimeError("docker down")
+    monkeypatch.setattr(menu.hub_state, "get_apps_status", boom)
+    state = {"app_status": "keep"}
+    menu._refresh_apps_status(state)
+    assert state["app_status"] == "keep"
