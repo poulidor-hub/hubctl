@@ -14,6 +14,9 @@ from hubctl_cli.vault_manager import VaultManager
 _ACTION_CONSOLE = Console()
 _vault_mgr: VaultManager | None = None
 
+_APPS_WINDOW = 4
+_APPS_SCROLL_PERIOD = 2.0
+
 MENU_TREE: dict[str, OrderedDict] = {
     "apps": OrderedDict([
         ("1", ("Update app", "update_app")),
@@ -226,20 +229,30 @@ def _build_services(state: dict) -> Text:
             text.append(badge)
             text.append("\n")
 
-    app_rows = hub_state.get_apps_api_status()
-    if app_rows:
-        text.append("\n")
-        text.append("[ APPS ]\n", style="bold blue")
-        badges = {
-            "running": ("green", "[ RUNNING ]"),
-            "stopped": ("red", "[ STOPPED ]"),
-            "warning": ("yellow", "[ WARNING ]"),
-            "legacy": ("bright_black", "[ LEGACY ]"),
+    rows = state.get("app_status")
+    if rows is None:
+        text.append("\n[ APPS ]\n", style="bold blue")
+        text.append("  …\n", style="dim")
+    elif rows:
+        text.append("\n[ APPS ]\n", style="bold blue")
+        n = len(rows)
+        if n > _APPS_WINDOW:
+            offset = int(time.monotonic() / _APPS_SCROLL_PERIOD) % n
+            visible = (rows + rows)[offset:offset + _APPS_WINDOW]
+        else:
+            visible = rows
+        colors = {
+            "running": "green",
+            "stopped": "red",
+            "warning": "yellow",
+            "legacy": "bright_black",
         }
-        for name, status in app_rows[:8]:
-            color, badge = badges.get(status, ("yellow", "[ ? ]"))
-            text.append(f"{name[:14]:<15s}", style=color)
-            text.append(badge, style=color)
+        for r in visible:
+            color = colors.get(r.status, "yellow")
+            info = "legacy" if r.legacy else r.uptime
+            text.append("● ", style=color)
+            text.append(f"{r.name[:12]:<12} ", style=color)
+            text.append(info, style="dim")
             text.append("\n")
 
     return text

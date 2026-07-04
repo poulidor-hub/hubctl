@@ -66,10 +66,31 @@ def test_build_resources_no_legacy_suffix_when_none():
     assert "legacy" not in text
 
 
-def test_build_services_lists_apps_with_api_status(monkeypatch):
-    monkeypatch.setattr(menu.hub_state, "get_apps_api_status",
-                        lambda: [("shop", "running"), ("old", "legacy")])
-    text = menu._build_services({"docker": True, "services": []}).plain
+def test_build_services_reads_app_status_from_state():
+    from hubctl_cli.hub_state import AppStatus
+    rows = [
+        AppStatus("shop", "running", "Up 2h", False),
+        AppStatus("old", "legacy", "—", True),
+    ]
+    text = menu._build_services({"docker": True, "services": [], "app_status": rows}).plain
     assert "APPS" in text
-    assert "shop" in text and "RUNNING" in text
-    assert "old" in text and "LEGACY" in text
+    assert "shop" in text and "Up 2h" in text
+    assert "old" in text and "legacy" in text
+
+
+def test_build_services_does_not_probe(monkeypatch):
+    def boom():
+        raise AssertionError("get_apps_status must not be called from render")
+    monkeypatch.setattr(menu.hub_state, "get_apps_status", boom)
+    menu._build_services({"docker": True, "services": [], "app_status": []})
+
+
+def test_build_services_scrolls_window(monkeypatch):
+    from hubctl_cli.hub_state import AppStatus
+    rows = [AppStatus(f"a{i}", "running", "Up", False) for i in range(6)]
+    monkeypatch.setattr(menu.time, "monotonic", lambda: 4.0)
+    text = menu._build_services({"docker": True, "services": [], "app_status": rows}).plain
+    for name in ("a2", "a3", "a4", "a5"):
+        assert name in text
+    assert "a0" not in text
+    assert "a1" not in text
