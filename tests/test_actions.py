@@ -444,3 +444,58 @@ def test_workshop_move_slug_from_env(tmp_path):
 
     # Dry-run doesn't write files, so we only verify no crash
     assert (apps_dir / "exemple-app").exists()
+
+
+def test_attach_app_dev_targets_workshop(tmp_path, monkeypatch):
+    ws = tmp_path / "APP_Workshop"
+    (ws / "shop").mkdir(parents=True)
+    (ws / "shop" / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "WORKSHOP_DIR", ws)
+    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "dev")
+    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_attach_app(console, "shop", dry_run=False)
+    cmds = [c.args[0] for c in rs.call_args_list]
+    assert ["docker", "compose", "-f", str(ws / "shop" / "docker-compose.yml"), "build"] in cmds
+    assert ["docker", "compose", "-f", str(ws / "shop" / "docker-compose.yml"), "up", "-d"] in cmds
+
+
+def test_attach_app_prod_targets_apps(tmp_path, monkeypatch):
+    apps = tmp_path / "APPS"
+    (apps / "shop").mkdir(parents=True)
+    (apps / "shop" / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "prod")
+    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_attach_app(console, "shop", dry_run=False)
+    composes = [c.args[0][3] for c in rs.call_args_list if c.args[0][:2] == ["docker", "compose"]]
+    assert all(str(apps / "shop") in c for c in composes)
+
+
+def test_attach_app_aborts_without_compose(tmp_path, monkeypatch):
+    apps = tmp_path / "APPS"
+    (apps / "shop").mkdir(parents=True)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "prod")
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_attach_app(console, "shop", dry_run=False)
+    rs.assert_not_called()
+
+
+def test_attach_app_runs_initialise_when_present(tmp_path, monkeypatch):
+    apps = tmp_path / "APPS"
+    (apps / "shop").mkdir(parents=True)
+    (apps / "shop" / "docker-compose.yml").write_text("services: {}\n")
+    (apps / "shop" / "INITIALISE.py").write_text("print('init')\n")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "prod")
+    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_attach_app(console, "shop", dry_run=False)
+    cmds = [c.args[0] for c in rs.call_args_list]
+    assert ["python", "INITIALISE.py"] in cmds

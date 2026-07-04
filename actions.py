@@ -359,6 +359,36 @@ def action_add_app(console, url: str, *, dry_run: bool) -> None:
         )
 
 
+def action_attach_app(console, app_name: str, *, dry_run: bool) -> None:
+    con = console or _console
+    active_dir = hub_state.WORKSHOP_DIR if hub_state.get_mode() == "dev" else hub_state.APPS_DIR
+    path = active_dir / app_name
+    if not path.exists():
+        con.print(f"[red]✗ App introuvable : {path}[/red]")
+        return
+    compose = path / "docker-compose.yml"
+    if not compose.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {path}[/red]")
+        return
+    if not disk_guard(con):
+        return
+    if dry_run or (path / "INITIALISE.py").exists():
+        utils.run_shell(["python", "INITIALISE.py"], cwd=str(path), dry_run=dry_run, console=con)
+    con.print(f"[bold]→ Build de « {app_name} »[/bold]")
+    rc = utils.run_shell(["docker", "compose", "-f", str(compose), "build"],
+                         cwd=str(path), dry_run=dry_run, console=con, timeout=120)
+    if not dry_run and rc != 0:
+        con.print("[red]✗ Build échoué[/red]")
+        return
+    con.print(f"[bold]→ Démarrage de « {app_name} »[/bold]")
+    rc = utils.run_shell(["docker", "compose", "-f", str(compose), "up", "-d"],
+                         cwd=str(path), dry_run=dry_run, console=con, timeout=60)
+    if not dry_run and rc != 0:
+        con.print("[red]✗ Démarrage échoué[/red]")
+        return
+    con.print(f"[green]✓ « {app_name} » rattachée et démarrée[/green]")
+
+
 def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
     path = hub_state.APPS_DIR / app_name
     if not path.exists():
