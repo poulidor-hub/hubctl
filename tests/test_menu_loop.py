@@ -131,3 +131,46 @@ def test_exec_remove_app_aborts_when_declined(monkeypatch):
     result = menu._exec_remove_app(mock.Mock(), {}, None, dry_run=False)
     assert called == []
     assert result is False
+
+
+def test_exec_attach_app_lists_compatible_and_runs(monkeypatch):
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+    apps = [
+        AppInfo("shop", Path("."), "1", False, 0, legacy=False),
+        AppInfo("old", Path("."), "1", False, 0, legacy=True),
+    ]
+    monkeypatch.setattr(menu.hub_state, "get_active_apps", lambda: apps)
+    seen = {}
+
+    def fake_select(canvas, message, choices, **kw):
+        seen["choices"] = choices
+        return "shop"
+    monkeypatch.setattr(menu.widgets, "select", fake_select)
+    called = []
+    monkeypatch.setattr(menu, "_run_action", lambda *a, **k: called.append(a[1]) or True)
+    menu._exec_attach_app(mock.Mock(), {}, None, dry_run=False)
+    assert "shop" in seen["choices"]
+    assert "old" not in seen["choices"]
+    assert called
+
+
+def test_exec_attach_app_back_does_not_run(monkeypatch):
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+    monkeypatch.setattr(menu.hub_state, "get_active_apps",
+                        lambda: [AppInfo("shop", Path("."), "1", False, 0, legacy=False)])
+    monkeypatch.setattr(menu.widgets, "select", lambda *a, **k: "← Retour")
+    called = []
+    monkeypatch.setattr(menu, "_run_action", lambda *a, **k: called.append(1))
+    result = menu._exec_attach_app(mock.Mock(), {}, None, dry_run=False)
+    assert called == []
+    assert result is False
+
+
+def test_exec_add_app_attach_branch_dispatches(monkeypatch):
+    monkeypatch.setattr(menu.widgets, "select", lambda *a, **k: "Rattacher une app existante")
+    hit = []
+    monkeypatch.setattr(menu, "_exec_attach_app", lambda *a, **k: hit.append(1) or True)
+    menu._exec_add_app(mock.Mock(), {}, None, dry_run=False)
+    assert hit == [1]

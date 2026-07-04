@@ -925,13 +925,37 @@ def _exec_update_app(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -
 
 
 def _exec_add_app(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool, param: str = None) -> bool:
-    url = param
-    if url is None:
-        with _modal(canvas):
-            url = widgets.text(canvas, "URL git du dépôt :")
+    if param is not None:
+        return _run_action(canvas, "Ajout app", actions.action_add_app, _ACTION_CONSOLE, param.strip(), dry_run=dry_run)
+    with _modal(canvas):
+        mode = widgets.select(canvas, "Ajouter une app :", [
+            "Cloner depuis une URL git",
+            "Rattacher une app existante",
+            "← Retour",
+        ])
+    if mode is widgets.ESC or mode is None or mode == "← Retour":
+        return False
+    if mode == "Rattacher une app existante":
+        return _exec_attach_app(canvas, state, vault_mgr, dry_run=dry_run)
+    with _modal(canvas):
+        url = widgets.text(canvas, "URL git du dépôt :")
     if url is widgets.ESC or not url or not url.strip():
         return False
     return _run_action(canvas, "Ajout app", actions.action_add_app, _ACTION_CONSOLE, url.strip(), dry_run=dry_run)
+
+
+def _exec_attach_app(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> bool:
+    apps = [a for a in hub_state.get_active_apps() if not a.legacy]
+    active_dir = "APP_Workshop" if hub_state.get_mode() == "dev" else "APPS"
+    if not apps:
+        canvas.render(Text(f"Aucune app compatible dans {active_dir}/.", style="yellow"))
+        pause(canvas)
+        return False
+    with _modal(canvas):
+        choice = widgets.select(canvas, "Rattacher quelle app ?", [a.name for a in apps] + ["← Retour"])
+    if choice is widgets.ESC or choice is None or choice == "← Retour":
+        return False
+    return _run_action(canvas, f"Rattacher {choice}", actions.action_attach_app, _ACTION_CONSOLE, choice, dry_run=dry_run)
 
 
 def _exec_remove_app(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool, param: str = None) -> bool:
