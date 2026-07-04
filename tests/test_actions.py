@@ -131,14 +131,13 @@ def test_main_loop_ctrlc_at_menu_exits():
 
 def test_main_loop_action_returns_to_menu_after_action():
     from hubctl_cli import menu
-    menu._ui_state["prompt_buf"] = ""
     menu._nav_stack = ["main"]
     canvas = _menu_canvas()
     vault_mgr = _mock_vault_mgr()
 
     with mock.patch("sys.stdin.fileno", return_value=0), \
          mock.patch.object(menu.keys, "read_key",
-                           side_effect=[menu.keys.KeyChar("6"),
+                           side_effect=[menu.keys.KeyChar("3"),
                                         menu.keys.KeyEnter(),
                                         menu.keys.KeyChar("0"),
                                         menu.keys.KeyEnter()]), \
@@ -147,7 +146,7 @@ def test_main_loop_action_returns_to_menu_after_action():
         menu.main_loop(canvas, {"docker": False, "services": [], "apps": []},
                        vault_mgr, dry_run=True)
     assert dispatch_mock.call_count == 2
-    assert dispatch_mock.call_args_list[0].args[0] == "6"
+    assert dispatch_mock.call_args_list[0].args[0] == "3"
     assert dispatch_mock.call_args_list[1].args[0] == "0"
 
 

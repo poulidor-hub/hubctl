@@ -225,17 +225,13 @@ def _build_services(state: dict) -> Text:
     return text
 
 
-_ui_state = {"prompt_buf": "", "blink": False}
+_ui_state = {"hint": ""}
 
 
 def _build_logs() -> Text:
     text = Text()
     text.append("[ RECENT LOGS ]\n", style="bold blue")
     text.append("> Pas de logs récents.\n", style="dim")
-
-    buf = _ui_state["prompt_buf"]
-    cursor = "█" if _ui_state["blink"] else " "
-    text.append(f"\n root@hub:~# {buf}{cursor}", style="bold cyan")
     return text
 
 
@@ -274,21 +270,30 @@ def _build_config_menu() -> OrderedDict:
     return items
 
 
-def _build_menu_static() -> Text:
+def _build_menu_static(selected: int = 0) -> Text:
     ctx = _current_context()
     lines: list[Text] = []
 
     breadcrumb = " > ".join(_nav_stack)
-    lines.append(Text(f"[ {breadcrumb} ]\n\n", style="bold cyan"))
+    lines.append(Text(f"[ {breadcrumb} ]\n", style="bold cyan"))
 
-    for digit, (label, _target) in ctx.items():
-        short = label[:40]
+    for i, (digit, (label, _target)) in enumerate(ctx.items()):
+        short = label[:37]
         line = f"{digit}. {short}"
-        if digit == "0":
-            lines.append(Text(f"  {line}\n", style="bold red"))
+        if i == selected:
+            lines.append(Text(f" ▸ {line}", style="reverse"))
+        elif digit == "0":
+            lines.append(Text(f"   {line}", style="bold red"))
         else:
-            lines.append(Text(f"  {line}\n", style="bold white"))
-    return Text.assemble(*lines)
+            lines.append(Text(f"   {line}", style="bold white"))
+
+    lines.append(Text(""))
+    lines.append(widgets.key_hints([
+        (widgets.GLYPH_UPDN, "naviguer"),
+        (widgets.GLYPH_ENTER, "valider"),
+        (widgets.GLYPH_ESC, "quitter"),
+    ]))
+    return Text("\n").join(lines)
 
 
 def _build_empty_col() -> Text:
@@ -860,12 +865,7 @@ def _offer_init_fresh(canvas: Canvas, *, dry_run: bool) -> None:
 
 @contextlib.contextmanager
 def _modal(canvas: Canvas):
-    old = canvas._use_layout
-    canvas._use_layout = False
-    try:
-        yield
-    finally:
-        canvas._use_layout = old
+    yield
 
 
 # ── Unit action executors (reusable by dispatch + scenarios) ──
@@ -1053,6 +1053,15 @@ def _dispatch(buf: str, canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool
 
 # ── Main loop ──
 
+def install_layout(canvas: Canvas, state: dict) -> None:
+    canvas.set_layout(
+        z3_builder=lambda: _build_welcome(state),
+        z1_builder=lambda: _build_resources(state),
+        z4_builder=_build_logs,
+        z2_builder=lambda: _build_services(state),
+    )
+
+
 def main_loop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> None:
     global _nav_stack, _vault_mgr
     _nav_stack = ["main"]
@@ -1066,25 +1075,23 @@ def main_loop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> None:
         if divs:
             state["_vault_divergences"] = list(divs.values())
 
-    canvas.set_layout(
-        z3_builder=lambda: _build_welcome(state),
-        z1_builder=lambda: _build_resources(state),
-        z4_builder=_build_logs,
-        z2_builder=lambda: _build_services(state),
-    )
-
-    menu_static = _build_menu_static()
+    install_layout(canvas, state)
     fd = sys.stdin.fileno()
 
-    while True:
-        last_blink_toggle = getattr(main_loop, "_last_blink", 0.0)
-        now = time.monotonic()
-        if now - last_blink_toggle >= 0.5:
-            _ui_state["blink"] = not _ui_state["blink"]
-            main_loop._last_blink = now
+    selected = 0
+    prev_nav: tuple | None = None
 
-        menu_static = _build_menu_static()
-        canvas.render(menu_static)
+    while True:
+        ctx = _current_context()
+        item_keys = list(ctx.keys())
+        nav_sig = tuple(_nav_stack)
+        if nav_sig != prev_nav:
+            selected = 0
+            prev_nav = nav_sig
+        if selected >= len(item_keys):
+            selected = 0
+
+        canvas.render(_build_menu_static(selected))
 
         key = keys.read_key(fd, timeout=0.12)
         if key is None:
@@ -1093,29 +1100,22 @@ def main_loop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> None:
         if isinstance(key, keys.KeyCtrlC):
             raise KeyboardInterrupt()
 
-        if isinstance(key, keys.KeyEsc):
-            if _ui_state["prompt_buf"]:
-                _ui_state["prompt_buf"] = ""
-            elif len(_nav_stack) > 1:
+        if isinstance(key, keys.KeyUp):
+            selected = (selected - 1) % len(item_keys)
+        elif isinstance(key, keys.KeyDown):
+            selected = (selected + 1) % len(item_keys)
+        elif isinstance(key, keys.KeyEnter):
+            if _dispatch(item_keys[selected], canvas, state, vault_mgr, dry_run=dry_run):
+                return
+            selected = 0
+        elif isinstance(key, keys.KeyEsc):
+            if len(_nav_stack) > 1:
                 _nav_stack.pop()
+                selected = 0
             else:
                 if widgets.confirm(canvas, "Quitter hubctl ?", default=False) is True:
                     canvas.render(Text("À bientôt.", style="bold"))
                     return
-
-        elif isinstance(key, keys.KeyBackspace):
-            _ui_state["prompt_buf"] = _ui_state["prompt_buf"][:-1]
-
-        elif isinstance(key, keys.KeyEnter):
-            buf = _ui_state["prompt_buf"].strip()
-            _ui_state["prompt_buf"] = ""
-            if not buf:
-                continue
-            if buf in "0123456789":
-                if _dispatch(buf, canvas, state, vault_mgr, dry_run=dry_run):
-                    return
-
         elif isinstance(key, keys.KeyChar):
-            _ui_state["prompt_buf"] += key.char
-
-    main_loop._last_blink = 0.0
+            if key.char in item_keys:
+                selected = item_keys.index(key.char)
