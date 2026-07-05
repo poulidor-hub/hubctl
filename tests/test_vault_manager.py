@@ -44,6 +44,28 @@ def test_export_recovery_writes_tree_only_under_recovery(tmp_path, monkeypatch):
     assert not (tmp_path / "HUB_base" / ".env").exists()
 
 
+def test_backup_all_captures_service_accounts_subtree(tmp_path, monkeypatch):
+    """Le coffre doit capturer récursément HUB_base/secrets/, y compris
+    service_accounts/ (credentials SA par app)."""
+    mgr = _setup(tmp_path, monkeypatch)
+    sa = tmp_path / "HUB_base" / "secrets" / "service_accounts" / "sa_demo.env"
+    sa.parent.mkdir(parents=True)
+    sa.write_text("SA_TOKEN=xyz\n")
+    summary = mgr.backup_all()
+    assert mgr.vault.get_file("HUB_base/secrets/service_accounts/sa_demo.env") == b"SA_TOKEN=xyz\n"
+    assert summary["files"] >= 2
+
+
+def test_export_recovery_reproduces_service_accounts_subtree(tmp_path, monkeypatch):
+    mgr = _setup(tmp_path, monkeypatch)
+    sa = tmp_path / "HUB_base" / "secrets" / "service_accounts" / "sa_demo.env"
+    sa.parent.mkdir(parents=True)
+    sa.write_text("SA_TOKEN=xyz\n")
+    mgr.backup_all()
+    dest = mgr.export_recovery()
+    assert (dest / "HUB_base" / "secrets" / "service_accounts" / "sa_demo.env").read_text() == "SA_TOKEN=xyz\n"
+
+
 def test_managed_api_removed():
     for attr in ("push_env", "pull_env", "auto_import_missing", "toggle_managed", "managed_env"):
         assert not hasattr(VaultManager, attr)

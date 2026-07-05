@@ -27,9 +27,6 @@ HUB_DB_USER = "hubadmin"
 HUB_DB_NAME = "hub_auth"
 
 HUB_SECRETS_DIR = HUB_DIR / "secrets"
-HUB_JWT_PRIVATE = HUB_SECRETS_DIR / "jwt_private.pem"
-HUB_JWT_PUBLIC = HUB_SECRETS_DIR / "jwt_public.pem"
-HUB_FERNET_KEY = HUB_DIR / ".fernet_key"
 
 
 def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -101,17 +98,26 @@ def _collect_hub_env() -> Optional[Path]:
 
 
 def _collect_hub_secrets(work_dir: Path) -> list[Path]:
-    """Copie les secrets Hub dans le dossier de travail."""
-    secrets = []
+    """Copie récursivement tous les secrets Hub dans le dossier de travail.
+
+    Capture l'intégralité de HUB_base/secrets/ (clés JWT, clés de backup,
+    service_accounts/) en préservant l'arborescence relative. La clé fernet
+    vit dans .env (SECRETS_ENCRYPTION_KEY), déjà exportée séparément.
+    """
     dest = work_dir / "secrets"
-    dest.mkdir(exist_ok=True)
-
-    for src in [HUB_JWT_PRIVATE, HUB_JWT_PUBLIC, HUB_FERNET_KEY]:
-        if src.exists():
-            shutil.copy2(src, dest / src.name)
-            secrets.append(dest / src.name)
-
-    return secrets
+    dest.mkdir(parents=True, exist_ok=True)
+    collected: list[Path] = []
+    if not HUB_SECRETS_DIR.exists():
+        return collected
+    for src in sorted(HUB_SECRETS_DIR.rglob("*")):
+        if not src.is_file() or src.is_symlink():
+            continue
+        rel = src.relative_to(HUB_SECRETS_DIR)
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
+        collected.append(target)
+    return collected
 
 
 def export_park(app_slug: Optional[str] = None) -> Path:

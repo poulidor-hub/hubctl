@@ -89,6 +89,29 @@ def _restore_pgdump(container: str, user: str, db: str, dump_path: Path) -> bool
         return False
 
 
+def _restore_tree(src: Path, dest: Path) -> list[tuple[str, bool]]:
+    """Copie récursivement src/* vers dest/ sans écraser les fichiers existants.
+
+    Retourne la liste (relpath, created) pour journalisation. Crée dest si absent.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    report: list[tuple[str, bool]] = []
+    if not src.exists():
+        return report
+    for f in sorted(src.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(src)
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            report.append((rel.as_posix(), False))
+        else:
+            shutil.copy2(f, target)
+            report.append((rel.as_posix(), True))
+    return report
+
+
 def restore_park(archive_path: str) -> bool:
     """
     Restaure tout le parc depuis une archive park-export.
@@ -130,13 +153,10 @@ def restore_park(archive_path: str) -> bool:
         hub_secrets_dest.mkdir(exist_ok=True)
         if secrets_dir.exists():
             print("🔐 Restauration secrets Hub...")
-            for secret_file in secrets_dir.iterdir():
-                dest = hub_secrets_dest / secret_file.name
-                if not dest.exists():
-                    shutil.copy2(secret_file, dest)
-                    print(f"  ✅ {secret_file.name}")
-                else:
-                    print(f"  ⚠️  {secret_file.name} existe déjà, ignoré")
+            for rel, created in _restore_tree(secrets_dir, hub_secrets_dest):
+                mark = "✅" if created else "⚠️"
+                suffix = "" if created else " existe déjà, ignoré"
+                print(f"  {mark} {rel}{suffix}")
 
         # ── Hub .env (avant compose up) ──
         hub_env = work / "envs" / "HUB_base.env"

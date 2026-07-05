@@ -37,13 +37,14 @@ class VaultManager:
         files = 0
         secrets_dir = hub_state.HUB_DIR / "secrets"
         if secrets_dir.exists():
-            for f in sorted(secrets_dir.iterdir()):
-                if f.is_file():
-                    rel = f.relative_to(hub_state.PARC_ROOT).as_posix()
-                    self.vault.set_file(rel, f.read_bytes())
-                    files += 1
-                    if on_log:
-                        on_log(f"[vault] backup {rel}")
+            for f in sorted(secrets_dir.rglob("*")):
+                if not f.is_file() or f.is_symlink():
+                    continue
+                rel = f.relative_to(hub_state.PARC_ROOT).as_posix()
+                self.vault.set_file(rel, f.read_bytes())
+                files += 1
+                if on_log:
+                    on_log(f"[vault] backup {rel}")
         self.vault.save()
         env_count = sum(1 for k in self.vault.list_entries() if not k.startswith("__"))
         return {"env": env_count, "files": files}
