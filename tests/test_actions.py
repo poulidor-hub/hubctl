@@ -95,7 +95,6 @@ def _menu_canvas():
 
 def _mock_vault_mgr():
     mgr = mock.MagicMock()
-    mgr.managed_env = False
     mgr.vault = mock.MagicMock()
     mgr.vault.is_locked = True
     return mgr

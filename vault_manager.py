@@ -64,14 +64,18 @@ class VaultManager:
                 rel = Path("APP_Workshop") / entry[3:] / ".env"
             else:
                 continue
-            out = dest / rel
+            out = (dest / rel).resolve()
+            if not out.is_relative_to(dest.resolve()):
+                continue
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("".join(f"{k}={v}\n" for k, v in data.items()))
         for rel in self.vault.list_files():
             raw = self.vault.get_file(rel)
             if raw is None:
                 continue
-            out = dest / rel
+            out = (dest / rel).resolve()
+            if not out.is_relative_to(dest.resolve()):
+                continue
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(raw)
         return dest
