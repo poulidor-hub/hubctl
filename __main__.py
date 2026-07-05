@@ -102,6 +102,7 @@ def _run(args) -> int:
         menu.install_layout(canvas, state)
         mode = menu._choose_mode(canvas, vault_mgr)
         hub_state.set_mode(mode)
+        menu._require_vault(canvas, vault_mgr)
         if mode == "dev" and hub_state.APPS_DIR.exists():
             menu._offer_snapshot(canvas, vault_mgr, dry_run=args.dry_run)
         menu.main_loop(canvas, state, vault_mgr, dry_run=args.dry_run)

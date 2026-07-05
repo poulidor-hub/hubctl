@@ -56,6 +56,7 @@ def test_keyboard_interrupt_during_intro_goes_to_menu():
          mock.patch.object(m, "Vault"), \
          mock.patch.object(m, "VaultManager"), \
          mock.patch.object(m.menu, "_choose_mode", return_value="prod"), \
+         mock.patch.object(m.menu, "_require_vault"), \
          mock.patch.object(m.menu, "_offer_snapshot"), \
          mock.patch.object(m.menu, "main_loop") as ml:
         rc = m.main([])
@@ -75,10 +76,42 @@ def test_layout_installed_before_choose_mode():
          mock.patch.object(m, "VaultManager"), \
          mock.patch.object(m.menu, "install_layout",
                            side_effect=lambda *a, **k: order.append("layout")), \
-         mock.patch.object(m.menu, "_choose_mode",
-                           side_effect=lambda *a, **k: order.append("mode") or "prod"), \
-         mock.patch.object(m.menu, "_offer_snapshot"), \
-         mock.patch.object(m.menu, "main_loop"):
+          mock.patch.object(m.menu, "_choose_mode",
+                            side_effect=lambda *a, **k: order.append("mode") or "prod"), \
+          mock.patch.object(m.menu, "_require_vault"), \
+          mock.patch.object(m.menu, "_offer_snapshot"), \
+          mock.patch.object(m.menu, "main_loop"):
         rc = m.main(["--no-anim"])
     assert rc == 0
     assert order.index("layout") < order.index("mode")
+
+
+def test_require_vault_existing_prompts_and_backs_up(monkeypatch):
+    from unittest import mock
+    from hubctl_cli import menu
+    canvas = mock.Mock()
+    vault = mock.Mock()
+    vault.path.exists.return_value = True
+    vault.unlock.return_value = True
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.backup_all.return_value = {"env": 1, "files": 1}
+    monkeypatch.setattr(menu.widgets, "password", lambda *a, **k: "pw")
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+    menu._require_vault(canvas, vault_mgr)
+    vault.unlock.assert_called_once_with("pw")
+    vault_mgr.backup_all.assert_called_once()
+
+
+def test_require_vault_creates_when_absent(monkeypatch):
+    from unittest import mock
+    from hubctl_cli import menu
+    canvas = mock.Mock()
+    vault = mock.Mock()
+    vault.path.exists.return_value = False
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
+    monkeypatch.setattr(menu.widgets, "password", lambda *a, **k: "newpw")
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+    menu._require_vault(canvas, vault_mgr)
+    vault.unlock.assert_called_once_with("newpw")
+    vault_mgr.backup_all.assert_called_once()

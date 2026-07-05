@@ -639,62 +639,7 @@ def _choose_target(canvas: Canvas):
 
 # ── Actions ──
 
-def _vault_target(fn, args: tuple) -> str | None:
-    if _vault_mgr is None or not _vault_mgr.managed_env:
-        return None
-    if fn is actions.action_update:
-        t = args[1] if len(args) > 1 else None
-        return "hub" if t == "hub" else f"app:{t}" if t else None
-    if fn is actions.action_start_stop:
-        return "hub"
-    if fn is actions.action_repair:
-        return "hub"
-    if fn is actions.action_logs:
-        t = args[1] if len(args) > 1 else None
-        return "hub" if t == "hub" else f"app:{t}" if t else None
-    if fn is actions.action_add_app:
-        url = args[1] if len(args) > 1 else ""
-        name = actions.repo_name_from_url(url) if url else None
-        return f"app:{name}" if name else None
-    if fn is actions.action_remove_app:
-        return f"app:{args[1]}" if len(args) > 1 else None
-    if fn is actions.action_workshop_move:
-        app_name = args[2] if len(args) > 2 else None
-        direction = args[1] if len(args) > 1 else ""
-        if direction == "to_workshop":
-            return f"app:{app_name}" if app_name else None
-        else:
-            return f"ws:{app_name}" if app_name else None
-    if fn is actions.action_init:
-        return "hub"
-    return None
-
-
-def _vault_pull_target(fn, args: tuple) -> str | None:
-    if _vault_mgr is None or not _vault_mgr.managed_env:
-        return None
-    if fn is actions.action_workshop_move:
-        app_name = args[2] if len(args) > 2 else None
-        direction = args[1] if len(args) > 1 else ""
-        if direction == "to_workshop":
-            return f"ws:{app_name}-ws" if app_name else None
-        else:
-            base = app_name[:-3] if app_name and app_name.endswith("-ws") else app_name
-            return f"app:{base}" if base else None
-    return _vault_target(fn, args)
-
-
 def _run_action(canvas: Canvas, label: str, fn, *args, **kw) -> bool:
-    target = _vault_target(fn, args)
-    pull_target = _vault_pull_target(fn, args)
-    log_lines: list[str] = []
-
-    def on_log(line: str) -> None:
-        log_lines.append(line)
-
-    if target and _vault_mgr:
-        _vault_mgr.push_env(target, on_log=on_log)
-
     def runner() -> int:
         try:
             fn(*args, **kw)
@@ -706,12 +651,6 @@ def _run_action(canvas: Canvas, label: str, fn, *args, **kw) -> bool:
 
     retcode, cancelled = canvas.stream_command(runner, label=label)
     success = not cancelled and retcode == 0
-
-    if target and _vault_mgr and success:
-        actual_pull = pull_target if pull_target else target
-        _vault_mgr.pull_env(actual_pull, on_log=on_log)
-        _vault_mgr.vault.save()
-
     canvas.render(Text(f"{'✓' if success else '✗'} {label}", style="green" if success else "red"))
     pause(canvas)
     return success
@@ -789,18 +728,52 @@ def _workshop_move_one(canvas: Canvas, app_name: str, direction: str, vault_mgr,
     )
 
 
+def _require_vault(canvas: Canvas, vault_mgr) -> None:
+    vault = vault_mgr.vault if vault_mgr else None
+    if vault is None:
+        return
+    with _modal(canvas):
+        if vault.path.exists():
+            canvas.render(Text("🔐 Coffre — passphrase obligatoire.", style="bold cyan"))
+            while True:
+                pw = widgets.password(canvas, "Passphrase du coffre :")
+                if pw is widgets.ESC or pw is None:
+                    canvas.render(Text("À bientôt.", style="bold"))
+                    raise SystemExit(0)
+                if pw and vault.unlock(pw):
+                    break
+                canvas.render(Text("Passphrase incorrecte.", style="red"))
+                pause(canvas)
+        else:
+            canvas.render(Text(
+                "🔐 Création du coffre (obligatoire)\n\n"
+                "Cette passphrase protège et sauvegarde tous les secrets du parc.\n"
+                "⚠️  IRRÉCUPÉRABLE SI PERDUE.", style="bold cyan"))
+            while True:
+                pw = widgets.password(canvas, "Nouvelle passphrase du coffre :")
+                if pw is widgets.ESC or pw is None:
+                    canvas.render(Text("À bientôt.", style="bold"))
+                    raise SystemExit(0)
+                if pw:
+                    vault.unlock(pw)
+                    break
+                canvas.render(Text("Passphrase vide — recommence.", style="red"))
+                pause(canvas)
+    if vault_mgr:
+        summary = vault_mgr.backup_all()
+        canvas.render(Text(
+            f"✓ Coffre prêt — sauvegarde : {summary['env']} .env, {summary['files']} fichiers.",
+            style="bold green"))
+        pause(canvas)
+
+
 def _choose_mode(canvas: Canvas, vault_mgr) -> str:
     with _modal(canvas):
         lines = [
             Text("          Choisis le mode de travail :\n\n", style="bold cyan"),
-            Text("  1. PRODUCTION\n", style="bold green"),
-            Text("      · Apps actives : APPS/\n", style="dim"),
-            Text("      · Coffre : OBLIGATOIRE\n", style="dim"),
-            Text("      · Les .env sont gérés par le coffre\n\n", style="dim"),
-            Text("  2. DÉVELOPPEMENT\n", style="bold yellow"),
-            Text("      · Apps actives : APP_Workshop/\n", style="dim"),
-            Text("      · Coffre : optionnel (Échap pour ignorer)\n", style="dim"),
-            Text("      · Les .env ne sont jamais modifiés\n\n", style="dim"),
+            Text("  1. PRODUCTION — apps actives : APPS/\n", style="bold green"),
+            Text("  2. DÉVELOPPEMENT — apps actives : APP_Workshop/\n\n", style="bold yellow"),
+            Text("  (Le coffre est obligatoire dans les deux cas.)\n", style="dim"),
             Text("  Échap — Quitter", style="dim"),
         ]
         canvas.render(Text.assemble(*lines))
@@ -810,82 +783,12 @@ def _choose_mode(canvas: Canvas, vault_mgr) -> str:
             if k is None:
                 continue
             if isinstance(k, keys.KeyChar) and k.char == "1":
-                return _choose_prod(canvas, vault_mgr)
+                return "prod"
             if isinstance(k, keys.KeyChar) and k.char == "2":
-                return _choose_dev(canvas, vault_mgr)
+                return "dev"
             if isinstance(k, (keys.KeyEsc, keys.KeyCtrlC)):
                 canvas.render(Text("À bientôt.", style="bold"))
                 raise SystemExit(0)
-
-
-def _choose_prod(canvas: Canvas, vault_mgr) -> str:
-    vault = vault_mgr.vault if vault_mgr else None
-    if vault is None or vault.is_locked:
-        if vault and vault.path.exists():
-            canvas.render(Text("🔐 PRODUCTION — le coffre est obligatoire.\nEntre ta passphrase :", style="bold cyan"))
-            pw = widgets.password(canvas, "Passphrase du coffre :")
-            if pw is widgets.ESC or pw is None or not pw:
-                canvas.render(Text("Coffre obligatoire en PROD. Retour au choix du mode.", style="red"))
-                pause(canvas)
-                return _choose_mode(canvas, vault_mgr)
-            if not vault.unlock(pw):
-                canvas.render(Text("Passphrase incorrecte.", style="red"))
-                pause(canvas)
-                return _choose_mode(canvas, vault_mgr)
-            canvas.render(Text("✓ Coffre déverrouillé — mode PRODUCTION activé.", style="bold green"))
-        else:
-            canvas.render(Text("🔐 Crée d'abord un coffre.\nEntre une passphrase :", style="bold cyan"))
-            pw = widgets.password(canvas, "Passphrase du coffre :")
-            if pw is widgets.ESC or pw is None or not pw:
-                canvas.render(Text("Coffre obligatoire en PROD. Retour au choix du mode.", style="red"))
-                pause(canvas)
-                return _choose_mode(canvas, vault_mgr)
-            if vault.unlock(pw):
-                vault.sync()
-                vault.save()
-                canvas.render(Text("✓ Coffre créé — mode PRODUCTION activé.", style="bold green"))
-    pause(canvas)
-    return "prod"
-
-
-def _choose_dev(canvas: Canvas, vault_mgr) -> str:
-    vault = vault_mgr.vault if vault_mgr else None
-    if vault and vault.path.exists() and vault.is_locked:
-        canvas.render(Text("🔐 DEV — coffre optionnel.\nEntre ta passphrase ou Échap pour ignorer.", style="bold cyan"))
-        pw = widgets.password(canvas, "Passphrase (Échap=ignorer) :")
-        if pw is widgets.ESC or pw is None:
-            canvas.render(Text("Coffre ignoré — mode DÉVELOPPEMENT activé.", style="bold yellow"))
-        elif vault.unlock(pw):
-            canvas.render(Text("✓ Coffre déverrouillé — mode DÉVELOPPEMENT activé.", style="bold yellow"))
-        else:
-            canvas.render(Text("Passphrase incorrecte — coffre ignoré.", style="yellow"))
-    elif vault and not vault.path.exists():
-        canvas.render(Text("Aucun coffre trouvé — mode DÉVELOPPEMENT activé.", style="bold yellow"))
-    pause(canvas)
-    return "dev"
-
-
-def _init_vault(canvas: Canvas, vault) -> None:
-    with _modal(canvas):
-        canvas.render(Text(
-            "🔐 Création du coffre chiffré\n\n"
-            "Cette passphrase protège tous les secrets du parc.\n"
-            "⚠️  ELLE EST IRRÉCUPÉRABLE SI PERDUE.\n"
-            "   Sans elle, le contenu du coffre est définitivement inaccessible.\n"
-            "   (Les .env sur disque restent lisibles — seul le coffre est verrouillé.)\n\n"
-            "Choisis une passphrase forte et conserve-la en lieu sûr.",
-            style="bold cyan"
-        ))
-        pw = widgets.password(canvas, "Passphrase du coffre :")
-        if pw is widgets.ESC or pw is None or not pw:
-            canvas.render(Text("Coffre non créé — tu pourras le faire plus tard dans Config → Coffre.", style="yellow"))
-            pause(canvas)
-            return
-        if vault.unlock(pw):
-            vault.sync()
-            vault.save()
-            canvas.render(Text("✓ Coffre créé et synchronisé.", style="bold green"))
-            pause(canvas)
 
 
 def _offer_init_fresh(canvas: Canvas, *, dry_run: bool) -> None:
@@ -1155,9 +1058,6 @@ def main_loop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> None:
     _vault_mgr = vault_mgr
 
     if vault_mgr is not None:
-        imported = vault_mgr.auto_import_missing()
-        if imported:
-            state["_vault_imported"] = imported
         divs = vault_mgr.check_divergence()
         if divs:
             state["_vault_divergences"] = list(divs.values())
