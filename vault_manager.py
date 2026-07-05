@@ -1,4 +1,6 @@
 from __future__ import annotations
+import base64
+import datetime
 import hashlib
 from pathlib import Path
 
@@ -28,75 +30,51 @@ class VaultManager:
     def __init__(self, vault: Vault):
         self.vault = vault
 
-    @property
-    def managed_env(self) -> bool:
-        from hubctl_cli import hub_state as hs
-        if self.vault.is_locked:
-            return False
-        data = self.vault._data
-        if data is None:
-            return False
-        meta = data.get("__meta__", {})
-        if "managed_env" in meta:
-            return bool(meta["managed_env"])
-        if hs.get_mode() == "dev":
-            return False
-        hub_env = data.get("hub", {})
-        return hub_env.get("APP_ENV", "").lower() != "development"
-
-    def toggle_managed(self) -> bool:
-        if self.vault.is_locked:
-            return False
-        meta = self.vault._data.setdefault("__meta__", {})
-        meta["managed_env"] = not self.managed_env
+    def backup_all(self, *, on_log=None) -> dict:
+        if self.vault.is_locked or self.vault._data is None:
+            return {"env": 0, "files": 0}
+        self.vault.sync()
+        files = 0
+        secrets_dir = hub_state.HUB_DIR / "secrets"
+        if secrets_dir.exists():
+            for f in sorted(secrets_dir.iterdir()):
+                if f.is_file():
+                    rel = f.relative_to(hub_state.PARC_ROOT).as_posix()
+                    self.vault.set_file(rel, f.read_bytes())
+                    files += 1
+                    if on_log:
+                        on_log(f"[vault] backup {rel}")
         self.vault.save()
-        return meta["managed_env"]
+        env_count = sum(1 for k in self.vault.list_entries() if not k.startswith("__"))
+        return {"env": env_count, "files": files}
 
-    def push_env(self, target: str, *, on_log=None) -> bool:
-        if self.vault.is_locked or self.vault._data is None:
-            return False
-        disk_path = _target_path(target)
-        if disk_path is None:
-            return False
-        data = self.vault.get_entry(target)
-        if not data:
-            return False
-
-        env_manager.backup_env(disk_path)
-
-        disk_path.parent.mkdir(parents=True, exist_ok=True)
-        env_manager.write_env(disk_path, dict(data))
-
-        if on_log:
-            on_log(f"[vault] push {target} → {disk_path}")
-        return True
-
-    def pull_env(self, target: str, *, on_log=None) -> bool:
-        if self.vault.is_locked or self.vault._data is None:
-            return False
-        disk_path = _target_path(target)
-        if disk_path is None or not disk_path.exists():
-            return False
-        disk_data = env_manager.read_env(disk_path)
-        if not disk_data:
-            return False
-
-        self.vault.set_entry(target, disk_data)
-
-        if on_log:
-            on_log(f"[vault] pull {disk_path} → {target}")
-        return True
-
-    def auto_import_missing(self, *, on_log=None) -> int:
-        if self.vault.is_locked or self.vault._data is None:
-            return 0
-        count = 0
-        for target in self._list_disk_targets():
-            if target not in self.vault._data:
-                if self.pull_env(target, on_log=on_log):
-                    count += 1
-        self.vault.save()
-        return count
+    def export_recovery(self) -> "Path":
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = hub_state.PARC_ROOT / "hubctl_cli" / "recovery" / stamp
+        dest.mkdir(parents=True, exist_ok=True)
+        for entry in self.vault.list_entries():
+            if entry.startswith("__"):
+                continue
+            data = self.vault.get_entry(entry)
+            if entry == "hub":
+                rel = Path("HUB_base") / ".env"
+            elif entry.startswith("app:"):
+                rel = Path("APPS") / entry[4:] / ".env"
+            elif entry.startswith("ws:"):
+                rel = Path("APP_Workshop") / entry[3:] / ".env"
+            else:
+                continue
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("".join(f"{k}={v}\n" for k, v in data.items()))
+        for rel in self.vault.list_files():
+            raw = self.vault.get_file(rel)
+            if raw is None:
+                continue
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(raw)
+        return dest
 
     def check_divergence(self) -> dict[str, str]:
         if self.vault.is_locked or self.vault._data is None:
