@@ -18,22 +18,6 @@ def read_env(path: Path) -> dict[str, str]:
     return result
 
 
-def backup_env(path: Path) -> Path | None:
-    if not path.exists():
-        return None
-    bak = path.with_suffix(path.suffix + ".bak")
-    bak.write_text(path.read_text())
-    return bak
-
-
-def restore_env(path: Path) -> bool:
-    bak = path.with_suffix(path.suffix + ".bak")
-    if not bak.exists():
-        return False
-    bak.rename(path)
-    return True
-
-
 def write_env(path: Path, updates: dict[str, str]) -> None:
     if not path.exists():
         lines = [f"{k}={v}" for k, v in updates.items()]

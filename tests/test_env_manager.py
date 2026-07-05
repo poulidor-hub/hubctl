@@ -71,6 +71,12 @@ def test_env_defaults_development():
     assert d["HUB_HTTPS_ENABLED"] == "false"
 
 
+def test_backup_restore_removed():
+    from hubctl_cli import env_manager
+    assert not hasattr(env_manager, "backup_env")
+    assert not hasattr(env_manager, "restore_env")
+
+
 def _write_temp(content: str) -> Path:
     f = tempfile.NamedTemporaryFile(mode="w", suffix=".env", delete=False)
     f.write(content)
