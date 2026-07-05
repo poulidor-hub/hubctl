@@ -13,7 +13,7 @@ Menu interactif pour piloter le hub POULIDOR depuis le serveur : intro animée
 ```
 
 Au premier lancement, le launcher crée le venv `hubctl_cli/.venv` et installe
-`rich`, `questionary`, `cryptography`. En l'absence de terminal interactif (pipe,
+`rich` et `cryptography`. En l'absence de terminal interactif (pipe,
 cron, SSH non interactif), `hubctl` affiche l'état du hub puis quitte (le menu
 requiert un TTY).
 

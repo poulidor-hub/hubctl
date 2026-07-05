@@ -53,11 +53,14 @@ def _run(args) -> int:
 
     # Commandes non-interactives (pas de TUI)
     if args.command == "park-export":
-        export_park(app_slug=args.app)
-        return 0
+        try:
+            export_park(app_slug=args.app)
+            return 0
+        except Exception as e:
+            print(f"❌ park-export a échoué : {e}")
+            return 1
     if args.command == "park-restore":
-        restore_park(args.archive)
-        return 0
+        return 0 if restore_park(args.archive) else 1
 
     skip_anim = args.no_anim or not interactive
 

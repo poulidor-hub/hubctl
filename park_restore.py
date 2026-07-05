@@ -31,10 +31,11 @@ def _check_hub_is_empty() -> bool:
     # Vérifier si le conteneur existe
     result = _run(["docker", "ps", "-a", "--filter", f"name={HUB_DB_CONTAINER}",
                    "--format", "{{.Status}}"], check=False)
-    if HUB_DB_CONTAINER not in result.stdout:
+    status = result.stdout.strip()
+    if HUB_DB_CONTAINER not in result.stdout or not status:
         return True  # Pas de conteneur → vide
 
-    if "Up" in result.stdout:
+    if status.startswith("Up"):
         # Conteneur tourne, vérifier s'il y a des données
         try:
             r = _run(["docker", "exec", HUB_DB_CONTAINER,
@@ -49,7 +50,22 @@ def _check_hub_is_empty() -> bool:
         except Exception:
             pass
 
+    # Conteneur arrêté : on ne peut pas interroger la DB → on suppose vierge.
     return True
+
+
+def _wait_db_ready(container: str, timeout: int = 90) -> bool:
+    """Attend que le conteneur Postgres accepte les connexions."""
+    import time
+    elapsed = 0
+    while elapsed < timeout:
+        r = _run(["docker", "exec", container, "pg_isready", "-U", HUB_DB_USER],
+                 check=False)
+        if r.returncode == 0:
+            return True
+        time.sleep(3)
+        elapsed += 3
+    return False
 
 
 def _restore_pgdump(container: str, user: str, db: str, dump_path: Path) -> bool:
@@ -108,13 +124,7 @@ def restore_park(archive_path: str) -> bool:
               f"Exporté le: {manifest.get('exported_at')}")
         print(f"   Apps: {len(manifest.get('apps', []))}\n")
 
-        # ── Hub DB ──
-        hub_db = manifest.get("hub_db", {})
-        hub_pgdump = work / hub_db.get("pgdump", "databases/hub.pgdump")
-        print("🏠 Restauration Hub DB...")
-        _restore_pgdump(HUB_DB_CONTAINER, HUB_DB_USER, HUB_DB_NAME, hub_pgdump)
-
-        # ── Hub secrets ──
+        # ── Hub secrets (avant compose up : nécessaires au démarrage) ──
         secrets_dir = work / "secrets"
         hub_secrets_dest = HUB_DIR / "secrets"
         hub_secrets_dest.mkdir(exist_ok=True)
@@ -128,7 +138,7 @@ def restore_park(archive_path: str) -> bool:
                 else:
                     print(f"  ⚠️  {secret_file.name} existe déjà, ignoré")
 
-        # ── Hub .env ──
+        # ── Hub .env (avant compose up) ──
         hub_env = work / "envs" / "HUB_base.env"
         hub_env_dest = HUB_DIR / ".env"
         if hub_env.exists():
@@ -138,14 +148,29 @@ def restore_park(archive_path: str) -> bool:
             else:
                 print(f"  ⚠️  HUB_base/.env existe déjà, ignoré")
 
-        # ── Hub docker compose up ──
+        # ── Hub docker compose up (AVANT le restore DB : pg_restore exige un conteneur lancé) ──
         print("\n🚀 Démarrage du Hub...")
         try:
             _run(["docker", "compose", "-f", str(HUB_DIR / "docker-compose.yml"),
                   "up", "-d"])
             print("   ✅ Hub démarré")
         except subprocess.CalledProcessError:
-            print("   ⚠️  Échec démarrage Hub (peut-être déjà en cours)")
+            print("   ❌ Échec démarrage Hub — abandon.")
+            return False
+
+        # ── Hub DB : attendre que Postgres accepte les connexions ──
+        print("⏳ Attente que hub-db soit prêt...")
+        if not _wait_db_ready(HUB_DB_CONTAINER, timeout=90):
+            print("   ❌ hub-db injoignable après 90s — abandon.")
+            return False
+
+        # ── Hub DB : pg_restore (maintenant que le conteneur tourne) ──
+        hub_db = manifest.get("hub_db", {})
+        hub_pgdump = work / hub_db.get("pgdump", "databases/hub.pgdump")
+        print("🏠 Restauration Hub DB...")
+        if not _restore_pgdump(HUB_DB_CONTAINER, HUB_DB_USER, HUB_DB_NAME, hub_pgdump):
+            print("   ❌ Restauration Hub DB échouée — abandon.")
+            return False
 
         # ── Apps ──
         apps = manifest.get("apps", [])
@@ -154,6 +179,7 @@ def restore_park(archive_path: str) -> bool:
             return True
 
         print(f"\n📱 Restauration de {len(apps)} application(s)...")
+        failed_apps: list[str] = []
         for app in apps:
             slug = app["slug"]
             app_dir = APPS_DIR / slug
@@ -161,6 +187,7 @@ def restore_park(archive_path: str) -> bool:
 
             if not app_dir.exists():
                 print(f"  ⚠️  Dossier APPS/{slug} introuvable — clonez le dépôt git d'abord")
+                failed_apps.append(slug)
                 continue
 
             # DB
@@ -168,7 +195,8 @@ def restore_park(archive_path: str) -> bool:
             container = f"{slug}-postgres"
             db_user = app.get("db_user", "app_user")
             db_name = app.get("db_name", "app_db")
-            _restore_pgdump(container, db_user, db_name, pgdump)
+            if not _restore_pgdump(container, db_user, db_name, pgdump):
+                failed_apps.append(slug)
 
             # .env
             env_src = work / "envs" / f"{slug}.env"
@@ -186,6 +214,10 @@ def restore_park(archive_path: str) -> bool:
                     print(f"  ✅ {slug} démarré")
                 except subprocess.CalledProcessError as e:
                     print(f"  ⚠️  Échec démarrage {slug}: {e}")
+                    failed_apps.append(slug)
 
+        if failed_apps:
+            print(f"\n⚠️ Restauration terminée avec {len(failed_apps)} app(s) en échec : {', '.join(failed_apps)}")
+            return False
         print(f"\n✅ Restauration terminée.")
         return True

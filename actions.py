@@ -135,11 +135,21 @@ def _git_previous_commit(path: Path, console=None) -> str | None:
 def _health_check(target: str, console=None, timeout: int = 60) -> bool:
     """Wait for hub API to be healthy. Returns True if healthy within timeout."""
     con = console or _console
+    # Port API : HUB_API_PORT du .env Hub (défaut 8000) pour target "hub",
+    # sinon API_PORT de l'app cible.
+    api_port = "8000"
+    try:
+        env_path = hub_state.HUB_DIR / ".env" if target == "hub" else None
+        if env_path and env_path.exists():
+            api_port = env_manager.read_env(env_path).get("HUB_API_PORT", api_port)
+    except Exception:
+        pass
+    health_url = f"http://localhost:{api_port}/api/health"
     elapsed = 0
     while elapsed < timeout:
         try:
             result = subprocess.run(
-                ["curl", "-sk", "http://localhost:8000/api/health"],
+                ["curl", "-sk", health_url],
                 capture_output=True, text=True, timeout=5,
             )
             if '"status":"healthy"' in result.stdout:
@@ -310,7 +320,11 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
         return
 
     con.print(f"[bold]→ git pull[/bold]")
-    rc = utils.run_shell(["git", "-C", str(target_path), "pull"], dry_run=dry_run, console=con)
+    rc = utils.run_shell(["git", "-C", str(target_path), "pull",
+                          "--recurse-submodules"], dry_run=dry_run, console=con)
+    if rc != 0:
+        # Retry sans --recurse-submodules (si pas de submodules ou git ancien)
+        rc = utils.run_shell(["git", "-C", str(target_path), "pull"], dry_run=dry_run, console=con)
     if rc != 0:
         con.print("[red]✗ git pull a échoué[/red]")
         return
@@ -552,14 +566,14 @@ def action_workshop_move(console, direction: str, app_name: str, *, dry_run: boo
         con.print(f"[red]✗ docker-compose.yml introuvable dans {source_dir}[/red]")
         return
 
-    # ── 2. DOWN ──
+    # ── 2. STOP (on garde le conteneur : redémarrage rapide, et rollback possible) ──
     con.print(f"[bold]→ Arrêt de {source_slug}…[/bold]")
     rc = utils.run_shell(
-        ["docker", "compose", "-f", str(compose_file), "down"],
+        ["docker", "compose", "-f", str(compose_file), "stop"],
         cwd=str(source_dir), dry_run=dry_run, console=con,
     )
     if not dry_run and rc != 0:
-        con.print(f"[yellow]⚠ docker compose down a retourné {rc} (peut être déjà arrêté).[/yellow]")
+        con.print(f"[yellow]⚠ docker compose stop a retourné {rc} (peut être déjà arrêté).[/yellow]")
 
     # ── 3. COPY FILES ──
     con.print(f"[bold]→ Copie des fichiers : {source_dir.name} → {dest_dir.name}[/bold]")
@@ -655,6 +669,12 @@ def action_workshop_move(console, direction: str, app_name: str, *, dry_run: boo
                 cwd=str(dest_dir), capture_output=True, timeout=30,
             )
             shutil.rmtree(str(dest_dir))
+            # Relancer la source (prod) laissée arrêtée à l'étape 2.
+            con.print(f"[yellow]↻ Redémarrage de la source {source_slug}…[/yellow]")
+            subprocess.run(
+                ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                cwd=str(source_dir), capture_output=True, timeout=60,
+            )
         return
 
     # ── 8. BACKUP ──
