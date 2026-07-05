@@ -2,6 +2,7 @@
 vault/
 _trash/
 backups/
+recovery/
 .config.toml
 __pycache__/
 *.pyc

@@ -28,6 +28,11 @@ def get_active_apps() -> list[AppInfo]:
     return get_apps()
 
 
+def active_apps_dir() -> Path:
+    """Répertoire des apps actif selon le mode : APP_Workshop en dev, APPS en prod."""
+    return WORKSHOP_DIR if _mode == "dev" else APPS_DIR
+
+
 @dataclass
 class AppInfo:
     name: str

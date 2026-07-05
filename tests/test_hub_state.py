@@ -126,3 +126,16 @@ def test_get_apps_status_no_heavy_calls(tmp_path, monkeypatch):
         hub_state.get_apps_status()
     ds.assert_not_called()
     gd.assert_not_called()
+
+
+def test_active_apps_dir_prod_returns_apps_dir():
+    hub_state.set_mode("prod")
+    assert hub_state.active_apps_dir() == hub_state.APPS_DIR
+
+
+def test_active_apps_dir_dev_returns_workshop_dir():
+    hub_state.set_mode("dev")
+    try:
+        assert hub_state.active_apps_dir() == hub_state.WORKSHOP_DIR
+    finally:
+        hub_state.set_mode("prod")

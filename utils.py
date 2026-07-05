@@ -143,19 +143,3 @@ def run_shell_stream(cmd, *, cwd=None, timeout=120, dry_run=False, on_line=None,
         if on_line:
             on_line(f"[ERREUR] Commande introuvable : {cmd[0]}")
         return 127
-
-
-def confirm(message, *, default=False, console=None) -> bool:
-    con = console or _console
-    suffix = "[O/n]" if default else "[o/N]"
-    con.print(f"[bold]{message}[/bold] {suffix} ", end="")
-    answer = input().strip().lower()
-    if not answer:
-        return default
-    return answer in ("o", "oui", "y", "yes")
-
-
-def confirm_phrase(expected, *, console=None) -> bool:
-    con = console or _console
-    con.print(f"[yellow]Pour confirmer, retape exactement[/yellow] [bold]{expected}[/bold] : ", end="")
-    return input().strip() == expected

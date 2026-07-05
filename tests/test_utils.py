@@ -16,13 +16,6 @@ def test_run_shell_returns_process_returncode():
     assert rc == 1
 
 
-def test_confirm_phrase_matches_exactly():
-    with mock.patch("builtins.input", return_value="exemple-apps"):
-        assert utils.confirm_phrase("exemple-apps") is True
-    with mock.patch("builtins.input", return_value="wrong"):
-        assert utils.confirm_phrase("exemple-apps") is False
-
-
 def test_streamwriter_forwards_lines_to_callback():
     from hubctl_cli import utils
     got = []

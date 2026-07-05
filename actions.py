@@ -45,7 +45,7 @@ def hub_make(target: str, *, dry_run: bool, console=None) -> int:
 
 def app_make(app_name: str, target: str, *, dry_run: bool, console=None) -> int:
     return utils.run_shell(
-        ["make", "-C", str(hub_state.APPS_DIR / app_name), target],
+        ["make", "-C", str(hub_state.active_apps_dir() / app_name), target],
         dry_run=dry_run, console=console,
     )
 
@@ -303,7 +303,7 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
     if target == "hub":
         _ensure_jwt_keys(console, dry_run=dry_run)
 
-    target_path = hub_state.HUB_DIR if target == "hub" else hub_state.APPS_DIR / target
+    target_path = hub_state.HUB_DIR if target == "hub" else hub_state.active_apps_dir() / target
     compose_file = target_path / "docker-compose.yml"
     if not compose_file.exists():
         con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
@@ -390,7 +390,7 @@ def action_attach_app(console, app_name: str, *, dry_run: bool) -> None:
 
 
 def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
-    path = hub_state.APPS_DIR / app_name
+    path = hub_state.active_apps_dir() / app_name
     if not path.exists():
         console.print(f"[red]App introuvable : {app_name}.[/red]")
         return
