@@ -10,8 +10,9 @@ from hubctl_cli import actions, animation, menu
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
 from hubctl_cli.vault_manager import VaultManager
-from hubctl_cli import hub_state
-from hubctl_cli import keys
+from hubctl_cli import hub_state, keys
+from hubctl_cli.park_export import export_park
+from hubctl_cli.park_restore import restore_park
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +21,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="Imprimer les commandes sans les exécuter.")
     p.add_argument("--anim", default=None, help="Nom de l'animation d'intro (ou 'random').")
     p.add_argument("--init", action="store_true", help="Cloner tous les dépôts listés dans manifest.json.")
+
+    sub = p.add_subparsers(dest="command", help="Commandes")
+
+    # park-export
+    export_parser = sub.add_parser("park-export", help="Exporter tout le parc dans une archive tar.gz")
+    export_parser.add_argument("--app", default=None, help="Exporter une seule app (slug)")
+
+    # park-restore
+    restore_parser = sub.add_parser("park-restore", help="Restaurer le parc depuis une archive (Hub vierge uniquement)")
+    restore_parser.add_argument("archive", help="Chemin vers l'archive park-*.tar.gz")
+
     return p
 
 
@@ -38,6 +50,15 @@ def _poll_quit() -> bool:
 
 def _run(args) -> int:
     interactive = _interactive()
+
+    # Commandes non-interactives (pas de TUI)
+    if args.command == "park-export":
+        export_park(app_slug=args.app)
+        return 0
+    if args.command == "park-restore":
+        restore_park(args.archive)
+        return 0
+
     skip_anim = args.no_anim or not interactive
 
     if args.init:
