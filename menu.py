@@ -522,69 +522,55 @@ def view_apps(canvas: Canvas, state: dict) -> None:
 
 def view_coffre(canvas: Canvas, vault_mgr) -> None:
     vault = vault_mgr.vault if vault_mgr else None
+    if vault is None:
+        canvas.render(Text("Coffre indisponible.", style="yellow"))
+        pause(canvas)
+        return
     with _modal(canvas):
-        if vault is None:
-            canvas.render(Text("Coffre indisponible.", style="yellow"))
-            pause(canvas)
-            return
         if vault.is_locked:
             pw = widgets.password(canvas, "Passphrase du coffre :")
-            if pw is widgets.ESC or pw is None or not pw:
-                return
-            if not vault.unlock(pw):
-                canvas.render(Text("Passphrase incorrecte.", style="red"))
+            if pw is widgets.ESC or pw is None or not pw or not vault.unlock(pw):
+                canvas.render(Text("Coffre verrouillé.", style="red"))
                 pause(canvas)
                 return
 
-    divs = vault_mgr.check_divergence() if vault_mgr else {}
-
     while True:
-        managed_label = "Mode .env managé : ON" if vault_mgr and vault_mgr.managed_env else "Mode .env managé : OFF"
+        divs = vault_mgr.check_divergence() if vault_mgr else {}
         entries = []
         for e in vault.list_entries():
             if e.startswith("__"):
                 continue
-            suffix = " [MODIFIÉ]" if e in divs else ""
-            entries.append(e + suffix)
-        entries += ["↻ Synchroniser", managed_label, "← Retour"]
+            entries.append(e + (" [MODIFIÉ]" if e in divs else ""))
+        actions_lbl = ["💾 Sauvegarder maintenant", "⬇ Récupérer (export)", "🔑 Changer la passphrase", "← Retour"]
 
         with _modal(canvas):
-            sel = widgets.select(canvas, "Coffre :", entries)
+            sel = widgets.select(canvas, "Coffre (sauvegarde) :", entries + actions_lbl)
         if sel is widgets.ESC or sel is None or sel == "← Retour":
             return
-        if sel.startswith("Mode .env managé"):
-            if vault_mgr:
-                new_state = vault_mgr.toggle_managed()
-                state_label = "ON" if new_state else "OFF"
-                canvas.render(Text(f"Mode .env managé : {state_label}", style="bold cyan"))
-                pause(canvas)
+        if sel == "💾 Sauvegarder maintenant":
+            summary = vault_mgr.backup_all()
+            canvas.render(Text(f"✓ Sauvegardé : {summary['env']} .env, {summary['files']} fichiers.", style="green"))
+            pause(canvas)
             continue
-        if sel == "↻ Synchroniser":
-            vault.sync(vault_mgr)
+        if sel == "⬇ Récupérer (export)":
+            dest = vault_mgr.export_recovery()
+            canvas.render(Text(f"✓ Export de récupération :\n{dest}", style="green"))
+            pause(canvas)
+            continue
+        if sel == "🔑 Changer la passphrase":
+            with _modal(canvas):
+                pw1 = widgets.password(canvas, "Nouvelle passphrase :")
+                pw2 = widgets.password(canvas, "Confirme la passphrase :")
+            if pw1 is widgets.ESC or pw2 is widgets.ESC or not pw1 or pw1 != pw2:
+                canvas.render(Text("Passphrase inchangée (vide ou non concordante).", style="yellow"))
+                pause(canvas)
+                continue
+            vault.change_passphrase(pw1)
             vault.save()
-            canvas.render(Text("✓ Coffre synchronisé.", style="green"))
+            canvas.render(Text("✓ Passphrase changée.", style="green"))
             pause(canvas)
             continue
         entry = sel.replace(" [MODIFIÉ]", "")
-        if entry in divs:
-            with _modal(canvas):
-                resolve = widgets.select(canvas, f"{entry} est divergent :", [
-                    "← Importer dans le coffre",
-                    "→ Écraser le disque",
-                    "Annuler",
-                ])
-                if resolve is widgets.ESC or resolve is None or resolve == "Annuler":
-                    continue
-                if "Importer" in resolve:
-                    vault_mgr.pull_env(entry)
-                    vault.save()
-                    canvas.render(Text(f"✓ {entry} importé dans le coffre", style="green"))
-                elif "Écraser" in resolve:
-                    vault_mgr.push_env(entry)
-                    canvas.render(Text(f"✓ Disque écrasé pour {entry}", style="green"))
-                pause(canvas)
-            continue
-
         with _modal(canvas):
             secrets = vault.reveal(entry)
             list_lines = [Text(f"Entrée : {entry}\n", style="bold")]
@@ -592,39 +578,11 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
                 list_lines.append(Text(f"  {k} = ••••••••"))
             list_lines.append(Text(""))
             canvas.render(Text("\n").join(list_lines))
-            action = widgets.select(canvas, "Action :", [
-                "👁 Révéler les valeurs",
-                "✎ Modifier le .env",
-                "← Retour",
-            ])
-            if action is widgets.ESC or action is None or action == "← Retour":
-                continue
+            action = widgets.select(canvas, "Action :", ["👁 Révéler les valeurs", "← Retour"])
             if action and "Révéler" in action:
-                clear_lines = []
-                for k, v in secrets.items():
-                    clear_lines.append(Text(f"  {k} = {v}"))
+                clear_lines = [Text(f"  {k} = {v}") for k, v in secrets.items()]
                 canvas.render(Text("\n").join(clear_lines))
                 pause(canvas)
-            elif action and "Modifier" in action:
-                current = "\n".join(f"{k}={v}" for k, v in secrets.items())
-                with _modal(canvas):
-                    new_text = widgets.text(canvas, f"Modifier {entry} (KEY=VALUE, une par ligne) :")
-                    if new_text is widgets.ESC or new_text is None or not new_text.strip():
-                        continue
-                    new_data = {}
-                    for line in new_text.strip().split("\n"):
-                        line = line.strip()
-                        if not line or line.startswith("#") or "=" not in line:
-                            continue
-                        k, _, v = line.partition("=")
-                        new_data[k.strip()] = v.strip()
-                    if new_data:
-                        vault.set_entry(entry, new_data)
-                        vault.save()
-                        if vault_mgr:
-                            vault_mgr.push_env(entry)
-                        canvas.render(Text(f"✓ {entry} modifié et poussé sur disque", style="green"))
-                        pause(canvas)
 
 
 def _choose_target(canvas: Canvas):

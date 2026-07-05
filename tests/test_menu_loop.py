@@ -174,3 +174,50 @@ def test_exec_add_app_attach_branch_dispatches(monkeypatch):
     monkeypatch.setattr(menu, "_exec_attach_app", lambda *a, **k: hit.append(1) or True)
     menu._exec_add_app(mock.Mock(), {}, None, dry_run=False)
     assert hit == [1]
+
+
+def test_view_coffre_backup_now(monkeypatch):
+    from unittest import mock
+    vault = mock.Mock()
+    vault.is_locked = False
+    vault.list_entries.return_value = ["hub"]
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.check_divergence.return_value = {}
+    vault_mgr.backup_all.return_value = {"env": 1, "files": 1}
+    seq = iter(["💾 Sauvegarder maintenant", "← Retour"])
+    monkeypatch.setattr(menu.widgets, "select", lambda *a, **k: next(seq))
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+    menu.view_coffre(mock.Mock(), vault_mgr)
+    vault_mgr.backup_all.assert_called_once()
+
+
+def test_view_coffre_export_recovery(monkeypatch):
+    from unittest import mock
+    from pathlib import Path
+    vault = mock.Mock()
+    vault.is_locked = False
+    vault.list_entries.return_value = ["hub"]
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.check_divergence.return_value = {}
+    vault_mgr.export_recovery.return_value = Path("/tmp/recovery/x")
+    seq = iter(["⬇ Récupérer (export)", "← Retour"])
+    monkeypatch.setattr(menu.widgets, "select", lambda *a, **k: next(seq))
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+    menu.view_coffre(mock.Mock(), vault_mgr)
+    vault_mgr.export_recovery.assert_called_once()
+
+
+def test_view_coffre_change_passphrase(monkeypatch):
+    from unittest import mock
+    vault = mock.Mock()
+    vault.is_locked = False
+    vault.list_entries.return_value = ["hub"]
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.check_divergence.return_value = {}
+    seq = iter(["🔑 Changer la passphrase", "← Retour"])
+    monkeypatch.setattr(menu.widgets, "select", lambda *a, **k: next(seq))
+    monkeypatch.setattr(menu.widgets, "password", lambda *a, **k: "newpass")
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+    menu.view_coffre(mock.Mock(), vault_mgr)
+    vault.change_passphrase.assert_called_once_with("newpass")
+    vault.save.assert_called()
