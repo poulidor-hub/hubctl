@@ -39,3 +39,42 @@ def test_vault_wrong_passphrase(tmp_path):
     v.lock()
     v2 = coffre.Vault(vpath)
     assert v2.unlock("wrong") is False
+
+
+def test_set_get_list_file(tmp_path):
+    from hubctl_cli.coffre import Vault
+    v = Vault(tmp_path / "v.enc")
+    v.unlock("pw")
+    v.set_file("HUB_base/secrets/jwt_private_key.pem", b"\x00binary\xff")
+    assert v.list_files() == ["HUB_base/secrets/jwt_private_key.pem"]
+    assert v.get_file("HUB_base/secrets/jwt_private_key.pem") == b"\x00binary\xff"
+    assert v.get_file("absent") is None
+
+
+def test_change_passphrase(tmp_path):
+    from hubctl_cli.coffre import Vault
+    p = tmp_path / "v.enc"
+    v = Vault(p)
+    v.unlock("old")
+    v.set_entry("hub", {"K": "V"})
+    v.change_passphrase("new")
+    v.save()
+    v2 = Vault(p)
+    assert v2.unlock("new") is True
+    assert v2.get_entry("hub") == {"K": "V"}
+    v3 = Vault(p)
+    assert v3.unlock("old") is False
+
+
+def test_sync_reads_env_from_disk(tmp_path, monkeypatch):
+    from hubctl_cli import coffre, hub_state
+    monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(hub_state, "WORKSHOP_DIR", tmp_path / "APP_Workshop")
+    (tmp_path / "HUB_base").mkdir()
+    (tmp_path / "HUB_base" / ".env").write_text("POSTGRES_PASSWORD=topsecret\n")
+    v = coffre.Vault(tmp_path / "v.enc")
+    v.unlock("pw")
+    v.sync()
+    assert v.get_entry("hub") == {"POSTGRES_PASSWORD": "topsecret"}
