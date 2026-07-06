@@ -200,7 +200,7 @@ def test_restore_park_rejects_traversal_member(tmp_path, monkeypatch):
 
     try:
         pr.restore_park(str(archive))
-    except Exception:
+    except tarfile.TarError:
         pass
 
     assert protected.read_text() == "sensitive", (

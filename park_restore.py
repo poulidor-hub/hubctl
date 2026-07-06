@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -56,8 +57,9 @@ def _check_hub_is_empty() -> bool:
             if r.returncode == 0 and r.stdout.strip() == "0":
                 return True  # Table users vide ou inexistante → Hub non initialisé
             return False  # Table users a des données → Hub initialisé
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️  Impossible d'interroger la DB pour vérifier l'état du Hub : {e}",
+                  file=sys.stderr)
 
     # Conteneur arrêté, ou requête DB échouée : on refuse (safe default)
     return False
@@ -114,6 +116,8 @@ def _restore_tree(src: Path, dest: Path) -> list[tuple[str, bool]]:
         target = dest / rel
         # Protection traversée : refuser les chemins qui sortent de dest
         if not target.resolve().is_relative_to(dest.resolve()):
+            print(f"⚠️  Membre rejeté (hors destination) : {rel.as_posix()}", file=sys.stderr)
+            report.append((rel.as_posix(), False))
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
