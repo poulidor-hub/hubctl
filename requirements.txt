@@ -1,2 +1,3 @@
 rich>=13.0,<16
 cryptography>=42.0,<50
+mcp>=1.0
