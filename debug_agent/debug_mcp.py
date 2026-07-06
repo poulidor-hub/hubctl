@@ -20,8 +20,6 @@ from mcp.types import Tool, TextContent
 
 from hubctl_cli.debug_agent.tools_catalog import (
     TOOLS,
-    HANDLER_CLASSIFICATION,
-    CATEGORIES,
     is_allowed_in_mode,
 )
 
@@ -151,7 +149,8 @@ async def _handle_read_file(args, app_slug, mode):
 
     # Verifier que target est sous un des allowed_bases
     if not any(
-        str(target).startswith(str(base)) for base in allowed_bases
+        str(target) == str(base) or (str(target) + os.sep).startswith(str(base) + os.sep)
+        for base in allowed_bases
     ):
         return {"error": f"Acces interdit: {rel_path} hors du perimetre autorise."}
 
@@ -176,12 +175,12 @@ async def _handle_read_file(args, app_slug, mode):
 # WRITE HANDLERS (avec guard ro/rw)
 # ============================================================
 
-def _suggest_command(cmd: list[str]) -> dict:
-    """Retourne une suggestion de commande au lieu de l'executer (mode ro)."""
+def _suggest_command(tool_name: str) -> dict:
+    """Retourne une suggestion quand un outil est bloque en mode ro."""
     return {
         "blocked": True,
-        "message": "Mode lecture seule — commande suggeree :",
-        "command": " ".join(cmd),
+        "message": "Mode lecture seule — outil non autorise.",
+        "tool": tool_name,
     }
 
 
@@ -189,8 +188,6 @@ async def _handle_docker_restart(args, app_slug, mode):
     service = args.get("service", "")
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "restart", service]
-    if mode == "ro":
-        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -201,25 +198,18 @@ async def _handle_docker_recreate(args, app_slug, mode):
         "docker", "compose", "-f", str(compose),
         "up", "-d", "--force-recreate", service,
     ]
-    if mode == "ro":
-        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
 async def _handle_docker_down(args, app_slug, mode):
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "down"]
-    if mode == "ro":
-        return _suggest_command(cmd)
-    # rw: la confirmation est geree par OpenCode (requiresConfirmation)
     return _run_subprocess(cmd)
 
 
 async def _handle_docker_prune(args, app_slug, mode):
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "down", "--rmi", "local"]
-    if mode == "ro":
-        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -229,8 +219,6 @@ async def _handle_db_backup(args, app_slug, mode):
         "docker", "compose", "-f", str(compose),
         "exec", "-T", "db", "pg_dump", "-U", "app",
     ]
-    if mode == "ro":
-        return _suggest_command(cmd)
     return _run_subprocess(cmd, timeout=120)
 
 
@@ -238,8 +226,6 @@ async def _handle_docker_rm(args, app_slug, mode):
     service = args.get("service", "")
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "rm", "-f", service]
-    if mode == "ro":
-        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -250,8 +236,6 @@ async def _handle_db_reset(args, app_slug, mode):
         "exec", "-T", "db", "psql", "-U", "app",
         "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
     ]
-    if mode == "ro":
-        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -259,8 +243,6 @@ async def _handle_volume_delete(args, app_slug, mode):
     volume = args.get("volume", "")
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "down", "-v"]
-    if mode == "ro":
-        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -312,6 +294,11 @@ def register_debug_tools(server: Server, app_slug: str, mode: str):
                 type="text",
                 text=json.dumps({"error": f"Outil inconnu: {name}"}),
             )]
+
+        if not is_allowed_in_mode(name, mode):
+            result = _suggest_command(name)
+            text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+            return [TextContent(type="text", text=text)]
 
         try:
             result = await handler(arguments, app_slug, mode)
