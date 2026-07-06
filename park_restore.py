@@ -27,13 +27,22 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 
 def _check_hub_is_empty() -> bool:
-    """Vérifie que le Hub n'a PAS encore été initialisé (DB vide)."""
-    # Vérifier si le conteneur existe
+    """Vérifie que le Hub n'a PAS encore été initialisé (DB vide).
+
+    Retourne True uniquement si :
+    - Le conteneur hub-db n'existe pas, OU
+    - Le conteneur tourne ET la table users n'existe pas / est vide.
+
+    Refuse (False) dans tous les autres cas, y compris conteneur arrêté
+    (on ne peut pas vérifier → safe default).
+    """
+    # Vérifier si le conteneur existe (et son statut)
     result = _run(["docker", "ps", "-a", "--filter", f"name={HUB_DB_CONTAINER}",
                    "--format", "{{.Status}}"], check=False)
     status = result.stdout.strip()
-    if HUB_DB_CONTAINER not in result.stdout or not status:
-        return True  # Pas de conteneur → vide
+
+    if not status:
+        return True  # Pas de conteneur → Hub vierge
 
     if status.startswith("Up"):
         # Conteneur tourne, vérifier s'il y a des données
@@ -50,8 +59,8 @@ def _check_hub_is_empty() -> bool:
         except Exception:
             pass
 
-    # Conteneur arrêté : on ne peut pas interroger la DB → on suppose vierge.
-    return True
+    # Conteneur arrêté, ou requête DB échouée : on refuse (safe default)
+    return False
 
 
 def _wait_db_ready(container: str, timeout: int = 90) -> bool:
