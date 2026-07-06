@@ -4,7 +4,10 @@ Couvre la cohérence du round-trip export -> restore pour l'arbre HUB_base/secre
 (sous-dossier service_accounts/ inclus).
 """
 from __future__ import annotations
+import io
 import subprocess
+import tarfile
+import tempfile
 from pathlib import Path
 
 import hubctl_cli.park_restore as pr
@@ -138,3 +141,68 @@ def test_restore_tree_rejects_parent_traversal(tmp_path, monkeypatch):
     created_files = [r[0] for r in report if r[1]]
     assert "legit.txt" in created_files
     assert "../evil.txt" not in created_files
+
+
+def _make_tar_multi(members: list[tuple[str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, content in members:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    return buf.getvalue()
+
+
+def test_restore_park_rejects_traversal_member(tmp_path, monkeypatch):
+    """tar.extractall() sans filter= permet l'écriture hors workdir via '../'."""
+    protected = tmp_path / "protected.txt"
+    protected.write_text("sensitive")
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    hub_dir = tmp_path / "HUB_base"
+    apps_dir = tmp_path / "APPS"
+    hub_dir.mkdir(parents=True)
+    apps_dir.mkdir(parents=True)
+
+    archive = tmp_path / "evil.tar.gz"
+    archive.write_bytes(_make_tar_multi([
+        ("../protected.txt", b"EVIL"),
+        ("manifest.json",
+         b'{"version":"1","exported_at":"2025-01-01T00:00:00","apps":[],'
+         b'"hub_db":{"pgdump":"databases/hub.pgdump"}}'),
+    ]))
+
+    monkeypatch.setattr(pr, "_check_hub_is_empty", lambda: True)
+    monkeypatch.setattr(pr, "_run",
+                        lambda cmd, check=True: subprocess.CompletedProcess(
+                            cmd, 0, stdout="", stderr=""))
+    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, t=90: True)
+    monkeypatch.setattr(pr, "_restore_pgdump",
+                        lambda container, user, db, path: True)
+    monkeypatch.setattr(pr, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(pr, "APPS_DIR", apps_dir)
+    monkeypatch.setattr(pr, "PARC_ROOT", tmp_path)
+
+    class _FakeTempDir:
+        def __init__(self, path):
+            self.path = path
+
+        def __enter__(self):
+            return str(self.path)
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory",
+                        lambda prefix=None, suffix=None, dir=None: _FakeTempDir(work_dir))
+
+    try:
+        pr.restore_park(str(archive))
+    except Exception:
+        pass
+
+    assert protected.read_text() == "sensitive", (
+        "Fichier hors workdir ne doit pas être modifié par un membre '../'"
+    )

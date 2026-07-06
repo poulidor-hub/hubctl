@@ -147,7 +147,7 @@ def restore_park(archive_path: str) -> bool:
 
         print(f"📦 Extraction de {archive.name}...")
         with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(work)
+            tar.extractall(work, filter="data")
 
         manifest_file = work / "manifest.json"
         if not manifest_file.exists():
