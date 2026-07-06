@@ -94,6 +94,15 @@ TOOLS = [
             "required": ["query"],
         },
     ),
+    Tool(
+        name="db_dump_inspect",
+        description="Dump la base de donnees de l'app pour inspection (pg_dump, lecture seule).",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
     # --- Read: App status ---
     Tool(
         name="app_status",
@@ -159,15 +168,6 @@ TOOLS = [
             "required": [],
         },
     ),
-    Tool(
-        name="db_backup",
-        description="Declenche un backup de la base de donnees de l'app.",
-        inputSchema={
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    ),
     # --- Destructive hard ---
     Tool(
         name="docker_rm",
@@ -215,6 +215,7 @@ HANDLER_CLASSIFICATION = {
     "docker_stats": "read",
     "db_query_select": "read",
     "app_status": "read",
+    "db_dump_inspect": "read",
     "read_file": "read",
     # Non-destructive
     "docker_restart": "non_destructive",
@@ -222,7 +223,6 @@ HANDLER_CLASSIFICATION = {
     # Destructive soft
     "docker_down": "destructive_soft",
     "docker_prune": "destructive_soft",
-    "db_backup": "destructive_soft",
     # Destructive hard
     "docker_rm": "destructive_hard",
     "db_reset": "destructive_hard",

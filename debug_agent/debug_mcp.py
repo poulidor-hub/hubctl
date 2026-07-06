@@ -18,10 +18,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-from hubctl_cli.debug_agent.tools_catalog import (
-    TOOLS,
-    is_allowed_in_mode,
-)
+from hubctl_cli.debug_agent.tools_catalog import TOOLS
 
 
 def _park_root() -> Path:
@@ -137,6 +134,15 @@ async def _handle_app_status(args, app_slug, mode):
     return {"app": app_slug, "compose": str(compose), "ps": ps.get("stdout", "")}
 
 
+async def _handle_db_dump_inspect(args, app_slug, mode):
+    compose = _compose_path(app_slug)
+    cmd = [
+        "docker", "compose", "-f", str(compose),
+        "exec", "-T", "db", "pg_dump", "-U", "app",
+    ]
+    return _run_subprocess(cmd, timeout=120)
+
+
 async def _handle_read_file(args, app_slug, mode):
     rel_path = args.get("path", "")
     max_lines = args.get("max_lines", 200)
@@ -175,12 +181,12 @@ async def _handle_read_file(args, app_slug, mode):
 # WRITE HANDLERS (avec guard ro/rw)
 # ============================================================
 
-def _suggest_command(tool_name: str) -> dict:
-    """Retourne une suggestion quand un outil est bloque en mode ro."""
+def _suggest_command(cmd: list[str]) -> dict:
+    """Retourne une suggestion en mode ro."""
     return {
         "blocked": True,
-        "message": "Mode lecture seule — outil non autorise.",
-        "tool": tool_name,
+        "message": "Mode lecture seule — commande suggeree :",
+        "command": " ".join(cmd),
     }
 
 
@@ -188,6 +194,8 @@ async def _handle_docker_restart(args, app_slug, mode):
     service = args.get("service", "")
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "restart", service]
+    if mode == "ro":
+        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -198,34 +206,33 @@ async def _handle_docker_recreate(args, app_slug, mode):
         "docker", "compose", "-f", str(compose),
         "up", "-d", "--force-recreate", service,
     ]
+    if mode == "ro":
+        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
 async def _handle_docker_down(args, app_slug, mode):
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "down"]
+    if mode == "ro":
+        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
 async def _handle_docker_prune(args, app_slug, mode):
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "down", "--rmi", "local"]
+    if mode == "ro":
+        return _suggest_command(cmd)
     return _run_subprocess(cmd)
-
-
-async def _handle_db_backup(args, app_slug, mode):
-    compose = _compose_path(app_slug)
-    cmd = [
-        "docker", "compose", "-f", str(compose),
-        "exec", "-T", "db", "pg_dump", "-U", "app",
-    ]
-    return _run_subprocess(cmd, timeout=120)
 
 
 async def _handle_docker_rm(args, app_slug, mode):
     service = args.get("service", "")
     compose = _compose_path(app_slug)
     cmd = ["docker", "compose", "-f", str(compose), "rm", "-f", service]
+    if mode == "ro":
+        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -236,13 +243,16 @@ async def _handle_db_reset(args, app_slug, mode):
         "exec", "-T", "db", "psql", "-U", "app",
         "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
     ]
+    if mode == "ro":
+        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
 async def _handle_volume_delete(args, app_slug, mode):
     volume = args.get("volume", "")
-    compose = _compose_path(app_slug)
-    cmd = ["docker", "compose", "-f", str(compose), "down", "-v"]
+    cmd = ["docker", "volume", "rm", volume]
+    if mode == "ro":
+        return _suggest_command(cmd)
     return _run_subprocess(cmd)
 
 
@@ -257,12 +267,12 @@ HANDLERS = {
     "docker_stats": _handle_docker_stats,
     "db_query_select": _handle_db_query_select,
     "app_status": _handle_app_status,
+    "db_dump_inspect": _handle_db_dump_inspect,
     "read_file": _handle_read_file,
     "docker_restart": _handle_docker_restart,
     "docker_recreate": _handle_docker_recreate,
     "docker_down": _handle_docker_down,
     "docker_prune": _handle_docker_prune,
-    "db_backup": _handle_db_backup,
     "docker_rm": _handle_docker_rm,
     "db_reset": _handle_db_reset,
     "volume_delete": _handle_volume_delete,
@@ -294,11 +304,6 @@ def register_debug_tools(server: Server, app_slug: str, mode: str):
                 type="text",
                 text=json.dumps({"error": f"Outil inconnu: {name}"}),
             )]
-
-        if not is_allowed_in_mode(name, mode):
-            result = _suggest_command(name)
-            text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
-            return [TextContent(type="text", text=text)]
 
         try:
             result = await handler(arguments, app_slug, mode)
