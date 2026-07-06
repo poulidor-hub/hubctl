@@ -32,6 +32,15 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser = sub.add_parser("park-restore", help="Restaurer le parc depuis une archive (Hub vierge uniquement)")
     restore_parser.add_argument("archive", help="Chemin vers l'archive park-*.tar.gz")
 
+    # debug (agent Granite/Ollama)
+    debug_parser = sub.add_parser("debug", help="Agent de debug Granite/Ollama")
+    debug_parser.add_argument("app", nargs="?", default=None, help="Application cible")
+    debug_parser.add_argument("--rw", action="store_true", help="Mode semi-auto")
+    debug_parser.add_argument("--setup", action="store_true", help="Installer Ollama et Granite")
+    debug_parser.add_argument("--model", choices=["8b", "2b"], default=None, help="Forcer le modele")
+    debug_parser.add_argument("--off", action="store_true", help="Desactiver l'agent")
+    debug_parser.add_argument("--status", action="store_true", help="Verifier la disponibilite")
+
     return p
 
 
@@ -61,6 +70,9 @@ def _run(args) -> int:
             return 1
     if args.command == "park-restore":
         return 0 if restore_park(args.archive) else 1
+    if args.command == "debug":
+        from hubctl_cli.debug_agent import run_debug
+        return run_debug(args)
 
     skip_anim = args.no_anim or not interactive
 
