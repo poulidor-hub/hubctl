@@ -112,6 +112,9 @@ def _restore_tree(src: Path, dest: Path) -> list[tuple[str, bool]]:
             continue
         rel = f.relative_to(src)
         target = dest / rel
+        # Protection traversée : refuser les chemins qui sortent de dest
+        if not target.resolve().is_relative_to(dest.resolve()):
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             report.append((rel.as_posix(), False))

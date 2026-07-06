@@ -109,3 +109,32 @@ def test_check_empty_psql_fails(monkeypatch):
         db_errors=True,
     ))
     assert pr._check_hub_is_empty() is False
+
+
+def test_restore_tree_rejects_parent_traversal(tmp_path, monkeypatch):
+    """Un membre avec '..' NE doit PAS écrire hors de dest."""
+    src = tmp_path / "src"
+    dest = tmp_path / "sub" / "dest"
+
+    src.mkdir()
+    (src / "legit.txt").write_text("ok")
+    (tmp_path / "evil.txt").write_text("EVIL")
+
+    injected = src / ".." / "evil.txt"
+    original_rglob = Path.rglob
+    def fake_rglob(self, pattern):
+        yield from original_rglob(self, pattern)
+        if str(self) == str(src):
+            yield injected
+    monkeypatch.setattr(Path, "rglob", fake_rglob)
+
+    report = pr._restore_tree(src, dest)
+
+    assert (dest / "legit.txt").exists()
+    assert (dest / "legit.txt").read_text() == "ok"
+    assert not (tmp_path / "sub" / "evil.txt").exists(), \
+        "Le fichier evil ne doit pas être copié hors de dest"
+
+    created_files = [r[0] for r in report if r[1]]
+    assert "legit.txt" in created_files
+    assert "../evil.txt" not in created_files
