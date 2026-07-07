@@ -659,13 +659,27 @@ def test_action_work_calls_workshop_move_to_workshop(monkeypatch):
 
 
 def test_action_ship_calls_workshop_move_to_production(monkeypatch):
-    """action_ship doit appeler action_workshop_move avec direction='to_production'."""
+    """action_ship doit appeler action_workshop_move avec direction='to_production'.
+    Utilise dry_run=True pour éviter le prompt interactif de confirmation."""
     calls = []
     monkeypatch.setattr(actions, "action_workshop_move",
                         lambda console, direction, app_name, *, dry_run=False:
                         calls.append((direction, app_name)))
-    actions.action_ship(None, "exemple-apps")
+    actions.action_ship(None, "exemple-apps", dry_run=True)
     assert ("to_production", "exemple-apps") in calls
+
+
+def test_action_ship_aborts_on_wrong_confirmation(monkeypatch):
+    """action_ship NE doit PAS appeler workshop_move si la confirmation est incorrecte."""
+    calls = []
+    monkeypatch.setattr(actions, "action_workshop_move",
+                        lambda console, direction, app_name, *, dry_run=False:
+                        calls.append((direction, app_name)))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "mauvais-slug")
+    actions.action_ship(None, "exemple-apps")
+    assert ("to_production", "exemple-apps") not in calls, (
+        "workshop_move ne doit pas être appelé si la confirmation échoue"
+    )
 
 
 def test_action_start_stop_app_calls_app_make(monkeypatch):

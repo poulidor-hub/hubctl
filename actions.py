@@ -669,9 +669,26 @@ def action_work(console, slug: str, *, dry_run: bool = False) -> None:
 
 def action_ship(console, slug: str, *, dry_run: bool = False) -> None:
     """Ramène une app de l'atelier vers la production.
-    Wrapper CLI autour de action_workshop_move(direction='to_production').
+
+    ATTENTION : remplace la DB de prod par la DB de l'atelier.
+    L'utilisateur doit confirmer en retapant le slug.
     """
     con = console or _console
-    con.print(f"[bold]→ Retour en production de « {slug} »[/bold]")
+    con.print(f"\n[bold yellow]⚠️  ATTENTION : cette opération va REMPLACER la base de données[/bold yellow]")
+    con.print(f"[bold yellow]    de production de « {slug} » par celle de votre atelier.[/bold yellow]")
+    con.print(f"[dim]    Toute donnée de production modifiée depuis le clone sera PERDUE.[/dim]")
+    con.print(f"[dim]    Pour déployer le code sans toucher la DB : ./hubctl update {slug}[/dim]")
+    con.print()
+
+    if not dry_run:
+        import sys
+        confirmation = input(f"    Tapez '{slug}' pour confirmer : ")
+        if confirmation.strip() != slug:
+            con.print(f"[red]✗ Confirmation incorrecte — opération annulée.[/red]")
+            return
+    else:
+        con.print(f"[dim][dry-run] confirmation ignorée[/dim]")
+
+    con.print(f"\n[bold]→ Retour en production de « {slug} »[/bold]")
     action_workshop_move(con, "to_production", slug, dry_run=dry_run)
     con.print(f"[green]✅ {slug} remise en production (APPS/{slug})[/green]")
