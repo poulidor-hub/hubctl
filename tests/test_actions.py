@@ -646,3 +646,23 @@ def test_action_status_prints_hub_and_apps(monkeypatch):
     assert "exemple-apps" in text
     assert "DEV" in text
     assert "3.9.7" in text
+
+
+def test_action_work_calls_workshop_move_to_workshop(monkeypatch):
+    """action_work doit appeler action_workshop_move avec direction='to_workshop'."""
+    calls = []
+    monkeypatch.setattr(actions, "action_workshop_move",
+                        lambda console, direction, app_name, *, dry_run=False:
+                        calls.append((direction, app_name)))
+    actions.action_work(None, "exemple-apps")
+    assert ("to_workshop", "exemple-apps") in calls
+
+
+def test_action_ship_calls_workshop_move_to_production(monkeypatch):
+    """action_ship doit appeler action_workshop_move avec direction='to_production'."""
+    calls = []
+    monkeypatch.setattr(actions, "action_workshop_move",
+                        lambda console, direction, app_name, *, dry_run=False:
+                        calls.append((direction, app_name)))
+    actions.action_ship(None, "exemple-apps")
+    assert ("to_production", "exemple-apps") in calls

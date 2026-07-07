@@ -644,3 +644,23 @@ def action_workshop_move(console, direction: str, app_name: str, *, dry_run: boo
         con.print(f"[green]✓ Source déplacée dans la corbeille : _trash/{source_slug}-{stamp}[/green]")
 
     con.print(f"[green]✓ Workshop move « {source_slug} » → « {dest_slug} » terminé ![/green]")
+
+
+def action_work(console, slug: str, *, dry_run: bool = False) -> None:
+    """Met une app en atelier (APPS → APP_Workshop) avec clone DB, puis démarre.
+    Wrapper CLI autour de action_workshop_move(direction='to_workshop').
+    """
+    con = console or _console
+    con.print(f"[bold]→ Mise en atelier de « {slug} »[/bold]")
+    action_workshop_move(con, "to_workshop", slug, dry_run=dry_run)
+    con.print(f"[green]✅ {slug} prête en atelier (APP_Workshop/{slug}-ws)[/green]")
+
+
+def action_ship(console, slug: str, *, dry_run: bool = False) -> None:
+    """Ramène une app de l'atelier vers la production.
+    Wrapper CLI autour de action_workshop_move(direction='to_production').
+    """
+    con = console or _console
+    con.print(f"[bold]→ Retour en production de « {slug} »[/bold]")
+    action_workshop_move(con, "to_production", slug, dry_run=dry_run)
+    con.print(f"[green]✅ {slug} remise en production (APPS/{slug})[/green]")
