@@ -57,7 +57,7 @@ def test_keyboard_interrupt_during_intro_goes_to_menu():
          mock.patch.object(m.animation, "play_intro", side_effect=KeyboardInterrupt), \
          mock.patch.object(m, "Vault"), \
          mock.patch.object(m, "VaultManager"), \
-         mock.patch.object(m.menu, "_choose_mode", return_value="prod"), \
+         mock.patch.object(m, "_resolve_mode", return_value="prod"), \
          mock.patch.object(m.menu, "_require_vault"), \
          mock.patch.object(m.menu, "_offer_snapshot"), \
          mock.patch.object(m.menu, "main_loop") as ml:
@@ -78,7 +78,7 @@ def test_layout_installed_before_choose_mode():
          mock.patch.object(m, "VaultManager"), \
          mock.patch.object(m.menu, "install_layout",
                            side_effect=lambda *a, **k: order.append("layout")), \
-          mock.patch.object(m.menu, "_choose_mode",
+          mock.patch.object(m, "_resolve_mode",
                             side_effect=lambda *a, **k: order.append("mode") or "prod"), \
           mock.patch.object(m.menu, "_require_vault"), \
           mock.patch.object(m.menu, "_offer_snapshot"), \
@@ -117,3 +117,59 @@ def test_require_vault_creates_when_absent(monkeypatch):
     menu._require_vault(canvas, vault_mgr)
     vault.unlock.assert_called_once_with("newpw")
     vault_mgr.backup_all.assert_called_once()
+
+
+def test_parser_subcommands_slug_and_target():
+    p = build_parser()
+    assert p.parse_args(["work", "shop"]).slug == "shop"
+    assert p.parse_args(["ship", "shop"]).slug == "shop"
+    assert p.parse_args(["update", "hub"]).target == "hub"
+    assert p.parse_args(["start", "hub"]).target == "hub"
+    assert p.parse_args(["stop", "shop"]).target == "shop"
+    assert p.parse_args(["status"]).command == "status"
+
+
+def test_parser_mode_flags():
+    p = build_parser()
+    assert p.parse_args(["--dev", "status"]).dev is True
+    assert p.parse_args(["--prod", "status"]).prod is True
+    args = p.parse_args(["status"])
+    assert args.dev is False
+    assert args.prod is False
+
+
+def test_resolve_mode_precedence(monkeypatch):
+    p = build_parser()
+    monkeypatch.setattr(m.hub_state, "auto_detect_mode", lambda: "prod")
+    monkeypatch.delenv("HUBCTL_MODE", raising=False)
+    assert m._resolve_mode(p.parse_args(["--dev", "status"])) == "dev"
+    assert m._resolve_mode(p.parse_args(["--prod", "status"])) == "prod"
+    monkeypatch.setenv("HUBCTL_MODE", "dev")
+    assert m._resolve_mode(p.parse_args(["status"])) == "dev"
+    monkeypatch.delenv("HUBCTL_MODE", raising=False)
+    monkeypatch.setattr(m.hub_state, "auto_detect_mode", lambda: "dev")
+    assert m._resolve_mode(p.parse_args(["status"])) == "dev"
+
+
+def test_dispatch_status_calls_action_status(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_status") as st:
+        rc = m.main(["status"])
+    assert rc == 0
+    st.assert_called_once()
+
+
+def test_dispatch_work_calls_action_work(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
+    with mock.patch.object(m, "action_work") as w:
+        rc = m.main(["work", "shop"])
+    assert rc == 0
+    w.assert_called_once()
+    assert w.call_args.args[1] == "shop"
+
+
+def test_dispatch_returns_1_on_error(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_ship", side_effect=RuntimeError("boom")):
+        rc = m.main(["ship", "shop"])
+    assert rc == 1

@@ -7,6 +7,9 @@ from rich.console import Console
 from rich.text import Text
 
 from hubctl_cli import actions, animation, menu
+from hubctl_cli.actions import (
+    action_work, action_ship, action_update, action_start_stop, action_status,
+)
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
 from hubctl_cli.vault_manager import VaultManager
@@ -21,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="Imprimer les commandes sans les exécuter.")
     p.add_argument("--anim", default=None, help="Nom de l'animation d'intro (ou 'random').")
     p.add_argument("--init", action="store_true", help="Cloner tous les dépôts listés dans manifest.json.")
+    p.add_argument("--dev", action="store_true", help="Forcer le mode DEV")
+    p.add_argument("--prod", action="store_true", help="Forcer le mode PROD")
 
     sub = p.add_subparsers(dest="command", help="Commandes")
 
@@ -47,11 +52,45 @@ def build_parser() -> argparse.ArgumentParser:
     debug_parser.add_argument("--off", action="store_true", help="Desactiver l'agent")
     debug_parser.add_argument("--status", action="store_true", help="Verifier la disponibilite")
 
+    # ── Sous-commandes CLI (non-interactives) ──
+    work_parser = sub.add_parser("work", help="Mettre une app en atelier (dev)")
+    work_parser.add_argument("slug", help="Slug de l'app dans APPS/")
+
+    ship_parser = sub.add_parser("ship", help="Ramener une app en production")
+    ship_parser.add_argument("slug", help="Slug de l'app (sans suffixe -ws)")
+
+    update_cli_parser = sub.add_parser("update", help="Mettre à jour le Hub ou une app")
+    update_cli_parser.add_argument("target", help="'hub' ou le slug de l'app")
+
+    start_parser = sub.add_parser("start", help="Démarrer le Hub ou une app")
+    start_parser.add_argument("target", help="'hub' ou le slug de l'app")
+
+    stop_parser = sub.add_parser("stop", help="Arrêter le Hub ou une app")
+    stop_parser.add_argument("target", help="'hub' ou le slug de l'app")
+
+    sub.add_parser("status", help="Vue d'ensemble du parc (Hub + apps + mode)")
+
     return p
 
 
 def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _resolve_mode(args) -> str:
+    """Résout le mode : --dev/--prod > HUBCTL_MODE env > auto_detect_mode()."""
+    import os
+    from hubctl_cli.hub_state import auto_detect_mode, set_mode
+    if getattr(args, "dev", False):
+        mode = "dev"
+    elif getattr(args, "prod", False):
+        mode = "prod"
+    elif os.environ.get("HUBCTL_MODE", "").lower() in ("dev", "prod"):
+        mode = os.environ["HUBCTL_MODE"].lower()
+    else:
+        mode = auto_detect_mode()
+    set_mode(mode)
+    return mode
 
 
 def _poll_quit() -> bool:
@@ -103,6 +142,29 @@ def _run(args) -> int:
     if args.command == "debug":
         from hubctl_cli.debug_agent import run_debug
         return run_debug(args)
+
+    if args.command in ("work", "ship", "update", "start", "stop", "status"):
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        # Résoudre le mode avant l'action
+        _resolve_mode(args)
+        try:
+            if args.command == "work":
+                action_work(console, args.slug)
+            elif args.command == "ship":
+                action_ship(console, args.slug)
+            elif args.command == "update":
+                action_update(console, args.target, dry_run=False)
+            elif args.command == "start":
+                action_start_stop(console, "start", target=args.target)
+            elif args.command == "stop":
+                action_start_stop(console, "stop", target=args.target)
+            elif args.command == "status":
+                action_status(console)
+            return 0
+        except Exception as e:
+            print(f"❌ {args.command} a échoué : {e}")
+            return 1
 
     skip_anim = args.no_anim or not interactive
 
@@ -166,8 +228,12 @@ def _run(args) -> int:
         if not hub_state.HUB_DIR.exists():
             menu._offer_init_fresh(canvas, dry_run=args.dry_run)
         menu.install_layout(canvas, state)
-        mode = menu._choose_mode(canvas, vault_mgr)
-        hub_state.set_mode(mode)
+        mode = _resolve_mode(args)
+        from rich.console import Console as RichConsole
+        if mode == "dev":
+            RichConsole().print("[dim]Mode auto-détecté : DEV (APP_Workshop/ actif)[/dim]")
+        else:
+            RichConsole().print("[dim]Mode auto-détecté : PROD (APPS/)[/dim]")
         menu._require_vault(canvas, vault_mgr)
         if mode == "dev" and hub_state.APPS_DIR.exists():
             menu._offer_snapshot(canvas, vault_mgr, dry_run=args.dry_run)
