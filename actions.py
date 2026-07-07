@@ -453,16 +453,27 @@ def cleanup_orphan_tests(console=None) -> None:
         pass
 
 
-def action_start_stop(console, sub: str, *, dry_run: bool) -> None:
-    if sub in ("start", "restart"):
-        _ensure_jwt_keys(console, dry_run=dry_run)
+def action_start_stop(console, sub: str, target: str = "hub", *, dry_run: bool = False) -> None:
+    """Démarre/arrête/redémarre le Hub ou une app.
 
-    if sub == "start":
-        hub_make("up-prod", dry_run=dry_run, console=console)
-    elif sub in ("stop", "restart"):
-        hub_make("down", dry_run=dry_run, console=console)
-        if sub == "restart":
+    target="hub" (défaut) → hub_make. Sinon → app_make(target, ...).
+    """
+    if target == "hub":
+        if sub in ("start", "restart"):
+            _ensure_jwt_keys(console, dry_run=dry_run)
+        if sub == "start":
             hub_make("up-prod", dry_run=dry_run, console=console)
+        elif sub in ("stop", "restart"):
+            hub_make("down", dry_run=dry_run, console=console)
+            if sub == "restart":
+                hub_make("up-prod", dry_run=dry_run, console=console)
+    else:
+        if sub == "start":
+            app_make(target, "up", dry_run=dry_run, console=console)
+        elif sub in ("stop", "restart"):
+            app_make(target, "down", dry_run=dry_run, console=console)
+            if sub == "restart":
+                app_make(target, "up", dry_run=dry_run, console=console)
 
 
 def action_workshop_move(console, direction: str, app_name: str, *, dry_run: bool) -> None:

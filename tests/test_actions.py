@@ -666,3 +666,24 @@ def test_action_ship_calls_workshop_move_to_production(monkeypatch):
                         calls.append((direction, app_name)))
     actions.action_ship(None, "exemple-apps")
     assert ("to_production", "exemple-apps") in calls
+
+
+def test_action_start_stop_app_calls_app_make(monkeypatch):
+    """start/stop d'une app doit appeler app_make (pas hub_make)."""
+    calls = []
+    monkeypatch.setattr(actions, "app_make",
+                        lambda app_name, target, *, dry_run=False, console=None:
+                        calls.append((app_name, target)))
+    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
+    actions.action_start_stop(None, "start", target="exemple-apps")
+    assert ("exemple-apps", "up") in calls
+
+
+def test_action_start_stop_hub_default_unchanged(monkeypatch):
+    """Sans target, action_start_stop garde le comportement hub (compatibilité)."""
+    calls = []
+    monkeypatch.setattr(actions, "hub_make",
+                        lambda target, *, dry_run=False, console=None: calls.append(target))
+    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
+    actions.action_start_stop(None, "stop")
+    assert "down" in calls
