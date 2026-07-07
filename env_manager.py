@@ -45,9 +45,15 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         os.write(fd, content.encode("utf-8"))
         os.fsync(fd)
-    finally:
         os.close(fd)
-    os.replace(tmp, str(path))
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def env_defaults(mode: str) -> dict[str, str]:

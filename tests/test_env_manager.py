@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 from hubctl_cli import env_manager
@@ -75,6 +76,28 @@ def test_backup_restore_removed():
     from hubctl_cli import env_manager
     assert not hasattr(env_manager, "backup_env")
     assert not hasattr(env_manager, "restore_env")
+
+
+def test_write_env_atomic_on_enospc(tmp_path, monkeypatch):
+    """Régression: replace ne doit PAS écraser le .env si l'écriture échoue."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("ORIGINAL=value\n")
+
+    original_write = os.write
+    def fake_write(fd, data):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(os, "write", fake_write)
+
+    try:
+        env_manager.write_env(env_path, {"NEW": "data"})
+    except OSError:
+        pass
+
+    content = env_path.read_text()
+    assert "ORIGINAL=value" in content, (
+        f"Le .env d'origine doit être intact, contenu actuel: {content}"
+    )
+    assert "NEW=data" not in content, "La nouvelle variable ne doit pas être écrite"
 
 
 def _write_temp(content: str) -> Path:

@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import os
 from pathlib import Path
 
 from hubctl_cli import hub_state, env_manager
@@ -53,6 +54,8 @@ class VaultManager:
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         dest = hub_state.PARC_ROOT / "hubctl_cli" / "recovery" / stamp
         dest.mkdir(parents=True, exist_ok=True)
+        os.chmod(dest, 0o700)
+        old_umask = os.umask(0o077)
         for entry in self.vault.list_entries():
             if entry.startswith("__"):
                 continue
@@ -79,6 +82,7 @@ class VaultManager:
                 continue
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(raw)
+        os.umask(old_umask)
         return dest
 
     def check_divergence(self) -> dict[str, str]:

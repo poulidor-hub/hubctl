@@ -66,6 +66,18 @@ def test_export_recovery_reproduces_service_accounts_subtree(tmp_path, monkeypat
     assert (dest / "HUB_base" / "secrets" / "service_accounts" / "sa_demo.env").read_text() == "SA_TOKEN=xyz\n"
 
 
+def test_export_recovery_files_are_not_world_readable(tmp_path, monkeypatch):
+    """Les secrets déchiffrés dans recovery/ ne doivent pas être world-readable."""
+    mgr = _setup(tmp_path, monkeypatch)
+    mgr.backup_all()
+    dest = mgr.export_recovery()
+    for f in dest.rglob("*"):
+        if f.is_file():
+            mode = f.stat().st_mode
+            assert (mode & 0o004) == 0, f"{f.relative_to(dest)} est world-readable ({oct(mode)})"
+    assert (dest.stat().st_mode & 0o007) == 0, "recovery/ ne doit pas être world-accessible"
+
+
 def test_managed_api_removed():
     for attr in ("push_env", "pull_env", "auto_import_missing", "toggle_managed", "managed_env"):
         assert not hasattr(VaultManager, attr)
