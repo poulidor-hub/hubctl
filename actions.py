@@ -58,16 +58,9 @@ def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
         return
 
     con = console or _console
-    env_path = hub_state.HUB_DIR / ".env"
-    current = env_manager.read_env(env_path)
-    if current.get("AUTO_GENERATE_KEYS", "").lower() != "true":
-        if dry_run:
-            con.print("[dim][dry-run] AUTO_GENERATE_KEYS → true[/dim]")
-        else:
-            env_manager.write_env(env_path, {"AUTO_GENERATE_KEYS": "true"})
-        con.print("[yellow]🔐 Clés JWT absentes → AUTO_GENERATE_KEYS=true (DEV)[/yellow]")
-    else:
-        con.print("[dim]AUTO_GENERATE_KEYS déjà activé, les clés seront générées au démarrage.[/dim]")
+    con.print("[yellow]🔐 Clés JWT absentes dans HUB_base/secrets/ (jwt_private_key.pem + jwt_public_key.pem).[/yellow]")
+    con.print("[yellow]   → Exécutez 'cd HUB_base && ./install.sh' pour les générer.[/yellow]")
+    con.print("[yellow]   → Ou placez-les manuellement dans HUB_base/secrets/.[/yellow]")
 
 
 def _port_in_use(port: int) -> bool:

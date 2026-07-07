@@ -504,6 +504,25 @@ import json
 from unittest import mock
 
 
+def test_ensure_jwt_keys_does_not_write_to_dotenv(tmp_path, monkeypatch):
+    """H10 régression : ne PAS écrire AUTO_GENERATE_KEYS dans le .env de prod."""
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    hub_dir = tmp_path
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("APP_ENV=production\n")  # prod, pas de AUTO_GENERATE_KEYS
+
+    actions._ensure_jwt_keys()
+
+    content = dotenv.read_text()
+    assert "AUTO_GENERATE_KEYS" not in content, (
+        "H10: _ensure_jwt_keys ne doit PAS persister AUTO_GENERATE_KEYS dans le .env de prod"
+    )
+    assert "APP_ENV=production" in content  # .env non modifié
+
+
 def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
     """Seuls les projets -test correspondant au hub ou à une app réelle sont nettoyés.
     Les projets -test étrangers (load-test, integration-test) doivent être préservés."""
