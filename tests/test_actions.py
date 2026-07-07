@@ -240,37 +240,6 @@ def test_action_init_dry_run():
     assert first_args[1] == "clone"
 
 
-# ── Port helpers ──
-
-def test_port_in_use_detects_port():
-    with mock.patch("subprocess.run") as run:
-        run.return_value.stdout = "LISTEN 0 128 0.0.0.0:8000 0.0.0.0:*"
-        assert actions._port_in_use(8000) is True
-
-
-def test_port_in_use_free():
-    with mock.patch("subprocess.run") as run:
-        run.return_value.stdout = "LISTEN 0 128 0.0.0.0:9000 0.0.0.0:*"
-        assert actions._port_in_use(8000) is False
-
-
-def test_find_free_ports_first_available():
-    with mock.patch.object(actions, "_port_in_use", return_value=False):
-        api, fe, https = actions._find_free_ports(8000, 80, 443)
-    assert api == 8000
-    assert fe == 80
-    assert https == 443
-
-
-def test_find_free_ports_skip_occupied():
-    calls = [True, True, True, False, False, False]
-    with mock.patch.object(actions, "_port_in_use", side_effect=calls):
-        api, fe, https = actions._find_free_ports(8000, 80, 443)
-    assert api == 8003  # short-circuit: 3 True skip offsets 0-2, then 3 False at offset 3
-    assert fe == 83
-    assert https == 446
-
-
 # ── Workshop move tests ──
 
 from pathlib import Path
@@ -560,3 +529,86 @@ def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
     assert "hub-test" in cleaned, "Le hub-test doit être nettoyé"
     assert "load-test" not in cleaned, "Le projet étranger load-test ne doit PAS être nettoyé"
     assert "integration-test" not in cleaned, "Le projet étranger integration-test ne doit PAS être nettoyé"
+
+
+# ── action_update (Lot 2 : flux séquentiel + rollback) ──
+
+
+def test_action_update_sequential_flow(tmp_path, monkeypatch):
+    """action_update doit faire : snapshot/git → down → pull → build → up → health.
+    Pas de blue/green (cassé), pas d'instance test."""
+    calls = []
+
+    def fake_run_shell(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda console=None: tmp_path / "snap.sql")
+    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: True)
+    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
+    (tmp_path / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+
+    actions.action_update(None, "hub", dry_run=False)
+
+    # Verify the sequence: git pull, make down, make build, make up (or up-prod)
+    flat = [" ".join(c) for c in calls]
+    assert any("git" in c and "pull" in c for c in flat), "git pull manquant"
+    assert any("make" in c and "down" in c for c in flat), "make down manquant"
+    assert any("make" in c and "build" in c for c in flat), "make build manquant"
+    assert any("make" in c and ("up" in c) for c in flat), "make up manquant"
+    # NO test instance / blue-green
+    assert not any("-test" in c for c in flat), "blue/green test instance encore présent"
+
+
+def test_action_update_rollback_on_health_failure(tmp_path, monkeypatch):
+    """Si le health check échoue après l'update, rollback doit être appelé."""
+    calls = []
+
+    def fake_run_shell(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda console=None: tmp_path / "snap.sql")
+    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: False)
+    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
+    (tmp_path / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+
+    actions.action_update(None, "hub", dry_run=False)
+
+    flat = [" ".join(c) for c in calls]
+    # Rollback: git reset + make up (restore prod)
+    assert any("git" in c and "reset" in c for c in flat), "git reset (rollback) manquant"
+
+
+def test_health_check_reads_app_port(tmp_path, monkeypatch):
+    """H3: _health_check doit lire API_PORT du .env de l'app cible."""
+    app_dir = tmp_path / "myapp"
+    app_dir.mkdir()
+    (app_dir / ".env").write_text("API_PORT=9999\n")
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
+
+    curl_result = mock.Mock(stdout='{"status":"healthy"}', returncode=0)
+
+    def fake_run(cmd, **kwargs):
+        # Capture the URL to verify the port
+        if "curl" in cmd:
+            test_health_check_reads_app_port.curl_url = cmd[-1]
+        return curl_result
+
+    test_health_check_reads_app_port.curl_url = None
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    monkeypatch.setattr(actions.time, "sleep", lambda x: None)
+
+    actions._health_check("myapp", timeout=1)
+
+    assert "9999" in test_health_check_reads_app_port.curl_url, (
+        f"health_check doit utiliser API_PORT=9999, URL vue: {test_health_check_reads_app_port.curl_url}"
+    )

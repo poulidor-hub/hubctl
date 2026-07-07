@@ -63,24 +63,6 @@ def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
     con.print("[yellow]   → Ou placez-les manuellement dans HUB_base/secrets/.[/yellow]")
 
 
-def _port_in_use(port: int) -> bool:
-    try:
-        result = subprocess.run(
-            ["ss", "-tlnp"], capture_output=True, text=True, timeout=5,
-        )
-        return f":{port} " in result.stdout
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return False
-
-
-def _find_free_ports(base_api: int, base_fe: int, base_https: int) -> tuple[int, int, int]:
-    for offset in range(10):
-        api, fe, https = base_api + offset, base_fe + offset, base_https + offset
-        if not _port_in_use(api) and not _port_in_use(fe) and not _port_in_use(https):
-            return api, fe, https
-    raise RuntimeError("Aucun port libre trouvé (10 tentatives)")
-
-
 def disk_guard(console=None) -> bool:
     con = console or _console
     d = hub_state.get_disk_usage()
@@ -132,9 +114,14 @@ def _health_check(target: str, console=None, timeout: int = 60) -> bool:
     # sinon API_PORT de l'app cible.
     api_port = "8000"
     try:
-        env_path = hub_state.HUB_DIR / ".env" if target == "hub" else None
-        if env_path and env_path.exists():
-            api_port = env_manager.read_env(env_path).get("HUB_API_PORT", api_port)
+        if target == "hub":
+            env_path = hub_state.HUB_DIR / ".env"
+            if env_path.exists():
+                api_port = env_manager.read_env(env_path).get("HUB_API_PORT", api_port)
+        else:
+            app_env = hub_state.active_apps_dir() / target / ".env"
+            if app_env.exists():
+                api_port = env_manager.read_env(app_env).get("API_PORT", api_port)
     except Exception:
         pass
     health_url = f"http://localhost:{api_port}/api/health"
@@ -165,8 +152,10 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
 
     if prev_commit:
         con.print(f"  git reset → {prev_commit[:8]}")
-        subprocess.run(["git", "-C", str(target_path), "reset", "--hard", prev_commit],
-                       capture_output=True, timeout=15)
+        utils.run_shell(
+            ["git", "-C", str(target_path), "reset", "--hard", prev_commit],
+            console=con, timeout=15,
+        )
 
     if snapshot and snapshot.exists():
         con.print(f"  restauration DB → {snapshot.name}")
@@ -176,129 +165,25 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
         )
 
     if target == "hub":
-        subprocess.run(
+        utils.run_shell(
             ["make", "-C", str(target_path), "up-prod"],
-            capture_output=True, timeout=60,
+            console=con, timeout=60,
         )
     else:
-        subprocess.run(
-            ["make", "-C", str(target_path), "build"], capture_output=True, timeout=120,
+        utils.run_shell(
+            ["make", "-C", str(target_path), "build"], console=con, timeout=120,
         )
-        subprocess.run(
-            ["make", "-C", str(target_path), "up"], capture_output=True, timeout=60,
+        utils.run_shell(
+            ["make", "-C", str(target_path), "up"], console=con, timeout=60,
         )
 
     con.print("[green]✓ Rollback terminé[/green]")
 
 
-def _deploy_test(target: str, target_path: Path, compose_file: Path,
-                 base_api: int, base_fe: int, base_https: int,
-                 *, dry_run: bool, console=None) -> dict | None:
-    """Deploy test instance with snapshot DB. Returns ports dict or None."""
-    con = console or _console
-    con.print(f"[bold]→ Déploiement test de « {target} »[/bold]")
-
-    snapshot = _db_snapshot(con)
-    if not snapshot:
-        con.print("[red]✗ Snapshot DB échoué, abort.[/red]")
-        return None
-
-    try:
-        api, fe, https = _find_free_ports(base_api, base_fe, base_https)
-    except RuntimeError as e:
-        con.print(f"[red]✗ {e}[/red]")
-        return None
-    con.print(f"  Ports test : API={api}  HTTP={fe}  HTTPS={https}")
-
-    project = f"{target}-test"
-    env = {
-        "HUB_API_PORT": str(api),
-        "HUB_FRONTEND_PORT": str(fe),
-        "HUB_HTTPS_PORT": str(https),
-        "APP_ENV": "development",
-        "AUTO_GENERATE_KEYS": "true",
-    }
-    cmd = ["docker", "compose", "-p", project, "-f", str(compose_file), "up", "-d"]
-    if dry_run:
-        env_str = " ".join(f"{k}={v}" for k, v in env.items())
-        con.print(f"[dim]${env_str} {' '.join(cmd)} (dry-run)[/dim]")
-    else:
-        full_env = dict(subprocess.os.environ)
-        full_env.update(env)
-        result = subprocess.run(cmd, cwd=str(target_path), timeout=60, env=full_env)
-        if result.returncode != 0:
-            con.print("[red]✗ docker compose up a échoué[/red]")
-            return None
-
-    db_container = f"{project}-db-1"
-    if not dry_run:
-        time.sleep(3)
-        try:
-            with open(snapshot, "rb") as f:
-                subprocess.run(
-                    ["docker", "exec", "-i", db_container, "psql", "-U", "hubadmin", "hub_auth"],
-                    stdin=f, capture_output=True, timeout=30, check=True,
-                )
-            con.print("[green]✓ Snapshot restauré dans la DB test[/green]")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            con.print(f"[yellow]⚠ Restauration DB test échouée : {e}[/yellow]")
-
-    healthy = _health_check(target, con, timeout=60)
-    if not healthy:
-        con.print("[red]✗ Health check test échoué[/red]")
-        _cleanup_test(project, target_path, dry_run, con)
-        return None
-
-    con.print(f"\n[bold cyan]► Instance test prête[/bold cyan]")
-    con.print(f"  http://localhost:{fe}")
-    con.print(f"  https://localhost:{https}")
-    return {"api_port": api, "fe_port": fe, "https_port": https, "project": project}
-
-
-def _cleanup_test(project: str, target_path: Path, dry_run: bool, console=None) -> None:
-    con = console or _console
-    cmd = ["docker", "compose", "-p", project, "down", "-v"]
-    if dry_run:
-        con.print(f"[dim]$ {' '.join(cmd)} (dry-run)[/dim]")
-    else:
-        subprocess.run(cmd, cwd=str(target_path), capture_output=True, timeout=30)
-        con.print("[dim]Instance test nettoyée[/dim]")
-
-
-def _swap_to_prod(target: str, target_path: Path, compose_file: Path,
-                  ports: dict, *, dry_run: bool, console=None) -> bool:
-    """Swap test instance to production ports. Returns True on success."""
-    con = console or _console
-    project = ports["project"]
-    prod_project = "hub" if target == "hub" else target
-
-    con.print(f"[bold]→ Swap vers production[/bold]")
-    if not dry_run:
-        subprocess.run(
-            ["docker", "compose", "-p", prod_project, "-f", str(compose_file), "down"],
-            cwd=str(target_path), capture_output=True, timeout=30,
-        )
-        subprocess.run(
-            ["docker", "compose", "-p", project, "-f", str(compose_file), "down"],
-            cwd=str(target_path), capture_output=True, timeout=30,
-        )
-        result = subprocess.run(
-            ["docker", "compose", "-p", prod_project, "-f", str(compose_file), "up", "-d"],
-            cwd=str(target_path), capture_output=True, timeout=60,
-        )
-        if result.returncode != 0:
-            con.print("[red]✗ docker compose up (prod) a échoué[/red]")
-            return False
-
-    if not _health_check(target, con, timeout=30):
-        con.print("[red]✗ Health check prod échoué[/red]")
-        return False
-
-    _cleanup_test(project, target_path, dry_run, con)
-    return True
-
-
 def action_update(console, target: str, *, dry_run: bool) -> None:
+    """Met à jour le Hub ou une app : stop → git pull → build → up → health.
+    Rollback automatique (git reset + DB restore) si le health check échoue.
+    """
     con = console or _console
     if not disk_guard(con):
         return
@@ -312,36 +197,55 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
         con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
         return
 
+    # ── Capture pour rollback ──
+    prev_commit = _git_previous_commit(target_path, con)
+    snapshot = _db_snapshot(con) if target == "hub" else None
+
+    # ── Stop prod ──
+    con.print(f"[bold]→ Arrêt de « {target} »[/bold]")
+    rc = utils.run_shell(["make", "-C", str(target_path), "down"],
+                         dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print("[yellow]⚠ make down a échoué (continue)[/yellow]")
+
+    # ── git pull ──
     con.print(f"[bold]→ git pull[/bold]")
-    rc = utils.run_shell(["git", "-C", str(target_path), "pull",
-                          "--recurse-submodules"], dry_run=dry_run, console=con)
+    rc = utils.run_shell(["git", "-C", str(target_path), "pull", "--recurse-submodules"],
+                         dry_run=dry_run, console=con)
     if rc != 0:
-        # Retry sans --recurse-submodules (si pas de submodules ou git ancien)
-        rc = utils.run_shell(["git", "-C", str(target_path), "pull"], dry_run=dry_run, console=con)
+        rc = utils.run_shell(["git", "-C", str(target_path), "pull"],
+                             dry_run=dry_run, console=con)
     if rc != 0:
-        con.print("[red]✗ git pull a échoué[/red]")
+        con.print("[red]✗ git pull a échoué — rollback et abort.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
         return
 
-    ports = _deploy_test(
-        target, target_path, compose_file,
-        base_api=8000, base_fe=80, base_https=443,
-        dry_run=dry_run, console=con,
-    )
-    if ports is None:
+    # ── Build ──
+    con.print(f"[bold]→ Build de « {target} »[/bold]")
+    rc = utils.run_shell(["make", "-C", str(target_path), "build"],
+                         dry_run=dry_run, console=con, timeout=600)
+    if rc != 0:
+        con.print("[red]✗ Build a échoué — rollback et abort.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
         return
 
-    con.print(f"\n[bold cyan]► Instance test : http://localhost:{ports['fe_port']}[/bold cyan]")
-    con.print("[dim]Ctrl-C pour annuler, ou attente du health check…[/dim]")
-
-    if not _health_check(target, con, timeout=30):
-        con.print("[red]✗ Health check test échoué — nettoyage[/red]")
-        _cleanup_test(ports["project"], target_path, dry_run, con)
+    # ── Start prod ──
+    up_target = "up-prod" if target == "hub" else "up"
+    con.print(f"[bold]→ Démarrage de « {target} »[/bold]")
+    rc = utils.run_shell(["make", "-C", str(target_path), up_target],
+                         dry_run=dry_run, console=con, timeout=60)
+    if rc != 0:
+        con.print("[red]✗ Démarrage a échoué — rollback et abort.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
         return
 
-    if _swap_to_prod(target, target_path, compose_file, ports, dry_run=dry_run, console=con):
-        con.print(f"[green]✓ « {target} » migré en production[/green]")
-    else:
-        con.print("[red]✗ Swap échoué[/red]")
+    # ── Health check ──
+    if not _health_check(target, con, timeout=60):
+        con.print(f"[red]✗ Health check échoué après mise à jour — rollback automatique.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return
+
+    con.print(f"[green]✓ « {target} » mis à jour avec succès[/green]")
 
 
 def action_add_app(console, url: str, *, dry_run: bool) -> None:
