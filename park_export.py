@@ -284,8 +284,7 @@ def export_park(app_slug: Optional[str] = None, *, encrypt: bool = True,
             print(f"📦 Archive : {archive_path}")
 
         # Restreindre les permissions (0600) même en mode non chiffré
-        import os as _os
-        _os.chmod(archive_path, 0o600)
+        os.chmod(archive_path, 0o600)
 
         size_mb = archive_path.stat().st_size / (1024 * 1024)
         print(f"✅ Export terminé : {archive_path} ({size_mb:.1f} Mo)")

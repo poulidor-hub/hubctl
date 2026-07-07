@@ -74,6 +74,10 @@ def _run(args) -> int:
                 import sys
                 if args.passphrase_stdin:
                     passphrase = sys.stdin.readline().rstrip("\n")
+                    if not passphrase:
+                        print("❌ Passphrase vide reçue sur stdin. Refus de produire "
+                              "une archive 'chiffrée' par une passphrase vide.")
+                        return 1
                 elif sys.stdin.isatty():
                     import getpass
                     passphrase = getpass.getpass("🔐 Passphrase d'archive : ")
