@@ -27,10 +27,16 @@ def build_parser() -> argparse.ArgumentParser:
     # park-export
     export_parser = sub.add_parser("park-export", help="Exporter tout le parc dans une archive tar.gz")
     export_parser.add_argument("--app", default=None, help="Exporter une seule app (slug)")
+    export_parser.add_argument("--no-encrypt", action="store_true",
+                               help="Produire une archive tar.gz non chiffrée (legacy, secrets en clair)")
+    export_parser.add_argument("--passphrase-stdin", action="store_true",
+                               help="Lire la passphrase d'archive depuis stdin (CI/DR)")
 
     # park-restore
     restore_parser = sub.add_parser("park-restore", help="Restaurer le parc depuis une archive (Hub vierge uniquement)")
     restore_parser.add_argument("archive", help="Chemin vers l'archive park-*.tar.gz")
+    restore_parser.add_argument("--passphrase-stdin", action="store_true",
+                                help="Lire la passphrase d'archive depuis stdin (CI/DR)")
 
     # debug (agent Granite/Ollama)
     debug_parser = sub.add_parser("debug", help="Agent de debug Granite/Ollama")
@@ -63,7 +69,23 @@ def _run(args) -> int:
     # Commandes non-interactives (pas de TUI)
     if args.command == "park-export":
         try:
-            export_park(app_slug=args.app)
+            passphrase = None
+            if not args.no_encrypt:
+                import sys
+                if args.passphrase_stdin:
+                    passphrase = sys.stdin.readline().rstrip("\n")
+                elif sys.stdin.isatty():
+                    import getpass
+                    passphrase = getpass.getpass("🔐 Passphrase d'archive : ")
+                    confirm = getpass.getpass("🔐 Confirmer : ")
+                    if passphrase != confirm:
+                        print("❌ Les passphrases ne correspondent pas.")
+                        return 1
+                else:
+                    print("❌ Aucune passphrase fournie. Utilisez --passphrase-stdin "
+                          "ou --no-encrypt pour une archive en clair.")
+                    return 1
+            export_park(app_slug=args.app, encrypt=not args.no_encrypt, passphrase=passphrase)
             return 0
         except Exception as e:
             print(f"❌ park-export a échoué : {e}")

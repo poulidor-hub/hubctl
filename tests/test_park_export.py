@@ -67,7 +67,7 @@ def test_export_park_archive_contains_all_secrets(fake_parc, tmp_path, monkeypat
     monkeypatch.setattr(pe, "_pg_dump", fake_pg_dump)
     monkeypatch.setattr(pe, "_detect_apps", lambda: [])
 
-    archive = pe.export_park()
+    archive = pe.export_park(encrypt=False)
     assert archive.exists()
     extracted = tmp_path / "extracted"
     extracted.mkdir()
@@ -122,3 +122,50 @@ def test_encrypt_uses_random_salt():
     b2 = encrypt_archive(data, "pass")
     assert b1 != b2  # salt différent
     assert decrypt_archive(b1, "pass") == decrypt_archive(b2, "pass") == data
+
+
+def test_export_park_encrypts_by_default(fake_parc, tmp_path, monkeypatch):
+    """Par défaut, export_park produit une archive chiffrée (magic PARKEV1)
+    dont le contenu n'est pas lisible comme tar.gz en clair."""
+    monkeypatch.setattr(pe, "_pg_dump", lambda c, u, d, o: o.write_bytes(b"PGDUMP") or True)
+    monkeypatch.setattr(pe, "_detect_apps", lambda: [])
+
+    archive = pe.export_park(passphrase="test-pass-123")
+    assert archive.suffix == ".enc", f"l'archive chiffrée doit finir par .enc, eu {archive.name}"
+    blob = archive.read_bytes()
+    assert blob.startswith(pe.ARCHIVE_MAGIC), "doit avoir le magic PARKEV1"
+    # Le contenu chiffré n'est PAS un gzip valide (magic gzip = \x1f\x8b)
+    assert blob[:2] != b"\x1f\x8b", "le ciphertext ne doit pas être un gzip en clair"
+
+
+def test_export_park_no_encrypt_produces_plain_tarball(fake_parc, tmp_path, monkeypatch):
+    """--no-encrypt (encrypt=False) produit une archive tar.gz legacy (rétrocompat)."""
+    monkeypatch.setattr(pe, "_pg_dump", lambda c, u, d, o: o.write_bytes(b"PGDUMP") or True)
+    monkeypatch.setattr(pe, "_detect_apps", lambda: [])
+
+    archive = pe.export_park(encrypt=False)
+    assert archive.suffix == ".gz"
+    blob = archive.read_bytes()
+    assert blob[:2] == b"\x1f\x8b", "doit être un gzip valide (magic \\x1f\\x8b)"
+    assert not blob.startswith(pe.ARCHIVE_MAGIC), "ne doit pas avoir le magic chiffré"
+
+
+def test_export_park_encrypted_roundtrip_restore(fake_parc, tmp_path, monkeypatch):
+    """Une archive chiffrée peut être déchiffrée et extraite (round-trip export→restore)."""
+    import io
+    import tarfile
+    import hubctl_cli.park_restore as pr
+    monkeypatch.setattr(pe, "_pg_dump", lambda c, u, d, o: o.write_bytes(b"PGDUMP") or True)
+    monkeypatch.setattr(pe, "_detect_apps", lambda: [])
+
+    archive = pe.export_park(passphrase="roundtrip-pass")
+
+    # Déchiffrer manuellement et extraire
+    blob = archive.read_bytes()
+    tar_bytes = pe.decrypt_archive(blob, "roundtrip-pass")
+    extracted = tmp_path / "out"
+    extracted.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+        tar.extractall(extracted, filter="data")
+    assert (extracted / "manifest.json").exists()
+    assert (extracted / "secrets" / "jwt_private_key.pem").read_bytes() == b"-----PRIVATE-----\n"

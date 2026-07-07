@@ -8,6 +8,7 @@ Usage :
 """
 
 from __future__ import annotations
+import getpass
 import json
 import os
 import shutil
@@ -167,15 +168,32 @@ def _collect_hub_secrets(work_dir: Path) -> list[Path]:
     return collected
 
 
-def export_park(app_slug: Optional[str] = None) -> Path:
+def export_park(app_slug: Optional[str] = None, *, encrypt: bool = True,
+                passphrase: Optional[str] = None) -> Path:
     """
     Exporte tout le parc (ou une app spécifique) dans une archive tar.gz.
 
+    Par défaut (encrypt=True), produit une archive chiffrée park-<ts>.tar.gz.enc.
+    Avec encrypt=False, produit une archive legacy park-<ts>.tar.gz (secrets en clair).
+
     Retourne le chemin de l'archive créée.
     """
+    # Résolution de la passphrase si chiffrement demandé
+    if encrypt:
+        if passphrase is None:
+            import sys
+            if sys.stdin.isatty():
+                passphrase = getpass.getpass("🔐 Passphrase d'archive : ")
+                confirm = getpass.getpass("🔐 Confirmer : ")
+                if passphrase != confirm:
+                    print("❌ Les passphrases ne correspondent pas.")
+                    raise SystemExit(1)
+            else:
+                print("❌ Aucune passphrase fournie (stdin non-TTY). "
+                      "Utilisez --passphrase-stdin ou un TTY interactif.")
+                raise SystemExit(1)
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    archive_name = f"park-{timestamp}.tar.gz"
-    archive_path = EXPORT_DIR / archive_name
     EXPORT_DIR.mkdir(exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="park-export-") as tmp:
@@ -246,9 +264,28 @@ def export_park(app_slug: Optional[str] = None) -> Path:
         (work / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
         # ── Archive ──
-        print(f"\n📦 Création de l'archive {archive_name}...")
-        with tarfile.open(archive_path, "w:gz") as tar:
+        # Construire le tar.gz en mémoire (sera chiffré ou écrit tel quel)
+        import io
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             tar.add(work, arcname="")
+        tar_bytes = buf.getvalue()
+
+        if encrypt:
+            print(f"\n📦 Chiffrement de l'archive (Fernet + scrypt)...")
+            blob = encrypt_archive(tar_bytes, passphrase)
+            archive_path = EXPORT_DIR / f"park-{timestamp}.tar.gz.enc"
+            archive_path.write_bytes(blob)
+            print(f"🔒 Archive chiffrée : {archive_path}")
+        else:
+            print(f"\n⚠️  Archive NON chiffrée (mode --no-encrypt) — secrets en clair.")
+            archive_path = EXPORT_DIR / f"park-{timestamp}.tar.gz"
+            archive_path.write_bytes(tar_bytes)
+            print(f"📦 Archive : {archive_path}")
+
+        # Restreindre les permissions (0600) même en mode non chiffré
+        import os as _os
+        _os.chmod(archive_path, 0o600)
 
         size_mb = archive_path.stat().st_size / (1024 * 1024)
         print(f"✅ Export terminé : {archive_path} ({size_mb:.1f} Mo)")
