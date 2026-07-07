@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from hubctl_cli.hub_state import PARC_ROOT, HUB_DIR, APPS_DIR
+from hubctl_cli.park_export import is_encrypted_archive, decrypt_archive, WrongPassphraseError
 
 HUB_DB_CONTAINER = "hub-db"
 HUB_DB_USER = "hubadmin"
@@ -128,7 +129,7 @@ def _restore_tree(src: Path, dest: Path) -> list[tuple[str, bool]]:
     return report
 
 
-def restore_park(archive_path: str) -> bool:
+def restore_park(archive_path: str, passphrase: str | None = None) -> bool:
     """
     Restaure tout le parc depuis une archive park-export.
     Ne fonctionne que sur un Hub VIDE.
@@ -146,11 +147,34 @@ def restore_park(archive_path: str) -> bool:
         return False
     print("   ✅ Hub vierge — restauration autorisée.\n")
 
+    # Détection du format : chiffré (PARKEV1) ou legacy (tar.gz en clair)
+    encrypted = is_encrypted_archive(archive)
+    if encrypted:
+        if passphrase is None:
+            import sys
+            if sys.stdin.isatty():
+                import getpass
+                passphrase = getpass.getpass("🔐 Passphrase d'archive : ")
+            else:
+                print("❌ Archive chiffrée mais aucune passphrase (stdin non-TTY).")
+                print("   Utilisez --passphrase-stdin.")
+                return False
+        print(f"🔓 Déchiffrement de {archive.name}...")
+        try:
+            tar_bytes = decrypt_archive(archive.read_bytes(), passphrase)
+        except WrongPassphraseError:
+            print("❌ Passphrase d'archive incorrecte.")
+            return False
+    else:
+        print(f"⚠️  Archive non chiffrée (legacy) : {archive.name}")
+        tar_bytes = archive.read_bytes()
+
     with tempfile.TemporaryDirectory(prefix="park-restore-") as tmp:
         work = Path(tmp)
 
-        print(f"📦 Extraction de {archive.name}...")
-        with tarfile.open(archive, "r:gz") as tar:
+        print(f"📦 Extraction...")
+        import io
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
             tar.extractall(work, filter="data")
 
         manifest_file = work / "manifest.json"

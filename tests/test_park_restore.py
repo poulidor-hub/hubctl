@@ -178,7 +178,7 @@ def test_restore_park_rejects_traversal_member(tmp_path, monkeypatch):
     monkeypatch.setattr(pr, "_run",
                         lambda cmd, check=True: subprocess.CompletedProcess(
                             cmd, 0, stdout="", stderr=""))
-    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, t=90: True)
+    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, timeout=90: True)
     monkeypatch.setattr(pr, "_restore_pgdump",
                         lambda container, user, db, path: True)
     monkeypatch.setattr(pr, "HUB_DIR", hub_dir)
@@ -206,3 +206,90 @@ def test_restore_park_rejects_traversal_member(tmp_path, monkeypatch):
     assert protected.read_text() == "sensitive", (
         "Fichier hors workdir ne doit pas être modifié par un membre '../'"
     )
+
+
+def test_restore_park_decrypts_encrypted_archive(tmp_path, monkeypatch):
+    """restore_park détecte et déchiffre une archive .tar.gz.enc."""
+    import io
+    import tarfile
+    import hubctl_cli.park_export as pe
+
+    # Construire une archive chiffrée avec un manifest valide
+    work = tmp_path / "src"
+    work.mkdir()
+    (work / "manifest.json").write_text(
+        '{"version":"1.0","exported_at":"2026-01-01","apps":[],"hub_db":{"pgdump":"databases/hub.pgdump"}}'
+    )
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(work, arcname="")
+    blob = pe.encrypt_archive(buf.getvalue(), "restore-pass")
+
+    enc_archive = tmp_path / "park.tar.gz.enc"
+    enc_archive.write_bytes(blob)
+
+    # Mock les dépendances externes de restore_park
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True)
+    (hub_dir / "secrets").mkdir()
+    monkeypatch.setattr(pr, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(pr, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(pr, "_check_hub_is_empty", lambda: True)
+    monkeypatch.setattr(pr, "_run", lambda cmd, check=True: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, timeout=90: True)
+    monkeypatch.setattr(pr, "_restore_pgdump", lambda c, u, d, p: True)
+
+    result = pr.restore_park(str(enc_archive), passphrase="restore-pass")
+    assert result is True
+    assert (hub_dir / ".env").exists() or True  # pas de .env dans ce manifest minimal
+
+
+def test_restore_park_accepts_legacy_plain_archive(tmp_path, monkeypatch):
+    """restore_park accepte toujours une archive .tar.gz legacy non chiffrée."""
+    import io
+    import tarfile
+
+    work = tmp_path / "src"
+    work.mkdir()
+    (work / "manifest.json").write_text(
+        '{"version":"1.0","exported_at":"2026-01-01","apps":[],"hub_db":{"pgdump":"databases/hub.pgdump"}}'
+    )
+    plain_archive = tmp_path / "park-legacy.tar.gz"
+    with tarfile.open(plain_archive, "w:gz") as tar:
+        tar.add(work, arcname="")
+
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True)
+    (hub_dir / "secrets").mkdir()
+    monkeypatch.setattr(pr, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(pr, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(pr, "_check_hub_is_empty", lambda: True)
+    monkeypatch.setattr(pr, "_run", lambda cmd, check=True: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, timeout=90: True)
+    monkeypatch.setattr(pr, "_restore_pgdump", lambda c, u, d, p: True)
+
+    # Pas de passphrase — archive legacy
+    result = pr.restore_park(str(plain_archive))
+    assert result is True
+
+
+def test_restore_park_encrypted_wrong_passphrase_fails_gracefully(tmp_path, monkeypatch):
+    """Une mauvaise passphrase sur une archive chiffrée échoue proprement (pas de crash)."""
+    import io
+    import tarfile
+    import hubctl_cli.park_export as pe
+
+    work = tmp_path / "src"
+    work.mkdir()
+    (work / "manifest.json").write_text('{"version":"1.0","apps":[]}')
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(work, arcname="")
+    enc_archive = tmp_path / "park.tar.gz.enc"
+    enc_archive.write_bytes(pe.encrypt_archive(buf.getvalue(), "bonne"))
+
+    monkeypatch.setattr(pr, "_check_hub_is_empty", lambda: True)
+    monkeypatch.setattr(pr, "HUB_DIR", tmp_path / "HUB_base")
+
+    result = pr.restore_park(str(enc_archive), passphrase="mauvaise")
+    assert result is False

@@ -95,7 +95,11 @@ def _run(args) -> int:
             print(f"❌ park-export a échoué : {e}")
             return 1
     if args.command == "park-restore":
-        return 0 if restore_park(args.archive) else 1
+        passphrase = None
+        if args.passphrase_stdin:
+            import sys
+            passphrase = sys.stdin.readline().rstrip("\n")
+        return 0 if restore_park(args.archive, passphrase=passphrase) else 1
     if args.command == "debug":
         from hubctl_cli.debug_agent import run_debug
         return run_debug(args)
