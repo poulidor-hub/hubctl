@@ -498,3 +498,46 @@ def test_attach_app_runs_initialise_when_present(tmp_path, monkeypatch):
         actions.action_attach_app(console, "shop", dry_run=False)
     cmds = [c.args[0] for c in rs.call_args_list]
     assert ["python", "INITIALISE.py"] in cmds
+
+
+import json
+from unittest import mock
+
+
+def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
+    """Seuls les projets -test correspondant au hub ou à une app réelle sont nettoyés.
+    Les projets -test étrangers (load-test, integration-test) doivent être préservés."""
+    projects = [
+        {"Name": "exemple-apps-test"},   # hubctl-owned (app réelle)
+        {"Name": "hub-test"},              # hubctl-owned (hub)
+        {"Name": "load-test"},             # ÉTRANGER — ne doit PAS être nettoyé
+        {"Name": "integration-test"},      # ÉTRANGER — ne doit PAS être nettoyé
+    ]
+
+    cleaned: list[str] = []
+
+    class _FakeRun:
+        def __call__(self, cmd, **kwargs):
+            if "ls" in cmd:
+                return mock.Mock(stdout=json.dumps(projects), returncode=0)
+            if "down" in cmd:
+                # Capture le nom du projet nettoyé
+                idx = cmd.index("-p")
+                cleaned.append(cmd[idx + 1])
+                return mock.Mock(stdout="", returncode=0)
+            return mock.Mock(stdout="", returncode=0)
+
+    monkeypatch.setattr(actions.subprocess, "run", _FakeRun())
+
+    # Simuler get_apps : une seule app "exemple-apps"
+    fake_app = mock.Mock()
+    fake_app.name = "exemple-apps"
+    monkeypatch.setattr(actions.hub_state, "get_apps", lambda: [fake_app])
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [])
+
+    actions.cleanup_orphan_tests()
+
+    assert "exemple-apps-test" in cleaned, "L'app hubctl doit être nettoyée"
+    assert "hub-test" in cleaned, "Le hub-test doit être nettoyé"
+    assert "load-test" not in cleaned, "Le projet étranger load-test ne doit PAS être nettoyé"
+    assert "integration-test" not in cleaned, "Le projet étranger integration-test ne doit PAS être nettoyé"

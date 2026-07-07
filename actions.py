@@ -490,7 +490,13 @@ def action_init(console, *, dry_run: bool) -> None:
 
 
 def cleanup_orphan_tests(console=None) -> None:
-    """Remove leftover -test docker-compose projects from crashed sessions."""
+    """Remove leftover -test docker-compose projects owned by hubctl.
+
+    Ne nettoie QUE les projets {slug}-test où slug est le hub ou une app réelle
+    (APPS/ ou APP_Workshop/). Les projets -test étrangers (load-test,
+    integration-test, etc.) sont préservés — la règle d'or du parc est
+    « jamais docker compose down -v » hors de notre périmètre.
+    """
     con = console or _console
     try:
         result = subprocess.run(
@@ -498,9 +504,19 @@ def cleanup_orphan_tests(console=None) -> None:
             capture_output=True, text=True, timeout=10,
         )
         projects = json.loads(result.stdout) if result.stdout.strip() else []
+
+        # Whitelist des projets test légitimes (hubctl-owned)
+        valid_test_projects: set[str] = {"hub-test"}
+        for lister in (hub_state.get_apps, hub_state.get_workshop_apps):
+            try:
+                for app in lister():
+                    valid_test_projects.add(f"{app.name}-test")
+            except Exception:
+                pass
+
         for p in (projects if isinstance(projects, list) else []):
             name = p.get("Name", "")
-            if name.endswith("-test"):
+            if name.endswith("-test") and name in valid_test_projects:
                 con.print(f"[dim]Nettoyage instance orpheline : {name}[/dim]")
                 subprocess.run(
                     ["docker", "compose", "-p", name, "down", "-v"],
