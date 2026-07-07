@@ -612,3 +612,37 @@ def test_health_check_reads_app_port(tmp_path, monkeypatch):
     assert "9999" in test_health_check_reads_app_port.curl_url, (
         f"health_check doit utiliser API_PORT=9999, URL vue: {test_health_check_reads_app_port.curl_url}"
     )
+
+
+def test_action_status_prints_hub_and_apps(monkeypatch):
+    """action_status doit afficher le statut du Hub et des apps."""
+    from io import StringIO
+    from rich.console import Console
+    output = StringIO()
+    console = Console(file=output, width=120, force_terminal=False)
+
+    # Mock hub services
+    fake_service = mock.Mock()
+    fake_service.name = "hub-api"
+    fake_service.state = "running"
+    fake_service.health = "healthy"
+    monkeypatch.setattr(actions.hub_state, "get_hub_services", lambda: [fake_service])
+
+    # Mock apps status
+    fake_app = mock.Mock()
+    fake_app.name = "exemple-apps"
+    fake_app.status = "running"
+    fake_app.uptime = "2h"
+    fake_app.legacy = False
+    monkeypatch.setattr(actions.hub_state, "get_apps_status", lambda: [fake_app])
+
+    monkeypatch.setattr(actions.hub_state, "get_hub_version", lambda: "3.9.7")
+    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "dev")
+
+    actions.action_status(console)
+
+    text = output.getvalue()
+    assert "hub-api" in text
+    assert "exemple-apps" in text
+    assert "DEV" in text
+    assert "3.9.7" in text

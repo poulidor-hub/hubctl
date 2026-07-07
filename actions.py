@@ -181,6 +181,35 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
         con.print("[green]✓ Rollback terminé[/green]")
 
 
+def action_status(console=None) -> None:
+    """Affiche une vue d'ensemble texte du parc (Hub + apps + mode)."""
+    con = console or _console
+    mode = hub_state.get_mode()
+    mode_label = "DEV (APP_Workshop/)" if mode == "dev" else "PROD (APPS/)"
+
+    # Hub
+    services = hub_state.get_hub_services()
+    hub_version = hub_state.get_hub_version()
+    api_running = any(s.state == "running" and "api" in s.name.lower() for s in services)
+    hub_icon = "🟢" if api_running else "🔴"
+    con.print(f"[bold]Hub[/bold]      : {hub_icon} {'running' if api_running else 'stopped'}"
+              f"  v{hub_version}")
+    for s in services:
+        con.print(f"  {s.name:<20} {s.state} ({s.health})")
+
+    # Apps
+    apps = hub_state.get_apps_status()
+    if apps:
+        con.print(f"[bold]Apps[/bold]     :")
+        for app in apps:
+            icon = "🟢" if app.status == "running" else ("🟡" if app.status == "stopped" else "⚫")
+            con.print(f"  {app.name:<20} {icon} {app.status}")
+    else:
+        con.print(f"[bold]Apps[/bold]     : (aucune)")
+
+    con.print(f"[bold]Mode[/bold]     : {mode_label}")
+
+
 def action_update(console, target: str, *, dry_run: bool) -> None:
     """Met à jour le Hub ou une app : stop → git pull → build → up → health.
     Rollback automatique (git reset + DB restore) si le health check échoue.
