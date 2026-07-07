@@ -725,30 +725,6 @@ def _require_vault(canvas: Canvas, vault_mgr) -> None:
         pause(canvas)
 
 
-def _choose_mode(canvas: Canvas, vault_mgr) -> str:
-    with _modal(canvas):
-        lines = [
-            Text("          Choisis le mode de travail :\n\n", style="bold cyan"),
-            Text("  1. PRODUCTION — apps actives : APPS/\n", style="bold green"),
-            Text("  2. DÉVELOPPEMENT — apps actives : APP_Workshop/\n\n", style="bold yellow"),
-            Text("  (Le coffre est obligatoire dans les deux cas.)\n", style="dim"),
-            Text("  Échap — Quitter", style="dim"),
-        ]
-        canvas.render(Text.assemble(*lines))
-        fd = sys.stdin.fileno()
-        while True:
-            k = keys.read_key(fd, timeout=0.15)
-            if k is None:
-                continue
-            if isinstance(k, keys.KeyChar) and k.char == "1":
-                return "prod"
-            if isinstance(k, keys.KeyChar) and k.char == "2":
-                return "dev"
-            if isinstance(k, (keys.KeyEsc, keys.KeyCtrlC)):
-                canvas.render(Text("À bientôt.", style="bold"))
-                raise SystemExit(0)
-
-
 def _offer_init_fresh(canvas: Canvas, *, dry_run: bool) -> None:
     canvas.render(Text(
         "\n\nAucun dépôt HUB détecté.\n"
@@ -916,16 +892,10 @@ def _exec_workshop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> 
 
 def _exec_toggle_mode(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> bool:
     new_mode = "dev" if hub_state.get_mode() == "prod" else "prod"
-    with _modal(canvas):
-        if widgets.confirm(canvas, f"Passer en mode {new_mode.upper()} ?", default=True) is not True:
-            return False
-    if new_mode == "dev" and hub_state.APPS_DIR.exists():
-        _offer_snapshot(canvas, vault_mgr, dry_run=dry_run)
     hub_state.set_mode(new_mode)
     global _nav_stack
     _nav_stack = ["main"]
-    canvas.render(Text(f"✓ Mode {new_mode.upper()} activé.", style="bold green"))
-    pause(canvas)
+    canvas.render(Text(f"✓ Mode basculé : {new_mode.upper()}", style="bold green"))
     return False
 
 
