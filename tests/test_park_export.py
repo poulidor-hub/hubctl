@@ -80,3 +80,45 @@ def test_export_park_archive_contains_all_secrets(fake_parc, tmp_path, monkeypat
     assert (sec / "backup_private_key.pem").read_bytes() == b"-----BK-PRIV-----\n"
     assert (sec / "backup_public_key.pem").read_bytes() == b"-----BK-PUB-----\n"
     assert (sec / "service_accounts" / "sa_demo.env").read_text() == "SA_KEY=value\n"
+
+
+from hubctl_cli.park_export import (
+    encrypt_archive, decrypt_archive, is_encrypted_archive,
+    ARCHIVE_MAGIC, WrongPassphraseError,
+)
+
+
+def test_encrypt_decrypt_roundtrip():
+    """encrypt_archive puis decrypt_archive restitue les bytes originaux."""
+    original = b"CONTENU TAR.GZ SECRET" * 100
+    blob = encrypt_archive(original, "ma-passphrase-2026")
+    assert blob[:len(ARCHIVE_MAGIC)] == ARCHIVE_MAGIC
+    restored = decrypt_archive(blob, "ma-passphrase-2026")
+    assert restored == original
+
+
+def test_decrypt_wrong_passphrase_raises():
+    """Une mauvaise passphrase lève WrongPassphraseError (pas de crash générique)."""
+    blob = encrypt_archive(b"data", "bonne-pass")
+    import pytest
+    with pytest.raises(WrongPassphraseError):
+        decrypt_archive(blob, "mauvaise-pass")
+
+
+def test_is_encrypted_archive_detects_magic_bytes(tmp_path):
+    """is_encrypted_archive reconnaît le magic PARKEV1."""
+    enc_path = tmp_path / "a.tar.gz.enc"
+    enc_path.write_bytes(ARCHIVE_MAGIC + b"\x00" * 16 + b"ciphertext")
+    plain_path = tmp_path / "b.tar.gz"
+    plain_path.write_bytes(b"\x1f\x8b\x08" + b"plain gzip data")  # gzip magic
+    assert is_encrypted_archive(enc_path) is True
+    assert is_encrypted_archive(plain_path) is False
+
+
+def test_encrypt_uses_random_salt():
+    """Deux chiffrements de la même donnée produisent des blobs différents (salt aléatoire)."""
+    data = b"identique"
+    b1 = encrypt_archive(data, "pass")
+    b2 = encrypt_archive(data, "pass")
+    assert b1 != b2  # salt différent
+    assert decrypt_archive(b1, "pass") == decrypt_archive(b2, "pass") == data

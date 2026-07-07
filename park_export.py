@@ -9,6 +9,7 @@ Usage :
 
 from __future__ import annotations
 import json
+import os
 import shutil
 import subprocess
 import tarfile
@@ -17,7 +18,53 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from cryptography.fernet import Fernet, InvalidToken
+
 from hubctl_cli.hub_state import PARC_ROOT, HUB_DIR, APPS_DIR
+from hubctl_cli.coffre import derive_key
+
+ARCHIVE_MAGIC = b"PARKEV1"
+
+
+class WrongPassphraseError(Exception):
+    """Levée quand la passphrase de déchiffrement d'archive est incorrecte."""
+
+
+def encrypt_archive(tar_bytes: bytes, passphrase: str) -> bytes:
+    """Chiffre un blob tar.gz avec une passphrase (Fernet + scrypt).
+
+    Format : ARCHIVE_MAGIC (7) + salt (16) + ciphertext.
+    Le salt est aléatoire à chaque appel → blobs différents pour la même entrée.
+    """
+    salt = os.urandom(16)
+    key = derive_key(passphrase, salt)
+    ciphertext = Fernet(key).encrypt(tar_bytes)
+    return ARCHIVE_MAGIC + salt + ciphertext
+
+
+def decrypt_archive(blob: bytes, passphrase: str) -> bytes:
+    """Déchiffre un blob produit par encrypt_archive.
+
+    Lève WrongPassphraseError si la passphrase est incorrecte.
+    Lève ValueError si le blob n'a pas le magic attendu.
+    """
+    if not blob.startswith(ARCHIVE_MAGIC):
+        raise ValueError("Blob sans magic PARKEV1 — pas une archive chiffrée")
+    salt = blob[len(ARCHIVE_MAGIC):len(ARCHIVE_MAGIC) + 16]
+    ciphertext = blob[len(ARCHIVE_MAGIC) + 16:]
+    try:
+        return Fernet(derive_key(passphrase, salt)).decrypt(ciphertext)
+    except InvalidToken:
+        raise WrongPassphraseError("Passphrase d'archive incorrecte")
+
+
+def is_encrypted_archive(path) -> bool:
+    """Détecte si un fichier (Path) ou des bytes sont une archive chiffrée PARKEV1."""
+    if isinstance(path, (bytes, bytearray)):
+        return bytes(path).startswith(ARCHIVE_MAGIC)
+    data = Path(path).read_bytes()[:len(ARCHIVE_MAGIC) + 1]
+    return data.startswith(ARCHIVE_MAGIC)
+
 
 EXPORT_DIR = PARC_ROOT / "exports"
 
