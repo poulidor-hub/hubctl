@@ -22,6 +22,18 @@ def get_mode() -> str:
     return _mode
 
 
+def auto_detect_mode() -> str:
+    """Détecte le mode automatiquement : DEV si APP_Workshop/ contient au
+    moins une app avec docker-compose.yml, PROD sinon.
+    """
+    ws = WORKSHOP_DIR
+    if ws.exists():
+        for d in ws.iterdir():
+            if d.is_dir() and (d / "docker-compose.yml").exists():
+                return "dev"
+    return "prod"
+
+
 def get_active_apps() -> list[AppInfo]:
     if _mode == "dev":
         return get_workshop_apps()

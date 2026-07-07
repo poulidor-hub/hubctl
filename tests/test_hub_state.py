@@ -139,3 +139,27 @@ def test_active_apps_dir_dev_returns_workshop_dir():
         assert hub_state.active_apps_dir() == hub_state.WORKSHOP_DIR
     finally:
         hub_state.set_mode("prod")
+
+
+def test_auto_detect_mode_prod_when_workshop_empty(tmp_path, monkeypatch):
+    """WORKSHOP_DIR vide ou inexistant → PROD."""
+    monkeypatch.setattr(hub_state, "WORKSHOP_DIR", tmp_path / "ws")
+    assert hub_state.auto_detect_mode() == "prod"
+
+
+def test_auto_detect_mode_dev_when_workshop_has_app(tmp_path, monkeypatch):
+    """WORKSHOP_DIR avec une app (docker-compose.yml) → DEV."""
+    ws = tmp_path / "ws"
+    app = ws / "exemple-apps-ws"
+    app.mkdir(parents=True)
+    (app / "docker-compose.yml").write_text("services:\n  api:\n    image: x\n")
+    monkeypatch.setattr(hub_state, "WORKSHOP_DIR", ws)
+    assert hub_state.auto_detect_mode() == "dev"
+
+
+def test_auto_detect_mode_prod_when_workshop_has_only_dirs_without_compose(tmp_path, monkeypatch):
+    """WORKSHOP_DIR avec des dossiers mais SANS docker-compose.yml → PROD."""
+    ws = tmp_path / "ws"
+    (ws / "leftover").mkdir(parents=True)
+    monkeypatch.setattr(hub_state, "WORKSHOP_DIR", ws)
+    assert hub_state.auto_detect_mode() == "prod"
