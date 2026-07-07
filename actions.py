@@ -165,19 +165,20 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
         )
 
     if target == "hub":
-        utils.run_shell(
-            ["make", "-C", str(target_path), "up-prod"],
-            console=con, timeout=60,
-        )
+        utils.run_shell(["make", "-C", str(target_path), "build"],
+                        console=con, timeout=600)
+        rc = utils.run_shell(["make", "-C", str(target_path), "up-prod"],
+                             console=con, timeout=60)
     else:
-        utils.run_shell(
-            ["make", "-C", str(target_path), "build"], console=con, timeout=120,
-        )
-        utils.run_shell(
-            ["make", "-C", str(target_path), "up"], console=con, timeout=60,
-        )
+        utils.run_shell(["make", "-C", str(target_path), "build"],
+                        console=con, timeout=600)
+        rc = utils.run_shell(["make", "-C", str(target_path), "up"],
+                             console=con, timeout=60)
 
-    con.print("[green]✓ Rollback terminé[/green]")
+    if rc != 0:
+        con.print("[red]✗ Rollback incomplet — prod peut être DOWN. Intervention manuelle requise.[/red]")
+    else:
+        con.print("[green]✓ Rollback terminé[/green]")
 
 
 def action_update(console, target: str, *, dry_run: bool) -> None:
