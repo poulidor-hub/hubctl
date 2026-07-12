@@ -209,3 +209,10 @@ def test_parser_db_shell_app():
     from hubctl_cli.__main__ import build_parser
     p = build_parser()
     assert p.parse_args(["db-shell", "shop"]).app == "shop"
+
+
+def test_parser_deploy_flags():
+    from hubctl_cli.__main__ import build_parser
+    p = build_parser()
+    a = p.parse_args(["deploy", "hub", "--validate", "--dry-run"])
+    assert a.target == "hub" and a.validate is True and a.dry_run is True

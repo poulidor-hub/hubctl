@@ -931,3 +931,90 @@ def test_db_snapshot_app_failure_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
     with mock.patch.object(actions.subprocess, "run", side_effect=actions.subprocess.CalledProcessError(1, "docker")):
         assert actions._db_snapshot_app("shop") is None
+
+
+# ── Task 6: Blue-green deploy ──
+
+def test_read_prod_ports_hub(tmp_path, monkeypatch):
+    from hubctl_cli import actions
+    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
+    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
+    assert actions._read_prod_ports("hub") == (8000, 80, 443)
+
+
+def test_deploy_success_flow(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    # préparer cible hub factice
+    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
+    (fake_hub / "docker-compose.yml").write_text("")
+    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc1234")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: tmp_path / "snap.sql")
+    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
+    monkeypatch.setattr(actions, "_health_check", lambda *a, **k: True)
+    monkeypatch.setattr(actions, "_rollback", mock.Mock())
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_deploy(mock.Mock(), "hub")
+    cmds = [c.args[0] for c in rs.call_args_list]
+    # séquence attendue : git pull, make build, compose -p hub-test up, compose -p hub down, compose -p hub up, compose -p hub-test down -v
+    joined = [" ".join(c) for c in cmds]
+    assert any("git" in j and "pull" in j for j in joined)
+    assert any("make" in j and "build" in j for j in joined)
+    assert any("-p" in j and "hub-test" in j and "up" in j for j in joined)
+    assert any("-p" in j and j.count("hub") >= 1 and "down" in j for j in joined)
+    assert any("-p" in j and "hub-test" in j and "down" in j for j in joined)
+
+
+def test_deploy_git_pull_fails_rollback(tmp_path, monkeypatch):
+    from hubctl_cli import actions
+    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
+    (fake_hub / "docker-compose.yml").write_text("")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
+    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc1234")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(actions, "_rollback", mock.Mock())
+    with mock.patch.object(actions.utils, "run_shell", return_value=1):
+        actions.action_deploy(mock.Mock(), "hub")
+    actions._rollback.assert_called_once()
+
+
+def test_deploy_health_fail_rollback(tmp_path, monkeypatch):
+    from hubctl_cli import actions
+    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
+    (fake_hub / "docker-compose.yml").write_text("")
+    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
+    monkeypatch.setattr(actions, "_health_check", lambda *a, **k: False)
+    monkeypatch.setattr(actions, "_rollback", mock.Mock())
+    with mock.patch.object(actions.utils, "run_shell", return_value=0):
+        actions.action_deploy(mock.Mock(), "hub")
+    actions._rollback.assert_called_once()
+
+
+def test_deploy_dry_run_no_real_docker(tmp_path, monkeypatch):
+    from hubctl_cli import actions
+    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
+    (fake_hub / "docker-compose.yml").write_text("")
+    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
+    monkeypatch.setattr(actions, "_health_check", lambda *a, **k: True)
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_deploy(mock.Mock(), "hub", dry_run=True)
+    # toutes les invocations ont dry_run=True
+    for c in rs.call_args_list:
+        assert c.kwargs.get("dry_run") is True

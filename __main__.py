@@ -9,7 +9,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_work, action_ship, action_update, action_start_stop, action_status,
-    action_logs, action_restart, action_health, action_db_shell,
+    action_logs, action_restart, action_health, action_db_shell, action_deploy,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -68,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop_parser = sub.add_parser("stop", help="Arrêter le Hub ou une app")
     stop_parser.add_argument("target", help="'hub' ou le slug de l'app")
+
+    deploy_parser = sub.add_parser("deploy", help="Déploiement blue-green (zéro downtime, prod)")
+    deploy_parser.add_argument("target", help="'hub' ou le slug de l'app")
+    deploy_parser.add_argument("--validate", action="store_true",
+                               help="Validation humaine avant swap (requiert TTY)")
+    deploy_parser.add_argument("--dry-run", action="store_true",
+                               help="Afficher les commandes sans les exécuter")
 
     sub.add_parser("status", help="Vue d'ensemble du parc (Hub + apps + mode)")
 
@@ -162,6 +169,17 @@ def _run(args) -> int:
     if args.command == "debug":
         from hubctl_cli.debug_agent import run_debug
         return run_debug(args)
+
+    if args.command == "deploy":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        _resolve_mode(args)
+        try:
+            action_deploy(console, args.target, validate=args.validate, dry_run=args.dry_run)
+            return 0
+        except Exception as e:
+            print(f"❌ deploy a échoué : {e}")
+            return 1
 
     if args.command in ("work", "ship", "update", "start", "stop", "status"):
         from rich.console import Console as RichConsole

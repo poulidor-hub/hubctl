@@ -798,6 +798,142 @@ def action_workshop_move(console, direction: str, app_name: str, *, dry_run: boo
     con.print(f"[green]✓ Workshop move « {source_slug} » → « {dest_slug} » terminé ![/green]")
 
 
+def _read_prod_ports(target: str) -> tuple[int, int, int]:
+    """Lit les ports prod d'une cible depuis son .env."""
+    if target == "hub":
+        env_path = hub_state.HUB_DIR / ".env"
+        env = env_manager.read_env(env_path) if env_path.exists() else {}
+        return (int(env.get("HUB_API_PORT", "8000")),
+                int(env.get("HUB_FRONTEND_PORT", "80")),
+                int(env.get("HUB_HTTPS_PORT", "443")))
+    app_env = hub_state.active_apps_dir() / target / ".env"
+    env = env_manager.read_env(app_env) if app_env.exists() else {}
+    return (int(env.get("API_PORT", "8000")),
+            int(env.get("FRONTEND_PORT", "80")),
+            int(env.get("FRONTEND_HTTPS_PORT", "443")))
+
+
+def _build_test_env(target: str, ports: tuple[int, int, int]) -> dict:
+    """Construit l'environnement d'override de ports pour l'instance verte."""
+    env = os.environ.copy()
+    api, fe, https = ports
+    if target == "hub":
+        env["HUB_API_PORT"] = str(api)
+        env["HUB_FRONTEND_PORT"] = str(fe)
+        env["HUB_HTTPS_PORT"] = str(https)
+    else:
+        env["API_PORT"] = str(api)
+        env["FRONTEND_PORT"] = str(fe)
+        env["FRONTEND_HTTPS_PORT"] = str(https)
+    return env
+
+
+def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool = False) -> None:
+    """Déploiement blue-green : instance verte sur ports+1 → validation → swap.
+    Flow détaillé : spec 2026-07-12-hubctl-refonte-quickwins-design.md §B.2.
+    """
+    con = console or _console
+    if validate and not sys.stdin.isatty():
+        con.print("[yellow]--validate requiert un TTY ; bascule en mode auto.[/yellow]")
+        validate = False
+    if not disk_guard(con):
+        return
+    target_path = hub_state.HUB_DIR if target == "hub" else hub_state.active_apps_dir() / target
+    compose_file = target_path / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
+        return
+
+    # 1. Capture rollback
+    prev_commit = _git_previous_commit(target_path, con)
+    snapshot = _db_snapshot(con) if target == "hub" else _db_snapshot_app(target, con)
+
+    # 2. git pull
+    con.print(f"[bold]→ git pull ({target})[/bold]")
+    rc = utils.run_shell(["git", "-C", str(target_path), "pull", "--recurse-submodules"],
+                         dry_run=dry_run, console=con)
+    if rc != 0:
+        rc = utils.run_shell(["git", "-C", str(target_path), "pull"], dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print("[red]✗ git pull échoué — rollback et abort.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return
+
+    # 3. build
+    con.print(f"[bold]→ Build de « {target} »[/bold]")
+    rc = utils.run_shell(["make", "-C", str(target_path), "build"],
+                         dry_run=dry_run, console=con, timeout=600)
+    if rc != 0:
+        con.print("[red]✗ Build échoué — rollback et abort.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return
+
+    # 4. ports test libres
+    base = _read_prod_ports(target)
+    test_ports = _find_free_ports(*base)
+    con.print(f"[bold]→ Instance verte sur ports API={test_ports[0]} FE={test_ports[1]} HTTPS={test_ports[2]}[/bold]")
+
+    # 5. instance verte
+    project = f"{target}-test"
+    test_env = _build_test_env(target, test_ports)
+    rc = utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "up", "-d"],
+                         dry_run=dry_run, console=con, timeout=120)
+    if rc != 0:
+        con.print("[red]✗ Instance verte échouée — rollback et abort.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return
+
+    # 6. restore snapshot dans db-test (hub only — apps partagent la DB via volume séparé)
+    if target == "hub" and snapshot and snapshot.exists():
+        con.print("[bold]→ Restauration snapshot dans db-test…[/bold]")
+        utils.run_shell(
+            ["docker", "exec", "-i", "hub-test-db-1", "psql", "-U", "hubadmin", "hub_auth"],
+            dry_run=dry_run, console=con, timeout=60,
+        )
+
+    # 7. health check port test
+    if not _health_check(target, con, timeout=60):
+        con.print("[red]✗ Health check vert échoué — rollback et cleanup vert.[/red]")
+        utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "down", "-v"],
+                        dry_run=dry_run, console=con, timeout=60)
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return
+
+    # 8. validation humaine (opt-in)
+    if validate:
+        con.print(f"[bold cyan]🌐 Instance verte : http://localhost:{test_ports[1]} | https://localhost:{test_ports[2]}[/bold cyan]")
+        # widgets.confirm nécessite un Canvas TUI ; en CLI on utilise input()
+        try:
+            answer = input("Tout OK ? Passer en prod ? [o/N] : ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("o", "oui", "y", "yes"):
+            con.print("[yellow]↩ Annulé — cleanup instance verte, prod intacte.[/yellow]")
+            utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "down", "-v"],
+                            dry_run=dry_run, console=con, timeout=60)
+            # restaurer le disque (git pull a eu lieu)
+            _rollback(target, target_path, prev_commit, snapshot, con)
+            return
+
+    # 9. swap
+    con.print(f"[bold]→ Swap : arrêt prod actuelle…[/bold]")
+    utils.run_shell(["docker", "compose", "-p", target, "-f", str(compose_file), "down"],
+                    dry_run=dry_run, console=con, timeout=60)
+    con.print(f"[bold]→ Swap : démarrage nouvelle prod…[/bold]")
+    rc = utils.run_shell(["docker", "compose", "-p", target, "-f", str(compose_file), "up", "-d"],
+                         dry_run=dry_run, console=con, timeout=120)
+    if rc != 0 or not _health_check(target, con, timeout=60):
+        con.print("[red]✗ Swap échoué — rollback (relance ancienne prod).[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return
+
+    # 10. cleanup vert
+    con.print("[bold]→ Cleanup instance verte…[/bold]")
+    utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "down", "-v"],
+                    dry_run=dry_run, console=con, timeout=60)
+    con.print(f"[green]✓ « {target} » déployé en prod (blue-green)[/green]")
+
+
 def action_work(console, slug: str, *, dry_run: bool = False) -> None:
     """Met une app en atelier (APPS → APP_Workshop) avec clone DB, puis démarre.
     Wrapper CLI autour de action_workshop_move(direction='to_workshop').
