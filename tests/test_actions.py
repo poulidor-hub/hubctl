@@ -955,7 +955,7 @@ def test_deploy_success_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc1234")
     monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: tmp_path / "snap.sql")
     monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
-    monkeypatch.setattr(actions, "_health_check", lambda *a, **k: True)
+    monkeypatch.setattr(actions, "_health_check", mock.Mock(return_value=True))
     monkeypatch.setattr(actions, "_rollback", mock.Mock())
     with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
         actions.action_deploy(mock.Mock(), "hub")
@@ -967,6 +967,13 @@ def test_deploy_success_flow(tmp_path, monkeypatch):
     assert any("-p" in j and "hub-test" in j and "up" in j for j in joined)
     assert any("-p" in j and j.count("hub") >= 1 and "down" in j for j in joined)
     assert any("-p" in j and "hub-test" in j and "down" in j for j in joined)
+    # C1: verify env= is passed to the green instance compose up
+    green_up_call = [c for c in rs.call_args_list if "-p" in c.args[0] and "hub-test" in c.args[0] and "up" in c.args[0]]
+    assert len(green_up_call) == 1
+    assert "env" in green_up_call[0].kwargs, "C1: env must be passed to green instance compose up"
+    # C2: verify health_check gets port_override for green instance
+    all_hc_args = [call for call in actions._health_check.call_args_list if call.kwargs.get("port_override") is not None]
+    assert len(all_hc_args) >= 1, "C2: _health_check must receive port_override"
 
 
 def test_deploy_git_pull_fails_rollback(tmp_path, monkeypatch):
@@ -999,6 +1006,10 @@ def test_deploy_health_fail_rollback(tmp_path, monkeypatch):
     with mock.patch.object(actions.utils, "run_shell", return_value=0):
         actions.action_deploy(mock.Mock(), "hub")
     actions._rollback.assert_called_once()
+    # C3: for hub, db_container/db_name should be None (defaults)
+    call_kwargs = actions._rollback.call_args.kwargs
+    assert call_kwargs.get("db_container") is None, "C3: hub uses default db_container"
+    assert call_kwargs.get("db_name") is None, "C3: hub uses default db_name"
 
 
 def test_deploy_dry_run_no_real_docker(tmp_path, monkeypatch):

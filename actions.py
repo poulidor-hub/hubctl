@@ -158,23 +158,26 @@ def _git_previous_commit(path: Path, console=None) -> str | None:
         return None
 
 
-def _health_check(target: str, console=None, timeout: int = 60) -> bool:
+def _health_check(target: str, console=None, timeout: int = 60, port_override: str | None = None) -> bool:
     """Wait for hub API to be healthy. Returns True if healthy within timeout."""
     con = console or _console
     # Port API : HUB_API_PORT du .env Hub (défaut 8000) pour target "hub",
     # sinon API_PORT de l'app cible.
-    api_port = "8000"
-    try:
-        if target == "hub":
-            env_path = hub_state.HUB_DIR / ".env"
-            if env_path.exists():
-                api_port = env_manager.read_env(env_path).get("HUB_API_PORT", api_port)
-        else:
-            app_env = hub_state.active_apps_dir() / target / ".env"
-            if app_env.exists():
-                api_port = env_manager.read_env(app_env).get("API_PORT", api_port)
-    except Exception:
-        pass
+    if port_override is not None:
+        api_port = port_override
+    else:
+        api_port = "8000"
+        try:
+            if target == "hub":
+                env_path = hub_state.HUB_DIR / ".env"
+                if env_path.exists():
+                    api_port = env_manager.read_env(env_path).get("HUB_API_PORT", api_port)
+            else:
+                app_env = hub_state.active_apps_dir() / target / ".env"
+                if app_env.exists():
+                    api_port = env_manager.read_env(app_env).get("API_PORT", api_port)
+        except Exception:
+            pass
     health_url = f"http://localhost:{api_port}/api/health"
     elapsed = 0
     while elapsed < timeout:
@@ -196,7 +199,8 @@ def _health_check(target: str, console=None, timeout: int = 60) -> bool:
 
 
 def _rollback(target: str, target_path: Path, prev_commit: str | None,
-              snapshot: Path | None, console=None) -> None:
+              snapshot: Path | None, console=None,
+              db_container: str | None = None, db_name: str | None = None) -> None:
     """Rollback: revert git, restore DB snapshot, re-up."""
     con = console or _console
     con.print(f"[bold red]↩ Rollback de « {target} »[/bold red]")
@@ -210,8 +214,10 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
 
     if snapshot and snapshot.exists():
         con.print(f"  restauration DB → {snapshot.name}")
+        container = db_container or "hub-db"
+        database = db_name or "hub_auth"
         subprocess.run(
-            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "hub_auth"],
+            ["docker", "exec", "-i", container, "psql", "-U", "hubadmin", database],
             input=snapshot.read_bytes(), capture_output=True, timeout=30,
         )
 
@@ -832,6 +838,7 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
     """Déploiement blue-green : instance verte sur ports+1 → validation → swap.
     Flow détaillé : spec 2026-07-12-hubctl-refonte-quickwins-design.md §B.2.
     """
+    import sys
     con = console or _console
     if validate and not sys.stdin.isatty():
         con.print("[yellow]--validate requiert un TTY ; bascule en mode auto.[/yellow]")
@@ -847,6 +854,8 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
     # 1. Capture rollback
     prev_commit = _git_previous_commit(target_path, con)
     snapshot = _db_snapshot(con) if target == "hub" else _db_snapshot_app(target, con)
+    db_container = None if target == "hub" else f"{target}-postgres-1"
+    db_name = None if target == "hub" else target
 
     # 2. git pull
     con.print(f"[bold]→ git pull ({target})[/bold]")
@@ -856,7 +865,8 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
         rc = utils.run_shell(["git", "-C", str(target_path), "pull"], dry_run=dry_run, console=con)
     if rc != 0:
         con.print("[red]✗ git pull échoué — rollback et abort.[/red]")
-        _rollback(target, target_path, prev_commit, snapshot, con)
+        _rollback(target, target_path, prev_commit, snapshot, con,
+                  db_container=db_container, db_name=db_name)
         return
 
     # 3. build
@@ -865,7 +875,8 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
                          dry_run=dry_run, console=con, timeout=600)
     if rc != 0:
         con.print("[red]✗ Build échoué — rollback et abort.[/red]")
-        _rollback(target, target_path, prev_commit, snapshot, con)
+        _rollback(target, target_path, prev_commit, snapshot, con,
+                  db_container=db_container, db_name=db_name)
         return
 
     # 4. ports test libres
@@ -877,26 +888,31 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
     project = f"{target}-test"
     test_env = _build_test_env(target, test_ports)
     rc = utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "up", "-d"],
-                         dry_run=dry_run, console=con, timeout=120)
+                         dry_run=dry_run, console=con, timeout=120, env=test_env)
     if rc != 0:
         con.print("[red]✗ Instance verte échouée — rollback et abort.[/red]")
-        _rollback(target, target_path, prev_commit, snapshot, con)
+        _rollback(target, target_path, prev_commit, snapshot, con,
+                  db_container=db_container, db_name=db_name)
         return
 
     # 6. restore snapshot dans db-test (hub only — apps partagent la DB via volume séparé)
     if target == "hub" and snapshot and snapshot.exists():
         con.print("[bold]→ Restauration snapshot dans db-test…[/bold]")
-        utils.run_shell(
-            ["docker", "exec", "-i", "hub-test-db-1", "psql", "-U", "hubadmin", "hub_auth"],
-            dry_run=dry_run, console=con, timeout=60,
-        )
+        if dry_run:
+            con.print("[dim]$ docker exec -i hub-test-db-1 psql -U hubadmin hub_auth < snapshot (dry-run)[/dim]")
+        else:
+            subprocess.run(
+                ["docker", "exec", "-i", "hub-test-db-1", "psql", "-U", "hubadmin", "hub_auth"],
+                input=snapshot.read_bytes(), capture_output=True, timeout=30,
+            )
 
     # 7. health check port test
-    if not _health_check(target, con, timeout=60):
+    if not _health_check(target, con, timeout=60, port_override=str(test_ports[0])):
         con.print("[red]✗ Health check vert échoué — rollback et cleanup vert.[/red]")
         utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "down", "-v"],
                         dry_run=dry_run, console=con, timeout=60)
-        _rollback(target, target_path, prev_commit, snapshot, con)
+        _rollback(target, target_path, prev_commit, snapshot, con,
+                  db_container=db_container, db_name=db_name)
         return
 
     # 8. validation humaine (opt-in)
@@ -912,7 +928,8 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
             utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "down", "-v"],
                             dry_run=dry_run, console=con, timeout=60)
             # restaurer le disque (git pull a eu lieu)
-            _rollback(target, target_path, prev_commit, snapshot, con)
+            _rollback(target, target_path, prev_commit, snapshot, con,
+                      db_container=db_container, db_name=db_name)
             return
 
     # 9. swap
@@ -924,7 +941,8 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
                          dry_run=dry_run, console=con, timeout=120)
     if rc != 0 or not _health_check(target, con, timeout=60):
         con.print("[red]✗ Swap échoué — rollback (relance ancienne prod).[/red]")
-        _rollback(target, target_path, prev_commit, snapshot, con)
+        _rollback(target, target_path, prev_commit, snapshot, con,
+                  db_container=db_container, db_name=db_name)
         return
 
     # 10. cleanup vert

@@ -74,9 +74,9 @@ def is_noise(line: str) -> bool:
     return False
 
 
-def run_shell(cmd, *, cwd=None, timeout=120, dry_run=False, stream=True, console=None) -> int:
+def run_shell(cmd, *, cwd=None, timeout=120, dry_run=False, stream=True, console=None, env=None) -> int:
     if _stream_callback is not None:
-        return run_shell_stream(cmd, cwd=cwd, timeout=timeout, dry_run=dry_run, on_line=_stream_callback)
+        return run_shell_stream(cmd, cwd=cwd, timeout=timeout, dry_run=dry_run, on_line=_stream_callback, env=env)
 
     con = console or _console
     printable = " ".join(shlex.quote(c) for c in cmd)
@@ -86,10 +86,10 @@ def run_shell(cmd, *, cwd=None, timeout=120, dry_run=False, stream=True, console
     con.print(f"[dim]$ {printable}[/dim]")
     try:
         if stream:
-            proc = subprocess.Popen(cmd, cwd=cwd)
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env)
             proc.communicate(timeout=timeout)
             return proc.returncode
-        proc = subprocess.run(cmd, cwd=cwd, timeout=timeout, capture_output=True)
+        proc = subprocess.run(cmd, cwd=cwd, timeout=timeout, capture_output=True, env=env)
         return proc.returncode
     except subprocess.TimeoutExpired:
         con.print(f"[red]\u2717 Timeout ({timeout}s) sur:[/red] {printable}")
@@ -99,7 +99,7 @@ def run_shell(cmd, *, cwd=None, timeout=120, dry_run=False, stream=True, console
         return 127
 
 
-def run_shell_stream(cmd, *, cwd=None, timeout=120, dry_run=False, on_line=None, filter_noise=True) -> int:
+def run_shell_stream(cmd, *, cwd=None, timeout=120, dry_run=False, on_line=None, filter_noise=True, env=None) -> int:
     printable = " ".join(shlex.quote(c) for c in cmd)
     if dry_run:
         if on_line:
@@ -114,7 +114,7 @@ def run_shell_stream(cmd, *, cwd=None, timeout=120, dry_run=False, on_line=None,
         proc = subprocess.Popen(
             cmd, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            text=True, bufsize=1, env=env,
         )
         _current_proc = proc
 
