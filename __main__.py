@@ -9,6 +9,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_work, action_ship, action_update, action_start_stop, action_status,
+    action_logs, action_restart,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -69,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
     stop_parser.add_argument("target", help="'hub' ou le slug de l'app")
 
     sub.add_parser("status", help="Vue d'ensemble du parc (Hub + apps + mode)")
+
+    logs_parser = sub.add_parser("logs", help="Logs d'un service (hub ou app)")
+    logs_parser.add_argument("target", help="'hub' ou le slug de l'app")
+    mx = logs_parser.add_mutually_exclusive_group()
+    mx.add_argument("--api", action="store_true", help="Logs de l'API uniquement")
+    mx.add_argument("--db", action="store_true", help="Logs de PostgreSQL uniquement")
+    mx.add_argument("--frontend", action="store_true", help="Logs du frontend uniquement")
+
+    restart_parser = sub.add_parser("restart", help="Redémarrer un service (hub ou app)")
+    restart_parser.add_argument("target", help="'hub' ou le slug de l'app")
+    restart_parser.add_argument("service", nargs="?", choices=["api", "frontend"], default=None,
+                                help="Service à redémarrer (défaut : tous)")
 
     return p
 
@@ -161,6 +174,21 @@ def _run(args) -> int:
                 action_start_stop(console, "stop", target=args.target)
             elif args.command == "status":
                 action_status(console)
+            return 0
+        except Exception as e:
+            print(f"❌ {args.command} a échoué : {e}")
+            return 1
+
+    if args.command in ("logs", "restart", "health", "db-shell"):
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        _resolve_mode(args)
+        try:
+            if args.command == "logs":
+                service = "api" if args.api else "postgres" if args.db else "frontend" if args.frontend else None
+                action_logs(console, args.target, service=service)
+            elif args.command == "restart":
+                action_restart(console, args.target, service=args.service)
             return 0
         except Exception as e:
             print(f"❌ {args.command} a échoué : {e}")

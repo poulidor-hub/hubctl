@@ -701,3 +701,63 @@ def test_action_start_stop_hub_default_unchanged(monkeypatch):
     monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
     actions.action_start_stop(None, "stop")
     assert "down" in calls
+
+
+# ── Task 1: action_logs + action_restart + _compose_file ──
+
+def test_compose_file_hub():
+    from hubctl_cli import actions, hub_state
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_state.PARC_ROOT / "HUB_base"):
+        p = actions._compose_file("hub")
+        assert p is not None
+        assert p.name == "docker-compose.yml"
+
+
+def test_compose_file_unknown_app_returns_none(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
+    assert actions._compose_file("inexistante") is None
+
+
+def test_action_logs_all_services(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "docker-compose.yml").write_text("")
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_logs(mock.Mock(), "shop")
+    cmd = rs.call_args.args[0]
+    assert cmd[:5] == ["docker", "compose", "-f", str(tmp_path / "shop" / "docker-compose.yml"), "logs"]
+    assert "api" not in cmd and "postgres" not in cmd
+
+
+def test_action_logs_filter_api(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "docker-compose.yml").write_text("")
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_logs(mock.Mock(), "shop", service="api")
+    assert rs.call_args.args[0][-1] == "api"
+
+
+def test_action_logs_unknown_target_no_run():
+    from hubctl_cli import actions
+    with mock.patch.object(actions.utils, "run_shell") as rs:
+        actions.action_logs(mock.Mock(), "inexistante")
+    rs.assert_not_called()
+
+
+def test_action_restart_with_service(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "docker-compose.yml").write_text("")
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_restart(mock.Mock(), "shop", service="frontend")
+    cmd = rs.call_args.args[0]
+    assert "restart" in cmd
+    assert cmd[-1] == "frontend"

@@ -173,3 +173,24 @@ def test_dispatch_returns_1_on_error(monkeypatch):
     with mock.patch.object(m, "action_ship", side_effect=RuntimeError("boom")):
         rc = m.main(["ship", "shop"])
     assert rc == 1
+
+
+# ── Task 1: logs + restart parser tests ──
+
+def test_parser_logs_mutually_exclusive():
+    from hubctl_cli.__main__ import build_parser
+    p = build_parser()
+    a = p.parse_args(["logs", "hub", "--api"])
+    assert a.target == "hub" and a.api is True and a.db is False
+    try:
+        p.parse_args(["logs", "hub", "--api", "--db"])
+        assert False, "devrait échouer"
+    except SystemExit:
+        pass
+
+
+def test_parser_restart_optional_service():
+    from hubctl_cli.__main__ import build_parser
+    p = build_parser()
+    assert p.parse_args(["restart", "hub"]).service is None
+    assert p.parse_args(["restart", "hub", "api"]).service == "api"

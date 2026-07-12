@@ -376,11 +376,37 @@ def action_repair(console, *, dry_run: bool) -> None:
     )
 
 
-def action_logs(console, target: str) -> None:
+def _compose_file(target: str) -> Path | None:
+    """Retourne le docker-compose.yml du hub ou de l'app, ou None si introuvable."""
     if target == "hub":
-        hub_make("logs", dry_run=False, console=console)
+        p = hub_state.HUB_DIR / "docker-compose.yml"
     else:
-        app_make(target, "logs", dry_run=False, console=console)
+        p = hub_state.active_apps_dir() / target / "docker-compose.yml"
+    return p if p.exists() else None
+
+
+def action_logs(console, target: str, *, service: str | None = None) -> None:
+    con = console or _console
+    compose = _compose_file(target)
+    if compose is None:
+        con.print(f"[red]✗ Cible introuvable : {target}[/red]")
+        return
+    cmd = ["docker", "compose", "-f", str(compose), "logs", "-f", "--tail=100"]
+    if service:
+        cmd.append(service)
+    utils.run_shell(cmd, console=con)
+
+
+def action_restart(console, target: str, *, service: str | None = None) -> None:
+    con = console or _console
+    compose = _compose_file(target)
+    if compose is None:
+        con.print(f"[red]✗ Cible introuvable : {target}[/red]")
+        return
+    cmd = ["docker", "compose", "-f", str(compose), "restart"]
+    if service:
+        cmd.append(service)
+    utils.run_shell(cmd, console=con)
 
 
 def action_init(console, *, dry_run: bool) -> None:
