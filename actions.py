@@ -385,6 +385,70 @@ def _compose_file(target: str) -> Path | None:
     return p if p.exists() else None
 
 
+def _resolve_api_port(target: str) -> str | None:
+    try:
+        if target == "hub":
+            env_path = hub_state.HUB_DIR / ".env"
+            if env_path.exists():
+                return env_manager.read_env(env_path).get("HUB_API_PORT", "8000")
+            return "8000"
+        app_env = hub_state.active_apps_dir() / target / ".env"
+        if app_env.exists():
+            return env_manager.read_env(app_env).get("API_PORT", "8000")
+        return None
+    except Exception:
+        return None
+
+
+def _app_db_creds(app_name: str) -> tuple[str, str]:
+    env_path = hub_state.active_apps_dir() / app_name / ".env"
+    try:
+        env = env_manager.read_env(env_path) if env_path.exists() else {}
+    except Exception:
+        env = {}
+    return env.get("POSTGRES_USER", "app_user"), env.get("POSTGRES_DB", "app_db")
+
+
+def action_health(console, target: str, *, detailed: bool = False) -> int:
+    import json
+    con = console or _console
+    api_port = _resolve_api_port(target)
+    if api_port is None:
+        con.print(f"[red]✗ Port API introuvable pour : {target}[/red]")
+        return 1
+    path = "/api/health/detailed" if detailed else "/api/health"
+    url = f"http://localhost:{api_port}{path}"
+    try:
+        result = subprocess.run(["curl", "-sk", url], capture_output=True, text=True, timeout=5)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        con.print(f"[red]✗ Cible injoignable : {url}[/red]")
+        return 1
+    if result.returncode != 0:
+        con.print(f"[red]✗ Cible injoignable : {url}[/red]")
+        return 1
+    try:
+        data = json.loads(result.stdout)
+        con.print_json(data=data)
+        return 0 if data.get("status") == "healthy" else 1
+    except json.JSONDecodeError:
+        con.print(result.stdout)
+        return 1
+
+
+def action_db_shell(console, app_name: str) -> None:
+    con = console or _console
+    compose = _compose_file(app_name)
+    if compose is None:
+        con.print(f"[red]✗ App introuvable : {app_name}[/red]")
+        return
+    user, db = _app_db_creds(app_name)
+    utils.run_shell(
+        ["docker", "compose", "-f", str(compose), "exec", "postgres",
+         "psql", "-U", user, "-d", db],
+        console=con,
+    )
+
+
 def action_logs(console, target: str, *, service: str | None = None) -> None:
     con = console or _console
     compose = _compose_file(target)

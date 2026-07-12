@@ -761,3 +761,80 @@ def test_action_restart_with_service(tmp_path, monkeypatch):
     cmd = rs.call_args.args[0]
     assert "restart" in cmd
     assert cmd[-1] == "frontend"
+
+
+# ── Task 2: health + db-shell ──
+
+def test_resolve_api_port_hub(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    fake_hub = tmp_path / "HUB_base"
+    fake_hub.mkdir()
+    (fake_hub / ".env").write_text("HUB_API_PORT=8005\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
+    assert actions._resolve_api_port("hub") == "8005"
+
+
+def test_resolve_api_port_app(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
+    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
+    (apps / "shop" / ".env").write_text("API_PORT=9010\n")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    assert actions._resolve_api_port("shop") == "9010"
+
+
+def test_action_health_healthy(monkeypatch):
+    from hubctl_cli import actions
+    monkeypatch.setattr(actions, "_resolve_api_port", lambda t: "8000")
+    fake = mock.Mock(returncode=0, stdout='{"status":"healthy","version":"1.0"}')
+    with mock.patch.object(actions.subprocess, "run", return_value=fake):
+        rc = actions.action_health(mock.Mock(), "hub")
+    assert rc == 0
+
+
+def test_action_health_unhealthy(monkeypatch):
+    from hubctl_cli import actions
+    monkeypatch.setattr(actions, "_resolve_api_port", lambda t: "8000")
+    fake = mock.Mock(returncode=0, stdout='{"status":"unhealthy"}')
+    with mock.patch.object(actions.subprocess, "run", return_value=fake):
+        rc = actions.action_health(mock.Mock(), "hub")
+    assert rc == 1
+
+
+def test_action_health_detailed_url(monkeypatch):
+    from hubctl_cli import actions
+    monkeypatch.setattr(actions, "_resolve_api_port", lambda t: "8000")
+    fake = mock.Mock(returncode=0, stdout='{"status":"healthy"}')
+    with mock.patch.object(actions.subprocess, "run", return_value=fake) as rs:
+        actions.action_health(mock.Mock(), "hub", detailed=True)
+    assert "/api/health/detailed" in rs.call_args.args[0][-1]
+
+
+def test_app_db_creds(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
+    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
+    (apps / "shop" / ".env").write_text("POSTGRES_USER=zoe\nPOSTGRES_DB=shopdb\n")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    assert actions._app_db_creds("shop") == ("zoe", "shopdb")
+
+
+def test_action_db_shell_invokes_psql(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
+    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
+    (apps / "shop" / "docker-compose.yml").write_text("")
+    (apps / "shop" / ".env").write_text("POSTGRES_USER=zoe\nPOSTGRES_DB=shopdb\n")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.action_db_shell(mock.Mock(), "shop")
+    cmd = rs.call_args.args[0]
+    assert "exec" in cmd and "postgres" in cmd
+    assert "zoe" in cmd and "shopdb" in cmd
+
+
+def test_action_db_shell_unknown_app():
+    from hubctl_cli import actions
+    with mock.patch.object(actions.utils, "run_shell") as rs:
+        actions.action_db_shell(mock.Mock(), "nope")
+    rs.assert_not_called()

@@ -194,3 +194,18 @@ def test_parser_restart_optional_service():
     p = build_parser()
     assert p.parse_args(["restart", "hub"]).service is None
     assert p.parse_args(["restart", "hub", "api"]).service == "api"
+
+
+# ── Task 2: health + db-shell parser tests ──
+
+def test_parser_health_detailed():
+    from hubctl_cli.__main__ import build_parser
+    p = build_parser()
+    a = p.parse_args(["health", "hub", "--detailed"])
+    assert a.detailed is True
+
+
+def test_parser_db_shell_app():
+    from hubctl_cli.__main__ import build_parser
+    p = build_parser()
+    assert p.parse_args(["db-shell", "shop"]).app == "shop"

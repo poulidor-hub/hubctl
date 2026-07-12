@@ -9,7 +9,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_work, action_ship, action_update, action_start_stop, action_status,
-    action_logs, action_restart,
+    action_logs, action_restart, action_health, action_db_shell,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -82,6 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
     restart_parser.add_argument("target", help="'hub' ou le slug de l'app")
     restart_parser.add_argument("service", nargs="?", choices=["api", "frontend"], default=None,
                                 help="Service à redémarrer (défaut : tous)")
+
+    health_parser = sub.add_parser("health", help="Health check d'une cible (hub ou app)")
+    health_parser.add_argument("target", help="'hub' ou le slug de l'app")
+    health_parser.add_argument("--detailed", action="store_true", help="GET /api/health/detailed")
+
+    dbshell_parser = sub.add_parser("db-shell", help="Shell PostgreSQL d'une app (interactif)")
+    dbshell_parser.add_argument("app", help="Slug de l'app")
 
     return p
 
@@ -189,6 +196,11 @@ def _run(args) -> int:
                 action_logs(console, args.target, service=service)
             elif args.command == "restart":
                 action_restart(console, args.target, service=args.service)
+            elif args.command == "health":
+                return action_health(console, args.target, detailed=args.detailed)
+            elif args.command == "db-shell":
+                action_db_shell(console, args.app)
+                return 0
             return 0
         except Exception as e:
             print(f"❌ {args.command} a échoué : {e}")
