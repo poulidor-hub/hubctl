@@ -838,3 +838,35 @@ def test_action_db_shell_unknown_app():
     with mock.patch.object(actions.utils, "run_shell") as rs:
         actions.action_db_shell(mock.Mock(), "nope")
     rs.assert_not_called()
+
+
+def test_ensure_jwt_keys_skips_when_present(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "jwt_private_key.pem").write_text("x")
+    (secrets / "jwt_public_key.pem").write_text("x")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
+    with mock.patch.object(actions.utils, "run_shell") as rs:
+        actions._ensure_jwt_keys(dry_run=False)
+    rs.assert_not_called()
+
+
+def test_ensure_jwt_keys_generates_when_missing(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions._ensure_jwt_keys(mock.Mock(), dry_run=False)
+    cmds = [c.args[0] for c in rs.call_args_list]
+    assert any(c[:2] == ["openssl", "genrsa"] for c in cmds)
+    assert any(c[:2] == ["openssl", "rsa"] for c in cmds)
+    assert any(c[:2] == ["chmod", "600"] for c in cmds)
+
+
+def test_ensure_jwt_keys_dry_run_no_openssl(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions._ensure_jwt_keys(mock.Mock(), dry_run=True)
+    cmds = [c.args[0] for c in rs.call_args_list]
+    assert not any(c[:2] == ["openssl", "genrsa"] for c in cmds)

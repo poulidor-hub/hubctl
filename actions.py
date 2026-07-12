@@ -56,11 +56,23 @@ def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
     pub = secrets_dir / "jwt_public_key.pem"
     if priv.exists() and pub.exists():
         return
-
     con = console or _console
-    con.print("[yellow]🔐 Clés JWT absentes dans HUB_base/secrets/ (jwt_private_key.pem + jwt_public_key.pem).[/yellow]")
-    con.print("[yellow]   → Exécutez 'cd HUB_base && ./install.sh' pour les générer.[/yellow]")
-    con.print("[yellow]   → Ou placez-les manuellement dans HUB_base/secrets/.[/yellow]")
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    con.print("[yellow]🔐 Clés JWT manquantes — génération…[/yellow]")
+    if dry_run:
+        con.print(f"[dim]$ openssl genrsa -out {priv} 4096 (dry-run)[/dim]")
+        con.print(f"[dim]$ openssl rsa -in {priv} -pubout -out {pub} (dry-run)[/dim]")
+        return
+    rc = utils.run_shell(["openssl", "genrsa", "-out", str(priv), "4096"], console=con)
+    if rc != 0:
+        con.print("[red]✗ Échec génération clé privée JWT.[/red]")
+        return
+    rc = utils.run_shell(["openssl", "rsa", "-in", str(priv), "-pubout", "-out", str(pub)], console=con)
+    if rc != 0:
+        con.print("[red]✗ Échec génération clé publique JWT.[/red]")
+        return
+    utils.run_shell(["chmod", "600", str(priv)], console=con)
+    con.print(f"[green]✓ Clés JWT générées dans {secrets_dir}[/green]")
 
 
 def disk_guard(console=None) -> bool:
