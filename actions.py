@@ -106,6 +106,45 @@ def _db_snapshot(console=None) -> Path | None:
         return None
 
 
+def _port_in_use(port: int) -> bool:
+    try:
+        result = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
+        return f":{port} " in result.stdout
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def _find_free_ports(base_api: int, base_frontend: int, base_https: int) -> tuple[int, int, int]:
+    for offset in range(10):
+        api, fe, https = base_api + offset, base_frontend + offset, base_https + offset
+        if not _port_in_use(api) and not _port_in_use(fe) and not _port_in_use(https):
+            return api, fe, https
+    raise RuntimeError("Aucun port libre trouvé (10 essais)")
+
+
+def _db_snapshot_app(app_name: str, console=None) -> Path | None:
+    con = console or _console
+    backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = backups / f"snap_{app_name}_{stamp}.sql"
+    compose = hub_state.active_apps_dir() / app_name / "docker-compose.yml"
+    user, db = _app_db_creds(app_name)
+    try:
+        with open(path, "w") as f:
+            subprocess.run(
+                ["docker", "compose", "-f", str(compose), "exec", "-T", "postgres",
+                 "pg_dump", "-U", user, db],
+                stdout=f, stderr=subprocess.PIPE, timeout=60, check=True,
+            )
+        con.print(f"[green]✓ Snapshot DB {app_name} →[/green] {path.name}")
+        return path
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        con.print(f"[yellow]⚠ Snapshot DB {app_name} échoué : {e}[/yellow]")
+        path.unlink(missing_ok=True)
+        return None
+
+
 def _git_previous_commit(path: Path, console=None) -> str | None:
     """Return current HEAD hash before update. None if not a git repo."""
     con = console or _console

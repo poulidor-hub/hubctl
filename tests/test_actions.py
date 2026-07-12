@@ -870,3 +870,64 @@ def test_ensure_jwt_keys_dry_run_no_openssl(tmp_path, monkeypatch):
         actions._ensure_jwt_keys(mock.Mock(), dry_run=True)
     cmds = [c.args[0] for c in rs.call_args_list]
     assert not any(c[:2] == ["openssl", "genrsa"] for c in cmds)
+
+
+# ── Task 5: Blue-green helpers ──
+
+def test_port_in_use_true():
+    from hubctl_cli import actions
+    fake = mock.Mock(stdout="0.0.0.0:8000 users:((sshd))")
+    with mock.patch.object(actions.subprocess, "run", return_value=fake):
+        assert actions._port_in_use(8000) is True
+
+
+def test_port_in_use_false():
+    from hubctl_cli import actions
+    fake = mock.Mock(stdout="0.0.0.0:9000 users:((sshd))")
+    with mock.patch.object(actions.subprocess, "run", return_value=fake):
+        assert actions._port_in_use(8000) is False
+
+
+def test_find_free_ports_first_try():
+    from hubctl_cli import actions
+    with mock.patch.object(actions, "_port_in_use", return_value=False):
+        assert actions._find_free_ports(8000, 80, 443) == (8000, 80, 443)
+
+
+def test_find_free_ports_increments():
+    from hubctl_cli import actions
+    side = {8000: True, 80: False, 443: False}
+    with mock.patch.object(actions, "_port_in_use", side_effect=lambda p: side.get(p, False)):
+        api, fe, https = actions._find_free_ports(8000, 80, 443)
+        assert api == 8001 and fe == 81 and https == 444
+
+
+def test_find_free_ports_no_port_raises():
+    from hubctl_cli import actions
+    with mock.patch.object(actions, "_port_in_use", return_value=True):
+        try:
+            actions._find_free_ports(8000, 80, 443)
+            assert False, "devrait lever RuntimeError"
+        except RuntimeError:
+            pass
+
+
+def test_db_snapshot_app_success(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
+    (apps / "shop" / "docker-compose.yml").write_text("")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    with mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)):
+        path = actions._db_snapshot_app("shop")
+    assert path is not None and path.exists()
+
+
+def test_db_snapshot_app_failure_returns_none(tmp_path, monkeypatch):
+    from hubctl_cli import actions, hub_state
+    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
+    (apps / "shop" / "docker-compose.yml").write_text("")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    with mock.patch.object(actions.subprocess, "run", side_effect=actions.subprocess.CalledProcessError(1, "docker")):
+        assert actions._db_snapshot_app("shop") is None
