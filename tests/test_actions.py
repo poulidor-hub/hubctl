@@ -1029,3 +1029,59 @@ def test_deploy_dry_run_no_real_docker(tmp_path, monkeypatch):
     # toutes les invocations ont dry_run=True
     for c in rs.call_args_list:
         assert c.kwargs.get("dry_run") is True
+
+
+def test_deploy_dry_run_skips_real_actions(tmp_path, monkeypatch):
+    """C6+C7+C8 : deploy --dry-run ne doit lancer AUCUNE action réelle.
+
+    - C6 : _rollback reçoit dry_run=True
+    - C7 : _health_check n'est jamais appelée (simulée en dry-run)
+    - C8 : _db_snapshot jamais appelée + aucun pg_dump via subprocess
+    - aucun run_shell sans dry_run=True
+    """
+    from hubctl_cli import actions
+    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
+    (fake_hub / "docker-compose.yml").write_text("")
+    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc1234")
+    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
+
+    rollback_mock = mock.Mock()
+    monkeypatch.setattr(actions, "_rollback", rollback_mock)
+    health_mock = mock.Mock(return_value=True)
+    monkeypatch.setattr(actions, "_health_check", health_mock)
+    db_snap_mock = mock.Mock(return_value=tmp_path / "snap.sql")
+    monkeypatch.setattr(actions, "_db_snapshot", db_snap_mock)
+
+    subproc_cmds: list[list[str]] = []
+
+    def spy_subprocess(cmd, **kwargs):
+        subproc_cmds.append(cmd)
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(actions.subprocess, "run", spy_subprocess)
+
+    # git pull échoue → déclenche le chemin rollback en dry-run
+    with mock.patch.object(actions.utils, "run_shell", return_value=1) as rs:
+        actions.action_deploy(mock.Mock(), "hub", dry_run=True)
+
+    # C6 : rollback appelé avec dry_run=True
+    rollback_mock.assert_called_once()
+    assert rollback_mock.call_args.kwargs.get("dry_run") is True, \
+        "C6: _rollback doit recevoir dry_run=True"
+
+    # C7 : _health_check jamais appelée (simulée en dry-run)
+    health_mock.assert_not_called()
+
+    # C8 : _db_snapshot jamais appelée (snapshot skippé en dry-run)
+    db_snap_mock.assert_not_called()
+    assert not any("pg_dump" in " ".join(c) for c in subproc_cmds), \
+        "C8: pg_dump ne doit pas être exécuté en dry-run"
+
+    # Aucun run_shell sans dry_run=True
+    for c in rs.call_args_list:
+        assert c.kwargs.get("dry_run") is True, \
+            f"run_shell appelé sans dry_run=True : {c.args[0]}"

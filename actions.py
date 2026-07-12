@@ -200,7 +200,8 @@ def _health_check(target: str, console=None, timeout: int = 60, port_override: s
 
 def _rollback(target: str, target_path: Path, prev_commit: str | None,
               snapshot: Path | None, console=None,
-              db_container: str | None = None, db_name: str | None = None) -> None:
+              db_container: str | None = None, db_name: str | None = None,
+              dry_run: bool = False) -> None:
     """Rollback: revert git, restore DB snapshot, re-up."""
     con = console or _console
     con.print(f"[bold red]↩ Rollback de « {target} »[/bold red]")
@@ -209,28 +210,31 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
         con.print(f"  git reset → {prev_commit[:8]}")
         utils.run_shell(
             ["git", "-C", str(target_path), "reset", "--hard", prev_commit],
-            console=con, timeout=15,
+            dry_run=dry_run, console=con, timeout=15,
         )
 
     if snapshot and snapshot.exists():
         con.print(f"  restauration DB → {snapshot.name}")
         container = db_container or "hub-db"
         database = db_name or "hub_auth"
-        subprocess.run(
-            ["docker", "exec", "-i", container, "psql", "-U", "hubadmin", database],
-            input=snapshot.read_bytes(), capture_output=True, timeout=30,
-        )
+        if dry_run:
+            con.print(f"[dim]$ docker exec -i {container} psql -U hubadmin {database} < {snapshot.name} (dry-run)[/dim]")
+        else:
+            subprocess.run(
+                ["docker", "exec", "-i", container, "psql", "-U", "hubadmin", database],
+                input=snapshot.read_bytes(), capture_output=True, timeout=30,
+            )
 
     if target == "hub":
         utils.run_shell(["make", "-C", str(target_path), "build"],
-                        console=con, timeout=600)
+                        dry_run=dry_run, console=con, timeout=600)
         rc = utils.run_shell(["make", "-C", str(target_path), "up-prod"],
-                             console=con, timeout=60)
+                             dry_run=dry_run, console=con, timeout=60)
     else:
         utils.run_shell(["make", "-C", str(target_path), "build"],
-                        console=con, timeout=600)
+                        dry_run=dry_run, console=con, timeout=600)
         rc = utils.run_shell(["make", "-C", str(target_path), "up"],
-                             console=con, timeout=60)
+                             dry_run=dry_run, console=con, timeout=60)
 
     if rc != 0:
         con.print("[red]✗ Rollback incomplet — prod peut être DOWN. Intervention manuelle requise.[/red]")
@@ -853,7 +857,11 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
 
     # 1. Capture rollback
     prev_commit = _git_previous_commit(target_path, con)
-    snapshot = _db_snapshot(con) if target == "hub" else _db_snapshot_app(target, con)
+    if dry_run:
+        snapshot = None
+        con.print("[dim]$ pg_dump ... (dry-run, snapshot skippé)[/dim]")
+    else:
+        snapshot = _db_snapshot(con) if target == "hub" else _db_snapshot_app(target, con)
     db_container = None if target == "hub" else f"{target}-postgres-1"
     db_name = None if target == "hub" else target
 
@@ -866,7 +874,7 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
     if rc != 0:
         con.print("[red]✗ git pull échoué — rollback et abort.[/red]")
         _rollback(target, target_path, prev_commit, snapshot, con,
-                  db_container=db_container, db_name=db_name)
+                  db_container=db_container, db_name=db_name, dry_run=dry_run)
         return
 
     # 3. build
@@ -876,7 +884,7 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
     if rc != 0:
         con.print("[red]✗ Build échoué — rollback et abort.[/red]")
         _rollback(target, target_path, prev_commit, snapshot, con,
-                  db_container=db_container, db_name=db_name)
+                  db_container=db_container, db_name=db_name, dry_run=dry_run)
         return
 
     # 4. ports test libres
@@ -892,7 +900,7 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
     if rc != 0:
         con.print("[red]✗ Instance verte échouée — rollback et abort.[/red]")
         _rollback(target, target_path, prev_commit, snapshot, con,
-                  db_container=db_container, db_name=db_name)
+                  db_container=db_container, db_name=db_name, dry_run=dry_run)
         return
 
     # 6. restore snapshot dans db-test (hub only — apps partagent la DB via volume séparé)
@@ -907,12 +915,14 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
             )
 
     # 7. health check port test
-    if not _health_check(target, con, timeout=60, port_override=str(test_ports[0])):
+    if dry_run:
+        con.print(f"[dim]$ curl localhost:{test_ports[0]}/api/health (dry-run, simulé OK)[/dim]")
+    elif not _health_check(target, con, timeout=60, port_override=str(test_ports[0])):
         con.print("[red]✗ Health check vert échoué — rollback et cleanup vert.[/red]")
         utils.run_shell(["docker", "compose", "-p", project, "-f", str(compose_file), "down", "-v"],
                         dry_run=dry_run, console=con, timeout=60)
         _rollback(target, target_path, prev_commit, snapshot, con,
-                  db_container=db_container, db_name=db_name)
+                  db_container=db_container, db_name=db_name, dry_run=dry_run)
         return
 
     # 8. validation humaine (opt-in)
@@ -929,7 +939,7 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
                             dry_run=dry_run, console=con, timeout=60)
             # restaurer le disque (git pull a eu lieu)
             _rollback(target, target_path, prev_commit, snapshot, con,
-                      db_container=db_container, db_name=db_name)
+                      db_container=db_container, db_name=db_name, dry_run=dry_run)
             return
 
     # 9. swap
@@ -939,10 +949,18 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
     con.print(f"[bold]→ Swap : démarrage nouvelle prod…[/bold]")
     rc = utils.run_shell(["docker", "compose", "-p", target, "-f", str(compose_file), "up", "-d"],
                          dry_run=dry_run, console=con, timeout=120)
-    if rc != 0 or not _health_check(target, con, timeout=60):
+    if rc != 0:
+        swap_ok = False
+    elif dry_run:
+        prod_port = _resolve_api_port(target) or "8000"
+        con.print(f"[dim]$ curl localhost:{prod_port}/api/health (dry-run, simulé OK)[/dim]")
+        swap_ok = True
+    else:
+        swap_ok = _health_check(target, con, timeout=60)
+    if not swap_ok:
         con.print("[red]✗ Swap échoué — rollback (relance ancienne prod).[/red]")
         _rollback(target, target_path, prev_commit, snapshot, con,
-                  db_container=db_container, db_name=db_name)
+                  db_container=db_container, db_name=db_name, dry_run=dry_run)
         return
 
     # 10. cleanup vert
