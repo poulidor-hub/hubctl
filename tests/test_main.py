@@ -119,6 +119,42 @@ def test_require_vault_creates_when_absent(monkeypatch):
     vault_mgr.backup_all.assert_called_once()
 
 
+def test_require_vault_create_confirms_and_rejects_mismatch(monkeypatch):
+    """À la création, pw1 != pw2 doit redemander sans unlock."""
+    from unittest import mock
+    from hubctl_cli import menu
+    canvas = mock.Mock()
+    vault = mock.Mock()
+    vault.path.exists.return_value = False
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
+    # séquence : pw1="aaa", pw2="bbb" (mismatch) → retry pw1="good", pw2="good" (match)
+    monkeypatch.setattr(menu.widgets, "password",
+                        mock.Mock(side_effect=["aaa", "bbb", "good", "good"]))
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+    menu._require_vault(canvas, vault_mgr)
+    # unlock doit recevoir la passphrase confirmée ("good"), pas "aaa"
+    vault.unlock.assert_called_once_with("good")
+    vault_mgr.backup_all.assert_called_once()
+
+
+def test_require_vault_create_empty_then_valid(monkeypatch):
+    """Passphrase vide puis valide : redemande, puis crée."""
+    from unittest import mock
+    from hubctl_cli import menu
+    canvas = mock.Mock()
+    vault = mock.Mock()
+    vault.path.exists.return_value = False
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
+    # vide (pw1) → retry ; "x" (pw1), "x" (pw2) → match
+    monkeypatch.setattr(menu.widgets, "password",
+                        mock.Mock(side_effect=["", "x", "x"]))
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+    menu._require_vault(canvas, vault_mgr)
+    vault.unlock.assert_called_once_with("x")
+
+
 def test_parser_subcommands_slug_and_target():
     p = build_parser()
     assert p.parse_args(["work", "shop"]).slug == "shop"

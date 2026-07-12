@@ -712,11 +712,20 @@ def _require_vault(canvas: Canvas, vault_mgr) -> None:
                 if pw is widgets.ESC or pw is None:
                     canvas.render(Text("À bientôt.", style="bold"))
                     raise SystemExit(0)
-                if pw:
-                    vault.unlock(pw)
-                    break
-                canvas.render(Text("Passphrase vide — recommence.", style="red"))
-                pause(canvas)
+                if not pw:
+                    canvas.render(Text("Passphrase vide — recommence.", style="red"))
+                    pause(canvas)
+                    continue
+                pw2 = widgets.password(canvas, "Confirmer la passphrase :")
+                if pw2 is widgets.ESC or pw2 is None:
+                    canvas.render(Text("À bientôt.", style="bold"))
+                    raise SystemExit(0)
+                if pw != pw2:
+                    canvas.render(Text("Les passphrases ne correspondent pas — recommence.", style="red"))
+                    pause(canvas)
+                    continue
+                vault.unlock(pw)
+                break
     if vault_mgr:
         summary = vault_mgr.backup_all()
         canvas.render(Text(
