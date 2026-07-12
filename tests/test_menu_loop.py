@@ -116,7 +116,8 @@ def test_refresh_apps_status_swallows_errors(monkeypatch):
 
 def test_exec_remove_app_confirms_before_run(monkeypatch):
     monkeypatch.setattr(menu, "choose_app", lambda c: "shop")
-    monkeypatch.setattr(menu.widgets, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(menu.widgets, "confirm_by_typing", lambda *a, **k: True)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
     called = []
     monkeypatch.setattr(menu, "_run_action", lambda *a, **k: called.append(a[1]) or True)
     menu._exec_remove_app(mock.Mock(), {}, None, dry_run=False)
@@ -125,7 +126,8 @@ def test_exec_remove_app_confirms_before_run(monkeypatch):
 
 def test_exec_remove_app_aborts_when_declined(monkeypatch):
     monkeypatch.setattr(menu, "choose_app", lambda c: "shop")
-    monkeypatch.setattr(menu.widgets, "confirm", lambda *a, **k: False)
+    monkeypatch.setattr(menu.widgets, "confirm_by_typing", lambda *a, **k: False)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
     called = []
     monkeypatch.setattr(menu, "_run_action", lambda *a, **k: called.append(1))
     result = menu._exec_remove_app(mock.Mock(), {}, None, dry_run=False)

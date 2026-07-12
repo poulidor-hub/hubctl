@@ -800,7 +800,9 @@ def _exec_remove_app(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool, p
     if not app:
         return False
     with _modal(canvas):
-        if widgets.confirm(canvas, f"Supprimer « {app} » (→ corbeille) ?", default=False) is not True:
+        if not widgets.confirm_by_typing(canvas, f"Tapez '{app}' pour confirmer la suppression :", app):
+            canvas.render(Text("Suppression annulée.", style="yellow"))
+            pause(canvas)
             return False
     return _run_action(canvas, f"Suppression {app}", actions.action_remove_app, _ACTION_CONSOLE, app, vault_mgr.vault if vault_mgr else None, dry_run=dry_run)
 

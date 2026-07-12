@@ -220,3 +220,18 @@ def test_password_esc_returns_sentinel(monkeypatch):
     _patch_keys(monkeypatch, [KeyEsc()])
     result = widgets.password(c, "Pass:")
     assert result is widgets.ESC
+
+
+def test_confirm_by_typing_match(monkeypatch):
+    monkeypatch.setattr(widgets, "_text_input", lambda canvas, message, mask=None: "shop")
+    assert widgets.confirm_by_typing(mock.Mock(), "Tapez 'shop' :", "shop") is True
+
+
+def test_confirm_by_typing_no_match(monkeypatch):
+    monkeypatch.setattr(widgets, "_text_input", lambda canvas, message, mask=None: "other")
+    assert widgets.confirm_by_typing(mock.Mock(), "Tapez 'shop' :", "shop") is False
+
+
+def test_confirm_by_typing_esc(monkeypatch):
+    monkeypatch.setattr(widgets, "_text_input", lambda canvas, message, mask=None: widgets.ESC)
+    assert widgets.confirm_by_typing(mock.Mock(), "Tapez 'shop' :", "shop") is False

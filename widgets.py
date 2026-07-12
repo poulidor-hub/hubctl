@@ -98,6 +98,13 @@ def confirm(canvas, message: str, *, default: bool = False):
                 choice = False
 
 
+def confirm_by_typing(canvas, message: str, expected: str) -> bool:
+    typed = _text_input(canvas, message, mask=None)
+    if typed is ESC:
+        return False
+    return typed == expected
+
+
 def text(canvas, message: str):
     return _text_input(canvas, message, mask=None)
 
