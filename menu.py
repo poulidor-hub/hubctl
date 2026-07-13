@@ -663,7 +663,6 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                     return
             elif sel.startswith("  [×]"):
                 ws_name = sel.split()[1]
-                base = ws_name[:-3] if ws_name.endswith("-ws") else ws_name
                 msg = f"Supprimer l'atelier « {ws_name} » ? (down -v + backup, prod redémarrée)"
                 if widgets.confirm(canvas, msg, default=False) is True:
                     _run_action(canvas, f"Supprimer atelier {ws_name}",
@@ -682,7 +681,7 @@ def _offer_snapshot(canvas: Canvas, vault_mgr, *, dry_run: bool) -> None:
             "📸 Premier passage en DEV\n\n"
             "Veux-tu snapshooter des apps de APPS/ vers APP_Workshop/\n"
             "pour tester avec des données réelles ?\n\n"
-            "(Utilise workshop_move — code + volumes Docker)",
+            "(Utilise action_workshop_create — code + clone DB volumes Docker)",
             style="bold cyan"
         ))
         choices = ["📦 Tout snapshooter"] + [f"  {a.name}" for a in apps] + ["Non, plus tard"]
