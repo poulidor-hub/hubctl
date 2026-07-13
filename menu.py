@@ -619,35 +619,55 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
         with _modal(canvas):
             apps_prod = hub_state.get_apps()
             apps_ws = hub_state.get_workshop_apps()
+            ws_bases = {a.name[:-3] for a in apps_ws if a.name.endswith("-ws")}
+
             choices = []
-            if apps_prod:
-                choices.append("── APPS/ (production) ──")
-                for a in apps_prod:
-                    choices.append(f"  [→] {a.name}  → mettre en atelier")
             if apps_ws:
                 choices.append("── APP_Workshop/ (développement) ──")
                 for a in apps_ws:
-                    choices.append(f"  [←] {a.name}  → remettre en production")
+                    choices.append(f"  [←] {a.name}  → déployer vers la prod (git pull)")
+                for a in apps_ws:
+                    choices.append(f"  [×] {a.name}  → supprimer l'atelier")
+            if apps_prod:
+                choices.append("── APPS/ (production) ──")
+                for a in apps_prod:
+                    if a.name in ws_bases:
+                        choices.append(f"  ⏸  {a.name}  (en atelier — prod stoppée)")
+                    else:
+                        choices.append(f"  [→] {a.name}  → mettre en atelier")
             if not apps_prod and not apps_ws:
                 choices.append("Aucune app trouvée.")
+            choices.append("ℹ Copie DB (avancé) : hubctl ship <slug> --copy-db")
             choices.append("← Retour")
-            sel = widgets.select(canvas, "Workshop — déplacer une app :", choices)
-            if sel is widgets.ESC or sel is None or sel == "← Retour":
-                return
+
+            sel = widgets.select(canvas, "Workshop :", choices)
+            if sel is widgets.ESC or sel is None or sel == "← Retour" or sel.startswith("ℹ"):
+                if sel is widgets.ESC or sel is None or sel == "← Retour":
+                    return
+                continue
+
             if sel.startswith("  [→]"):
                 app_name = sel.split()[1]
-                msg = f"Déplacer « {app_name} » de APPS/ vers APP_Workshop/ ({app_name}-ws) ?"
+                msg = f"Mettre « {app_name} » en atelier ({app_name}-ws) ? Clone DB, prod stoppée."
                 if widgets.confirm(canvas, msg, default=False) is True:
-                    _run_action(canvas, f"Workshop → {app_name}",
-                                actions.action_workshop_move, _ACTION_CONSOLE, "to_workshop", app_name, dry_run=dry_run)
+                    _run_action(canvas, f"Atelier → {app_name}",
+                                actions.action_workshop_create, _ACTION_CONSOLE, app_name, dry_run=dry_run)
                     return
             elif sel.startswith("  [←]"):
-                app_name = sel.split()[1]
-                base = app_name[:-3] if app_name.endswith("-ws") else app_name
-                msg = f"Remettre « {app_name} » en production dans APPS/ ({base}) ?"
+                ws_name = sel.split()[1]
+                base = ws_name[:-3] if ws_name.endswith("-ws") else ws_name
+                msg = f"Déployer « {ws_name} » vers la prod via git pull ? (DB prod préservée)"
+                if widgets.confirm(canvas, msg, default=True) is True:
+                    _run_action(canvas, f"Déployer ← {base}",
+                                actions.action_prod_deploy, _ACTION_CONSOLE, base, dry_run=dry_run)
+                    return
+            elif sel.startswith("  [×]"):
+                ws_name = sel.split()[1]
+                base = ws_name[:-3] if ws_name.endswith("-ws") else ws_name
+                msg = f"Supprimer l'atelier « {ws_name} » ? (down -v + backup, prod redémarrée)"
                 if widgets.confirm(canvas, msg, default=False) is True:
-                    _run_action(canvas, f"Workshop ← {base}",
-                                actions.action_workshop_move, _ACTION_CONSOLE, "to_production", app_name, dry_run=dry_run)
+                    _run_action(canvas, f"Supprimer atelier {ws_name}",
+                                actions.action_workshop_remove, _ACTION_CONSOLE, ws_name, dry_run=dry_run)
                     return
 
 
@@ -671,18 +691,18 @@ def _offer_snapshot(canvas: Canvas, vault_mgr, *, dry_run: bool) -> None:
             return
         if sel == "📦 Tout snapshooter":
             for a in apps:
-                if not _workshop_move_one(canvas, a.name, "to_workshop", vault_mgr, dry_run):
+                if not _workshop_move_one(canvas, a.name, vault_mgr, dry_run):
                     break
         else:
             app_name = sel.strip().split()[0] if sel.strip() else ""
             if app_name:
-                _workshop_move_one(canvas, app_name, "to_workshop", vault_mgr, dry_run)
+                _workshop_move_one(canvas, app_name, vault_mgr, dry_run)
 
 
-def _workshop_move_one(canvas: Canvas, app_name: str, direction: str, vault_mgr, dry_run: bool) -> bool:
+def _workshop_move_one(canvas: Canvas, app_name: str, vault_mgr, dry_run: bool) -> bool:
     return _run_action(
         canvas, f"Snapshot {app_name}",
-        actions.action_workshop_move, _ACTION_CONSOLE, direction, app_name, dry_run=dry_run,
+        actions.action_workshop_create, _ACTION_CONSOLE, app_name, dry_run=dry_run,
     )
 
 

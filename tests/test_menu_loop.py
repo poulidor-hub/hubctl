@@ -223,3 +223,84 @@ def test_view_coffre_change_passphrase(monkeypatch):
     menu.view_coffre(mock.Mock(), vault_mgr)
     vault.change_passphrase.assert_called_once_with("newpass")
     vault.save.assert_called()
+
+
+def test_workshop_menu_hides_arrow_if_already_in_workshop(monkeypatch):
+    """Une app X dont l'atelier X-ws existe n'affiche pas [→] mais une ligne ⏸."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    prod_apps = [AppInfo("myapp", Path("."), "1", False, 0, legacy=False)]
+    ws_apps = [AppInfo("myapp-ws", Path("."), "1", False, 0, legacy=False)]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: ws_apps)
+
+    captured = []
+
+    def fake_select(canvas, message, choices, **kw):
+        captured.append(choices)
+        return menu.widgets.ESC
+
+    monkeypatch.setattr(menu.widgets, "select", fake_select)
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    flat = [c for choices in captured for c in choices]
+    assert not any("[→]" in c and "myapp" in c for c in flat), \
+        "[→] ne doit pas s'afficher pour une app déjà en atelier"
+    assert any("en atelier" in c.lower() and "myapp" in c for c in flat), \
+        "ligne ⏸ (en atelier) attendue pour myapp"
+
+
+def test_workshop_menu_shows_deploy_and_remove_for_workshop_app(monkeypatch):
+    """X-ws affiche à la fois [←] déployer et [×] supprimer."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    prod_apps = [AppInfo("myapp", Path("."), "1", False, 0, legacy=False)]
+    ws_apps = [AppInfo("myapp-ws", Path("."), "1", False, 0, legacy=False)]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: ws_apps)
+
+    captured = []
+
+    def fake_select(canvas, message, choices, **kw):
+        captured.append(choices)
+        return menu.widgets.ESC
+
+    monkeypatch.setattr(menu.widgets, "select", fake_select)
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    flat = [c for choices in captured for c in choices]
+    assert any("[←]" in c and "myapp-ws" in c for c in flat), \
+        "entrée [←] (déployer vers la prod) attendue pour myapp-ws"
+    assert any("[×]" in c and "myapp-ws" in c for c in flat), \
+        "entrée [×] (supprimer l'atelier) attendue pour myapp-ws"
+
+
+def test_workshop_menu_deploy_calls_prod_deploy_with_base_slug(monkeypatch):
+    """[←] déploie vers la prod en passant le slug BASE (sans -ws) à action_prod_deploy."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    ws_apps = [AppInfo("myapp-ws", Path("."), "1", False, 0, legacy=False)]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: [])
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: ws_apps)
+
+    monkeypatch.setattr(menu.widgets, "select", lambda c, m, choices, **kw:
+                        "  [←] myapp-ws  → déployer vers la prod (git pull)")
+    monkeypatch.setattr(menu.widgets, "confirm", lambda *a, **k: True)
+
+    called = []
+    monkeypatch.setattr(menu, "_run_action",
+                        lambda *a, **k: called.append(a) or True)
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    assert called, "_run_action doit être appelé pour [←]"
+    # _run_action(canvas, label, fn, _ACTION_CONSOLE, slug, dry_run=...)
+    args = called[0]
+    assert args[2] is menu.actions.action_prod_deploy
+    assert args[4] == "myapp", \
+        "le slug passé à action_prod_deploy doit être le BASE (sans -ws)"
