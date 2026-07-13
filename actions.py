@@ -734,8 +734,73 @@ def action_workshop_create(console, app_name: str, *, dry_run: bool = False) -> 
 
 
 def action_prod_deploy_copy_db(con, slug, prod_dir, ws_dir, compose_file, *, dry_run):
-    """Implémenté en Task 3 (chemin --copy-db destructif)."""
-    raise NotImplementedError("copy_db path implémenté en Task 3")
+    """Chemin destructif d'action_prod_deploy : écrase la DB prod par celle de l'atelier."""
+    con.print(f"[bold yellow]⚠️  ATTENTION : écrasement de la DB prod « {slug}-postgres-data »[/bold yellow]")
+    con.print(f"[dim]    par celle de l'atelier. Toute donnée de prod modifiée depuis le clone sera PERDUE.[/dim]")
+
+    # Gate forte (CLI-only, via input()).
+    if not dry_run:
+        typed = input(f"Tape exactement « {slug} » pour confirmer l'écrasement de la DB prod : ")
+        if typed.strip() != slug:
+            con.print("[yellow]Annulé : confirmation incorrecte. Aucune modification.[/yellow]")
+            return
+
+    src_vol = f"{slug}-ws-postgres-data"
+    dst_vol = f"{slug}-postgres-data"
+
+    # Stop prod
+    con.print(f"[bold]→ Arrêt prod « {slug} »…[/bold]")
+    utils.run_shell(["docker", "compose", "-f", str(compose_file), "stop"],
+                    cwd=str(prod_dir), dry_run=dry_run, console=con)
+
+    # Backup du volume prod (alpine tar → fichier) pour rollback
+    backup_path = None
+    if not dry_run:
+        backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = backups / f"{slug}-postgres-volume-{stamp}.tar.gz"
+        con.print(f"[bold]→ Backup volume prod → {backup_path.name}[/bold]")
+        with open(backup_path, "wb") as f:
+            subprocess.run(["docker", "run", "--rm", "-v", f"{dst_vol}:/data:ro",
+                            "alpine", "tar", "czf", "-", "/data"],
+                           stdout=f, stderr=subprocess.PIPE, timeout=120)
+
+    # Overwrite volume : rm + create + alpine cp
+    con.print(f"[bold]→ Overwrite volume : {src_vol} → {dst_vol}[/bold]")
+    if not dry_run:
+        subprocess.run(["docker", "volume", "rm", dst_vol], capture_output=True, timeout=15)
+        subprocess.run(["docker", "volume", "create", dst_vol], capture_output=True, timeout=10)
+    utils.run_shell(["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
+                     "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
+                    dry_run=dry_run, console=con, timeout=120)
+
+    # git pull (code cohérent avec la DB migrée)
+    prev_commit = _git_previous_commit(prod_dir, con)
+    con.print("[bold]→ git pull prod (migrations cohérentes)…[/bold]")
+    utils.run_shell(["git", "-C", str(prod_dir), "pull", "--recurse-submodules"],
+                    dry_run=dry_run, console=con)
+
+    con.print(f"[bold]→ Build « {slug} »…[/bold]")
+    utils.run_shell(["make", "-C", str(prod_dir), "build"],
+                    dry_run=dry_run, console=con, timeout=600)
+    con.print(f"[bold]→ Démarrage « {slug} »…[/bold]")
+    utils.run_shell(["make", "-C", str(prod_dir), "up"],
+                    dry_run=dry_run, console=con, timeout=60)
+
+    if not _health_check(slug, con, timeout=60):
+        con.print("[red]✗ Health échoué — rollback lourd (restore volume + git reset).[/red]")
+        if not dry_run and backup_path and backup_path.exists():
+            subprocess.run(["docker", "volume", "rm", dst_vol], capture_output=True, timeout=15)
+            subprocess.run(["docker", "volume", "create", dst_vol], capture_output=True, timeout=10)
+            with open(backup_path, "rb") as f:
+                subprocess.run(["docker", "run", "--rm", "-i", "-v", f"{dst_vol}:/to",
+                                "alpine", "tar", "xzf", "-", "-C", "/"],
+                               stdin=f, capture_output=True, timeout=120)
+        _rollback(slug, prod_dir, prev_commit, snapshot=None, console=con, dry_run=dry_run)
+        return
+
+    con.print(f"[green]✓ « {slug} » déployée (DB atelier → prod). Atelier conservé.[/green]")
 
 
 def _workshop_git_hygiene(ws_dir: Path, console=None) -> None:

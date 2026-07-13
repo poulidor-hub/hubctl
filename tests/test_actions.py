@@ -1266,3 +1266,61 @@ def test_prod_deploy_aborts_if_prod_missing(tmp_path, monkeypatch):
         actions.action_prod_deploy(_fake_console(), "myapp", copy_db=False, dry_run=False)
     # Aucun effet secondaire : on ne doit pas avoir tenté de git pull.
     # (test passe si pas d'exception levée — le code retourne tôt avec un message.)
+
+
+# ── Task 3: action_prod_deploy --copy-db (destructif, CLI-only) ──
+
+def test_prod_deploy_copy_db_overwrites_volume_and_pulls(tmp_path, monkeypatch):
+    """[←] --copy-db : backup volume + overwrite + git pull + build + up."""
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+    sub_calls = []
+    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: sub_calls.append(a) or mock.Mock(returncode=0, stdout=b''))
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
+    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: True)
+    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
+    monkeypatch.setattr("builtins.input", lambda *_: "myapp")  # gate : slug exact requis
+
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    prod = apps_dir / "myapp"; prod.mkdir()
+    (prod / "docker-compose.yml").write_text("services: {}\n")
+    (ws_dir / "myapp-ws").mkdir()
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=True, dry_run=False)
+
+    flat = [" ".join(c) for c in calls]
+    # Overwrite de volume :
+    assert any("alpine" in c and "cp" in c for c in flat), "alpine cp (overwrite DB) manquant"
+    # git pull aussi (code cohérent avec la DB) :
+    assert any("git" in c and "pull" in c for c in flat), "git pull manquant"
+
+
+def test_prod_deploy_copy_db_aborts_on_wrong_confirmation(tmp_path, monkeypatch):
+    """La gate input() : refus → aucun effet."""
+    monkeypatch.setattr("builtins.input", lambda *_: "non-non-non")
+    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    prod = apps_dir / "myapp"; prod.mkdir()
+    (prod / "docker-compose.yml").write_text("services: {}\n")
+    (ws_dir / "myapp-ws").mkdir()
+
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=True, dry_run=False)
+
+    assert calls == [], "Aucune commande ne doit être exécutée si la confirmation échoue"
