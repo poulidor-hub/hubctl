@@ -733,6 +733,92 @@ def action_workshop_create(console, app_name: str, *, dry_run: bool = False) -> 
     con.print(f"[green]✓ Atelier « {dest_slug} » créé. Prod {source_slug} stoppée (en place).[/green]")
 
 
+def action_prod_deploy_copy_db(con, slug, prod_dir, ws_dir, compose_file, *, dry_run):
+    """Implémenté en Task 3 (chemin --copy-db destructif)."""
+    raise NotImplementedError("copy_db path implémenté en Task 3")
+
+
+def _workshop_git_hygiene(ws_dir: Path, console=None) -> None:
+    """Warnings non bloquants : atelier sale ou commits non poussés."""
+    con = console or _console
+    if not ws_dir.exists():
+        return
+    try:
+        dirty = subprocess.run(["git", "-C", str(ws_dir), "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=10)
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            con.print("[yellow]⚠ Atelier sale : changements non commités (git pull ne les ramènera pas).[/yellow]")
+        ahead = subprocess.run(["git", "-C", str(ws_dir), "log", "@{u}..HEAD", "--oneline"],
+                               capture_output=True, text=True, timeout=10)
+        if ahead.returncode == 0 and ahead.stdout.strip():
+            con.print("[yellow]⚠ Commits non poussés depuis l'atelier (git pull ne ramènera rien).[/yellow]")
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+
+def action_prod_deploy(console, slug: str, *, copy_db: bool = False, dry_run: bool = False) -> None:
+    """Déploie l'atelier X-ws vers la prod APPS/X.
+
+    - copy_db=False (DÉFAUT) : git pull code-only, DB prod préservée.
+    - copy_db=True  : écrase la DB prod par celle de l'atelier (destructif, CLI-only).
+    """
+    con = console or _console
+
+    # ── 1. CHECK ──
+    dev_marker = hub_state.HUB_DIR / ".dev-mode"
+    if not dev_marker.exists():
+        dev_marker.touch()
+        con.print("[dim].dev-mode créé (compatibilité)[/dim]")
+    if hub_state.check_docker() is False:
+        con.print("[red]✗ Docker injoignable.[/red]")
+        return
+
+    prod_dir = hub_state.APPS_DIR / slug
+    ws_dir = hub_state.WORKSHOP_DIR / f"{slug}-ws"
+    if not prod_dir.exists():
+        con.print(f"[red]✗ Prod introuvable : {prod_dir}[/red]")
+        con.print("[dim]    Si l'app était en atelier avant la refonte, utilise --copy-db ou restaure la prod.[/dim]")
+        return
+    compose_file = prod_dir / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml manquant dans {prod_dir}[/red]")
+        return
+    if not ws_dir.exists():
+        con.print(f"[yellow]⚠ Atelier {ws_dir} introuvable — seul le code prod sera mis à jour.[/yellow]")
+
+    if not disk_guard(con):
+        return
+
+    if copy_db:
+        action_prod_deploy_copy_db(con, slug, prod_dir, ws_dir, compose_file, dry_run=dry_run)
+        return
+
+    # ── CHEMIN CODE-ONLY ──
+    con.print(f"[bold]→ Déployer « {slug}-ws » vers la prod (code-only, DB préservée)[/bold]")
+    _workshop_git_hygiene(ws_dir, con)
+
+    prev_commit = _git_previous_commit(prod_dir, con)
+
+    con.print("[bold]→ git pull prod…[/bold]")
+    utils.run_shell(["git", "-C", str(prod_dir), "pull", "--recurse-submodules"],
+                    dry_run=dry_run, console=con)
+
+    con.print(f"[bold]→ Build « {slug} »…[/bold]")
+    utils.run_shell(["make", "-C", str(prod_dir), "build"],
+                    dry_run=dry_run, console=con, timeout=600)
+
+    con.print(f"[bold]→ Démarrage « {slug} »…[/bold]")
+    utils.run_shell(["make", "-C", str(prod_dir), "up"],
+                    dry_run=dry_run, console=con, timeout=60)
+
+    if not _health_check(slug, con, timeout=60):
+        con.print("[red]✗ Health échoué — rollback.[/red]")
+        _rollback(slug, prod_dir, prev_commit, snapshot=None, console=con, dry_run=dry_run)
+        return
+
+    con.print(f"[green]✓ « {slug} » déployée (code-only). Atelier conservé.[/green]")
+
+
 def action_workshop_move(console, direction: str, app_name: str, *, dry_run: bool) -> None:
     """Déplace une app entre APPS/ et APP_Workshop/.
 

@@ -1192,3 +1192,77 @@ def test_workshop_create_never_uses_down_with_v(tmp_path, monkeypatch):
     all_cmds = [" ".join(c) for c in rs_calls] + [" ".join(str(x) for x in a) for a in sub_calls]
     for cmd in all_cmds:
         assert not ("down" in cmd and "-v" in cmd), f"down -v interdit trouvé : {cmd}"
+
+
+def test_prod_deploy_code_only_does_git_pull_no_volume_copy(tmp_path, monkeypatch):
+    """[←] défaut (copy_db=False) : git pull + build + up, PAS de alpine cp sur volume."""
+    calls = []
+    def fake_run_shell(cmd, **kw):
+        calls.append(cmd)
+        return 0
+    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
+    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: True)
+    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
+
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    prod = apps_dir / "myapp"; prod.mkdir()
+    (prod / "docker-compose.yml").write_text("services: {}\n")
+    (prod / ".env").write_text("APP_SLUG=myapp\nAPI_PORT=9005\n")
+    (ws_dir / "myapp-ws").mkdir()  # atelier présent
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=False, dry_run=False)
+
+    flat = [" ".join(c) for c in calls]
+    assert any("git" in c and "pull" in c for c in flat), "git pull manquant"
+    assert any("make" in c and "build" in c for c in flat), "make build manquant"
+    assert any("make" in c and c.split()[-1] == "up" for c in flat), "make up manquant"
+    # PAS de copie de volume :
+    assert not any("alpine" in c for c in flat), "alpine cp ne doit pas apparaître en code-only"
+    # PAS de docker volume rm (destructif) :
+    assert not any("volume" in c and "rm" in c for c in flat)
+
+
+def test_prod_deploy_code_only_rollback_on_health_fail(tmp_path, monkeypatch):
+    """[←] code-only : health fail → git reset --hard {prev} (via _rollback)."""
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "deadbee")
+    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: False)
+    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
+
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    prod = apps_dir / "myapp"; prod.mkdir()
+    (prod / "docker-compose.yml").write_text("services: {}\n")
+    (ws_dir / "myapp-ws").mkdir()
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=False, dry_run=False)
+
+    flat = [" ".join(c) for c in calls]
+    assert any("git" in c and "reset" in c and "deadbee" in c for c in flat), "git reset rollback manquant"
+
+
+def test_prod_deploy_aborts_if_prod_missing(tmp_path, monkeypatch):
+    """[←] si APPS/X absent → message, pas de crash (vieille app pré-refonte)."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()   # vide
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    (ws_dir / "myapp-ws").mkdir()
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=False, dry_run=False)
+    # Aucun effet secondaire : on ne doit pas avoir tenté de git pull.
+    # (test passe si pas d'exception levée — le code retourne tôt avec un message.)
