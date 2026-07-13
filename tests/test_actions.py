@@ -1,5 +1,5 @@
 from unittest import mock
-from hubctl_cli import actions
+from hubctl_cli import actions, env_manager
 
 
 def test_valid_app_name():
@@ -1085,3 +1085,75 @@ def test_deploy_dry_run_skips_real_actions(tmp_path, monkeypatch):
     for c in rs.call_args_list:
         assert c.kwargs.get("dry_run") is True, \
             f"run_shell appelé sans dry_run=True : {c.args[0]}"
+
+
+# ── Workshop create tests ([→] sans suppression de prod) ──
+
+def test_workshop_create_dry_run_no_dest_no_delete(tmp_path):
+    """[→] dry-run : ne crée pas l'atelier, ne supprime pas la prod, ne backup pas."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
+    app_dir = apps_dir / "testapp"; app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_workshop_create(_fake_console(), "testapp", dry_run=True)
+
+    assert not (ws_dir / "testapp-ws").exists()   # dry-run : rien créé
+    assert (apps_dir / "testapp").exists()         # prod JAMAIS supprimée
+    assert not (tmp_path / "hubctl_cli" / "_trash" / "testapp-ws").exists()  # pas de trash
+
+
+def test_workshop_create_refuses_if_dest_exists(tmp_path, monkeypatch):
+    """[→] refuse si l'atelier X-ws existe déjà."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    (apps_dir / "testapp").mkdir()
+    (apps_dir / "testapp" / "docker-compose.yml").write_text("services: {}\n")
+    (ws_dir / "testapp-ws").mkdir()   # déjà en atelier
+
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
+        actions.action_workshop_create(_fake_console(), "testapp", dry_run=True)
+    # Aucun effet : ne tente pas d'écraser l'atelier existant.
+    assert (ws_dir / "testapp-ws").exists()
+
+
+def test_workshop_create_real_run_leaves_prod_in_place(tmp_path, monkeypatch):
+    """[→] run réel : crée l'atelier (clone DB mocké), prod laissée en place, PAS de backup/trash."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    app_dir = apps_dir / "testapp"; app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
+
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    # Stub toutes les commandes shell (stop, volume create/cp, build, up) + curl health OK.
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: 0)
+    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: mock.Mock(returncode=0, stdout='{"status":"healthy"}'))
+    monkeypatch.setattr(actions.time, "sleep", lambda *_: None)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_workshop_create(_fake_console(), "testapp", dry_run=False)
+
+    assert (ws_dir / "testapp-ws").exists()        # atelier créé
+    assert (apps_dir / "testapp").exists()          # prod TOUJOURS là
+    # PAS de backup tar.gz créé pour cette app :
+    assert not list((tmp_path / "hubctl_cli" / "backups").glob("testapp-*.tar.gz"))
+    # Slug renommé dans l'atelier :
+    assert env_manager.read_env(ws_dir / "testapp-ws" / ".env").get("APP_SLUG") == "testapp-ws"

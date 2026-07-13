@@ -627,6 +627,126 @@ def action_start_stop(console, sub: str, target: str = "hub", *, dry_run: bool =
                 app_make(target, "up", dry_run=dry_run, console=console)
 
 
+def action_workshop_create(console, app_name: str, *, dry_run: bool = False) -> None:
+    """Met une app en atelier : APPS/X → APP_Workshop/X-ws (clone DB).
+    La prod X est stoppée mais LAISSÉE EN PLACE (jamais supprimée).
+    """
+    con = console or _console
+
+    # ── 1. CHECK ──
+    dev_marker = hub_state.HUB_DIR / ".dev-mode"
+    if not dev_marker.exists():
+        dev_marker.touch()
+        con.print("[dim].dev-mode créé (compatibilité)[/dim]")
+    if hub_state.check_docker() is False:
+        con.print("[red]✗ Docker injoignable.[/red]")
+        return
+
+    source_dir = hub_state.APPS_DIR / app_name
+    dest_dir = hub_state.WORKSHOP_DIR / f"{app_name}-ws"
+    source_slug, dest_slug = app_name, f"{app_name}-ws"
+
+    if not source_dir.exists():
+        con.print(f"[red]✗ Source introuvable : {source_dir}[/red]")
+        return
+    if dest_dir.exists():
+        con.print(f"[red]✗ Atelier déjà existant : {dest_dir} (utilise [×] pour le supprimer)[/red]")
+        return
+    compose_file = source_dir / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {source_dir}[/red]")
+        return
+
+    # ── 2. STOP prod (laissée en place) ──
+    con.print(f"[bold]→ Arrêt de la prod {source_slug}…[/bold]")
+    rc = utils.run_shell(["docker", "compose", "-f", str(compose_file), "stop"],
+                         cwd=str(source_dir), dry_run=dry_run, console=con)
+    if not dry_run and rc != 0:
+        con.print(f"[yellow]⚠ docker compose stop a retourné {rc}.[/yellow]")
+
+    # ── 3. COPY FILES ──
+    con.print(f"[bold]→ Copie fichiers : {source_dir.name} → {dest_dir.name}[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ cp -r {source_dir} {dest_dir} (dry-run)[/dim]")
+    else:
+        shutil.copytree(str(source_dir), str(dest_dir), symlinks=True)
+
+    # ── 4. VOLUME COPY (clone DB prod → atelier) ──
+    src_vol, dst_vol = f"{source_slug}-postgres-data", f"{dest_slug}-postgres-data"
+    con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
+    if not dry_run:
+        subprocess.run(["docker", "volume", "create", dst_vol],
+                       capture_output=True, timeout=10)
+        rc = utils.run_shell(
+            ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
+             "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
+            dry_run=dry_run, console=con, timeout=60)
+        if rc != 0:
+            con.print("[yellow]⚠ Clone DB échoué (atelier démarrera avec DB vide).[/yellow]")
+    else:
+        con.print(f"[dim]$ docker volume create {dst_vol} (dry-run)[/dim]")
+
+    # ── 5. RENAME SLUG ──
+    env_path = dest_dir / ".env"
+    con.print(f"[bold]→ Slug : {source_slug} → {dest_slug}[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ APP_SLUG={dest_slug} dans {env_path} (dry-run)[/dim]")
+    else:
+        env_manager.write_env(env_path, {"APP_SLUG": dest_slug})
+
+    # ── 6. BUILD & UP atelier ──
+    dest_compose = dest_dir / "docker-compose.yml"
+    con.print(f"[bold]→ Build & démarrage de {dest_slug}…[/bold]")
+    rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "build"],
+                         cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=120)
+    if not dry_run and rc != 0:
+        con.print(f"[red]✗ Build échoué. ROLLBACK : suppression atelier + restart prod.[/red]")
+        if not dry_run:
+            shutil.rmtree(str(dest_dir))
+            subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                           cwd=str(source_dir), capture_output=True, timeout=60)
+        return
+    rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "up", "-d"],
+                         cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
+    if not dry_run and rc != 0:
+        con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
+        shutil.rmtree(str(dest_dir))
+        subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                       cwd=str(source_dir), capture_output=True, timeout=60)
+        return
+
+    # ── 7. HEALTH CHECK atelier ──
+    env_vars = env_manager.read_env(env_path) if not dry_run else {}
+    api_port = env_vars.get("API_PORT", "8000")
+    health_url = f"http://localhost:{api_port}/api/health"
+    con.print(f"[bold]→ Santé atelier : {health_url} (retry 5×2s)…[/bold]")
+    healthy = True if dry_run else False
+    if not dry_run:
+        for i in range(1, 6):
+            try:
+                r = subprocess.run(["curl", "-sf", health_url],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    con.print(f"[green]✓ Santé OK (tentative {i})[/green]")
+                    healthy = True
+                    break
+            except subprocess.SubprocessError:
+                pass
+            con.print(f"  Retry {i}/5…")
+            time.sleep(2)
+    if not healthy:
+        con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + restart prod.[/red]")
+        if not dry_run:
+            subprocess.run(["docker", "compose", "-f", str(dest_compose), "down"],
+                           cwd=str(dest_dir), capture_output=True, timeout=30)
+            shutil.rmtree(str(dest_dir))
+            subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                           cwd=str(source_dir), capture_output=True, timeout=60)
+        return
+
+    con.print(f"[green]✓ Atelier « {dest_slug} » créé. Prod {source_slug} stoppée (en place).[/green]")
+
+
 def action_workshop_move(console, direction: str, app_name: str, *, dry_run: bool) -> None:
     """Déplace une app entre APPS/ et APP_Workshop/.
 
