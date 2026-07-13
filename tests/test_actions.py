@@ -1089,7 +1089,7 @@ def test_deploy_dry_run_skips_real_actions(tmp_path, monkeypatch):
 
 # ── Workshop create tests ([→] sans suppression de prod) ──
 
-def test_workshop_create_dry_run_no_dest_no_delete(tmp_path):
+def test_workshop_create_dry_run_no_dest_no_delete(tmp_path, monkeypatch):
     """[→] dry-run : ne crée pas l'atelier, ne supprime pas la prod, ne backup pas."""
     hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
     apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
@@ -1100,6 +1100,7 @@ def test_workshop_create_dry_run_no_dest_no_delete(tmp_path):
     (app_dir / "docker-compose.yml").write_text("services: {}\n")
     (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
 
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
     with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
          mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
          mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
@@ -1112,21 +1113,28 @@ def test_workshop_create_dry_run_no_dest_no_delete(tmp_path):
 
 
 def test_workshop_create_refuses_if_dest_exists(tmp_path, monkeypatch):
-    """[→] refuse si l'atelier X-ws existe déjà."""
+    """[→] refuse si l'atelier X-ws existe déjà (early-return sans effet de bord)."""
     hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
     apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
     ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
     (apps_dir / "testapp").mkdir()
     (apps_dir / "testapp" / "docker-compose.yml").write_text("services: {}\n")
+    (apps_dir / "testapp" / ".env").write_text("APP_SLUG=testapp\nSENTINEL=keep\n")
     (ws_dir / "testapp-ws").mkdir()   # déjà en atelier
 
     monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
     with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
          mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
          mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
-        actions.action_workshop_create(_fake_console(), "testapp", dry_run=True)
-    # Aucun effet : ne tente pas d'écraser l'atelier existant.
+        actions.action_workshop_create(_fake_console(), "testapp", dry_run=False)
+    # Aucune commande shell (pas de stop, pas de copy) : early-return avant tout effet.
+    assert calls == [], "Ne doit rien exécuter si l'atelier existe déjà"
+    # Atelier existant préservé :
     assert (ws_dir / "testapp-ws").exists()
+    # Source intacte (aucune modification de .env) :
+    assert (apps_dir / "testapp" / ".env").read_text().find("SENTINEL=keep") >= 0
 
 
 def test_workshop_create_real_run_leaves_prod_in_place(tmp_path, monkeypatch):
@@ -1157,3 +1165,30 @@ def test_workshop_create_real_run_leaves_prod_in_place(tmp_path, monkeypatch):
     assert not list((tmp_path / "hubctl_cli" / "backups").glob("testapp-*.tar.gz"))
     # Slug renommé dans l'atelier :
     assert env_manager.read_env(ws_dir / "testapp-ws" / ".env").get("APP_SLUG") == "testapp-ws"
+
+
+def test_workshop_create_never_uses_down_with_v(tmp_path, monkeypatch):
+    """[→] action_workshop_create ne doit JAMAIS invoquer `docker compose down -v`."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    app_dir = apps_dir / "testapp"; app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
+
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    rs_calls, sub_calls = [], []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
+    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: sub_calls.append(a) or mock.Mock(returncode=0, stdout='{"status":"healthy"}'))
+    monkeypatch.setattr(actions.time, "sleep", lambda *_: None)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_workshop_create(_fake_console(), "testapp", dry_run=False)
+
+    all_cmds = [" ".join(c) for c in rs_calls] + [" ".join(str(x) for x in a) for a in sub_calls]
+    for cmd in all_cmds:
+        assert not ("down" in cmd and "-v" in cmd), f"down -v interdit trouvé : {cmd}"

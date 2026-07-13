@@ -718,22 +718,8 @@ def action_workshop_create(console, app_name: str, *, dry_run: bool = False) -> 
     # ── 7. HEALTH CHECK atelier ──
     env_vars = env_manager.read_env(env_path) if not dry_run else {}
     api_port = env_vars.get("API_PORT", "8000")
-    health_url = f"http://localhost:{api_port}/api/health"
-    con.print(f"[bold]→ Santé atelier : {health_url} (retry 5×2s)…[/bold]")
-    healthy = True if dry_run else False
-    if not dry_run:
-        for i in range(1, 6):
-            try:
-                r = subprocess.run(["curl", "-sf", health_url],
-                                   capture_output=True, text=True, timeout=5)
-                if r.returncode == 0:
-                    con.print(f"[green]✓ Santé OK (tentative {i})[/green]")
-                    healthy = True
-                    break
-            except subprocess.SubprocessError:
-                pass
-            con.print(f"  Retry {i}/5…")
-            time.sleep(2)
+    con.print(f"[bold]→ Santé atelier (port {api_port}, timeout 30s)…[/bold]")
+    healthy = True if dry_run else _health_check(dest_slug, console=con, timeout=30, port_override=api_port)
     if not healthy:
         con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + restart prod.[/red]")
         if not dry_run:
