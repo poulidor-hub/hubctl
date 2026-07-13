@@ -1363,3 +1363,79 @@ def test_prod_deploy_copy_db_rollback_restores_volume_to_data_mount(tmp_path, mo
     assert any("myapp-postgres-data:/data" in c for c in restore_cmds), \
         f"restore doit monter dst_vol à /data (symétrique au backup), vu : {restore_cmds}"
     assert not any(":/to" in c for c in restore_cmds), "le montage /to asymétrique ne doit plus exister"
+
+
+# ── Task 4: action_workshop_remove ([×] suppression atelier) ──
+
+def test_workshop_remove_dry_run_keeps_atelier(tmp_path, monkeypatch):
+    """[×] dry-run : ne supprime rien, ne restart rien."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    (apps_dir / "myapp").mkdir()  # prod présente
+    ws = ws_dir / "myapp-ws"; ws.mkdir()
+    (ws / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_workshop_remove(_fake_console(), "myapp-ws", dry_run=True)
+
+    assert ws.exists(), "dry-run ne doit pas supprimer l'atelier"
+
+
+def test_workshop_remove_real_run_trashes_and_restarts_prod(tmp_path, monkeypatch):
+    """[×] run réel : down -v + trash + restart prod."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    prod = apps_dir / "myapp"; prod.mkdir()
+    (prod / "docker-compose.yml").write_text("services: {}\n")
+    ws = ws_dir / "myapp-ws"; ws.mkdir()
+    (ws / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
+
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_workshop_remove(_fake_console(), "myapp-ws", dry_run=False)
+
+    assert not ws.exists(), "atelier doit être supprimé"
+    flat = [" ".join(c) for c in calls]
+    assert any("down" in c and "-v" in c for c in flat), "docker compose down -v manquant"
+    assert any("make" in c and "up" in c for c in flat), "restart prod (make up) manquant"
+
+
+def test_workshop_remove_skips_prod_restart_if_absent(tmp_path, monkeypatch):
+    """[×] si prod absente : supprime l'atelier, ne tente pas de restart (warning)."""
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()   # vide
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    ws = ws_dir / "myapp-ws"; ws.mkdir()
+    (ws / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
+    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
+
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_workshop_remove(_fake_console(), "myapp-ws", dry_run=False)
+
+    assert not ws.exists()
+    flat = [" ".join(c) for c in calls]
+    assert not any("make" in c and "up" in c for c in flat), "ne doit pas tenter make up si prod absente"

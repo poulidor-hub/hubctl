@@ -807,6 +807,63 @@ def action_prod_deploy_copy_db(con, slug, prod_dir, ws_dir, compose_file, *, dry
     con.print(f"[green]✓ « {slug} » déployée (DB atelier → prod). Atelier conservé.[/green]")
 
 
+def action_workshop_remove(console, app_name: str, *, dry_run: bool = False) -> None:
+    """Supprime l'atelier X-ws (down -v + backup + trash) et restart la prod X si présente."""
+    con = console or _console
+
+    dev_marker = hub_state.HUB_DIR / ".dev-mode"
+    if not dev_marker.exists():
+        dev_marker.touch()
+        con.print("[dim].dev-mode créé (compatibilité)[/dim]")
+    if hub_state.check_docker() is False:
+        con.print("[red]✗ Docker injoignable.[/red]")
+        return
+
+    ws_dir = hub_state.WORKSHOP_DIR / app_name
+    if not ws_dir.exists():
+        con.print(f"[red]✗ Atelier introuvable : {ws_dir}[/red]")
+        return
+    compose_file = ws_dir / "docker-compose.yml"
+    base = app_name[:-3] if app_name.endswith("-ws") else app_name
+    prod_dir = hub_state.APPS_DIR / base
+
+    con.print(f"[bold]→ Arrêt + suppression volume atelier « {app_name} »…[/bold]")
+    # SEUL endroit légitime pour down -v dans tout le cycle Workshop.
+    if compose_file.exists():
+        utils.run_shell(["docker", "compose", "-f", str(compose_file), "down", "-v"],
+                        cwd=str(ws_dir), dry_run=dry_run, console=con, timeout=60)
+
+    # Backup tar.gz (sécurité avant suppression définitive)
+    backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive = backups / f"{app_name}-{stamp}.tar.gz"
+    con.print(f"[bold]→ Backup atelier → {archive.name}[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ tar czf {archive} {ws_dir.name} (dry-run)[/dim]")
+    else:
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(str(ws_dir), arcname=ws_dir.name)
+
+    con.print(f"[bold]→ Déplacement atelier vers corbeille…[/bold]")
+    if dry_run:
+        con.print(f"[dim]$ mv {ws_dir} → _trash/{app_name}-{stamp} (dry-run)[/dim]")
+    else:
+        trash = hub_state.PARC_ROOT / "hubctl_cli" / "_trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(ws_dir), str(trash / f"{app_name}-{stamp}"))
+
+    # Restart prod si elle existe
+    if prod_dir.exists() and (prod_dir / "docker-compose.yml").exists():
+        con.print(f"[bold]→ Redémarrage prod « {base} »…[/bold]")
+        utils.run_shell(["make", "-C", str(prod_dir), "up"],
+                        dry_run=dry_run, console=con, timeout=60)
+    else:
+        con.print(f"[yellow]⚠ Prod « {base} » absente — aucun restart.[/yellow]")
+
+    con.print(f"[green]✓ Atelier « {app_name} » supprimé.[/green]")
+
+
 def _workshop_git_hygiene(ws_dir: Path, console=None) -> None:
     """Warnings non bloquants : atelier sale ou commits non poussés."""
     con = console or _console
