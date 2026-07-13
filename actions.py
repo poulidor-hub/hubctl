@@ -762,9 +762,12 @@ def action_prod_deploy_copy_db(con, slug, prod_dir, ws_dir, compose_file, *, dry
         backup_path = backups / f"{slug}-postgres-volume-{stamp}.tar.gz"
         con.print(f"[bold]→ Backup volume prod → {backup_path.name}[/bold]")
         with open(backup_path, "wb") as f:
-            subprocess.run(["docker", "run", "--rm", "-v", f"{dst_vol}:/data:ro",
-                            "alpine", "tar", "czf", "-", "/data"],
-                           stdout=f, stderr=subprocess.PIPE, timeout=120)
+            bk = subprocess.run(["docker", "run", "--rm", "-v", f"{dst_vol}:/data:ro",
+                                 "alpine", "tar", "czf", "-", "/data"],
+                                stdout=f, stderr=subprocess.PIPE, timeout=120)
+        if bk.returncode != 0:
+            con.print("[yellow]⚠ Backup volume échoué — rollback ne pourra pas restaurer le volume.[/yellow]")
+            backup_path = None
 
     # Overwrite volume : rm + create + alpine cp
     con.print(f"[bold]→ Overwrite volume : {src_vol} → {dst_vol}[/bold]")
@@ -793,8 +796,9 @@ def action_prod_deploy_copy_db(con, slug, prod_dir, ws_dir, compose_file, *, dry
         if not dry_run and backup_path and backup_path.exists():
             subprocess.run(["docker", "volume", "rm", dst_vol], capture_output=True, timeout=15)
             subprocess.run(["docker", "volume", "create", dst_vol], capture_output=True, timeout=10)
+            # Monte dst_vol à /data (symétrique au backup) + extrait -C / pour que data/... atterrisse DANS le volume.
             with open(backup_path, "rb") as f:
-                subprocess.run(["docker", "run", "--rm", "-i", "-v", f"{dst_vol}:/to",
+                subprocess.run(["docker", "run", "--rm", "-i", "-v", f"{dst_vol}:/data",
                                 "alpine", "tar", "xzf", "-", "-C", "/"],
                                stdin=f, capture_output=True, timeout=120)
         _rollback(slug, prod_dir, prev_commit, snapshot=None, console=con, dry_run=dry_run)

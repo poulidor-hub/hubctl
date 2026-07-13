@@ -1324,3 +1324,42 @@ def test_prod_deploy_copy_db_aborts_on_wrong_confirmation(tmp_path, monkeypatch)
         actions.action_prod_deploy(_fake_console(), "myapp", copy_db=True, dry_run=False)
 
     assert calls == [], "Aucune commande ne doit être exécutée si la confirmation échoue"
+
+
+def test_prod_deploy_copy_db_rollback_restores_volume_to_data_mount(tmp_path, monkeypatch):
+    """[←] --copy-db rollback : si health échoue, restore le volume depuis le backup
+    avec un montage SYMÉTRIQUE au backup (dst_vol:/data, -C /) — pas /to."""
+    rs_calls = []
+    sub_calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
+    def fake_sub(*a, **kw):
+        sub_calls.append(a)
+        # Backup tar retourne un rc sain ; les autres subprocess aussi.
+        return mock.Mock(returncode=0, stdout=b'')
+    monkeypatch.setattr(actions.subprocess, "run", fake_sub)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
+    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: False)  # force rollback
+    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_: "myapp")  # gate OK
+
+    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
+    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
+    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
+    prod = apps_dir / "myapp"; prod.mkdir()
+    (prod / "docker-compose.yml").write_text("services: {}\n")
+    (ws_dir / "myapp-ws").mkdir()
+
+    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
+         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
+         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
+         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
+        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=True, dry_run=False)
+
+    # Le rollback doit contenir une commande alpine tar xzf avec montage dst_vol:/data (pas /to)
+    sub_flat = [" ".join(str(x) for x in a) for a in sub_calls]
+    restore_cmds = [c for c in sub_flat if "tar" in c and "xzf" in c]
+    assert restore_cmds, "rollback restore (tar xzf) manquant"
+    assert any("myapp-postgres-data:/data" in c for c in restore_cmds), \
+        f"restore doit monter dst_vol à /data (symétrique au backup), vu : {restore_cmds}"
+    assert not any(":/to" in c for c in restore_cmds), "le montage /to asymétrique ne doit plus exister"
