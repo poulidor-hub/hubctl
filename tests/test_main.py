@@ -211,6 +211,35 @@ def test_dispatch_returns_1_on_error(monkeypatch):
     assert rc == 1
 
 
+# ── Task 5: ship --copy-db flag + dry_run threading ──
+
+def test_parser_ship_copy_db_flag():
+    p = build_parser()
+    assert p.parse_args(["ship", "shop"]).copy_db is False
+    assert p.parse_args(["ship", "shop", "--copy-db"]).copy_db is True
+
+
+def test_dispatch_work_threads_dry_run(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
+    with mock.patch.object(m, "action_work") as w:
+        rc = m.main(["--dry-run", "work", "shop"])
+    assert rc == 0
+    w.assert_called_once()
+    assert w.call_args.args[1] == "shop"
+    assert w.call_args.kwargs["dry_run"] is True
+
+
+def test_dispatch_ship_threads_copy_db_and_dry_run(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_ship") as s:
+        rc = m.main(["--dry-run", "ship", "shop", "--copy-db"])
+    assert rc == 0
+    s.assert_called_once()
+    assert s.call_args.args[1] == "shop"
+    assert s.call_args.kwargs["copy_db"] is True
+    assert s.call_args.kwargs["dry_run"] is True
+
+
 # ── Task 1: logs + restart parser tests ──
 
 def test_parser_logs_mutually_exclusive():

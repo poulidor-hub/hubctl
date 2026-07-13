@@ -57,8 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     work_parser = sub.add_parser("work", help="Mettre une app en atelier (dev)")
     work_parser.add_argument("slug", help="Slug de l'app dans APPS/")
 
-    ship_parser = sub.add_parser("ship", help="Ramener une app en production")
-    ship_parser.add_argument("slug", help="Slug de l'app (sans suffixe -ws)")
+    ship_parser = sub.add_parser("ship", help="Déployer l'atelier vers la prod (défaut: git pull code-only)")
+    ship_parser.add_argument("slug", help="Slug base de l'app (sans suffixe -ws)")
+    ship_parser.add_argument("--copy-db", action="store_true",
+                             help="Écraser la DB prod par celle de l'atelier (destructif)")
 
     update_cli_parser = sub.add_parser("update", help="Mettre à jour le Hub ou une app")
     update_cli_parser.add_argument("target", help="'hub' ou le slug de l'app")
@@ -188,9 +190,9 @@ def _run(args) -> int:
         _resolve_mode(args)
         try:
             if args.command == "work":
-                action_work(console, args.slug)
+                action_work(console, args.slug, dry_run=args.dry_run)
             elif args.command == "ship":
-                action_ship(console, args.slug)
+                action_ship(console, args.slug, copy_db=args.copy_db, dry_run=args.dry_run)
             elif args.command == "update":
                 action_update(console, args.target, dry_run=False)
             elif args.command == "start":

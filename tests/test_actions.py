@@ -648,38 +648,32 @@ def test_action_status_prints_hub_and_apps(monkeypatch):
     assert "3.9.7" in text
 
 
-def test_action_work_calls_workshop_move_to_workshop(monkeypatch):
-    """action_work doit appeler action_workshop_move avec direction='to_workshop'."""
-    calls = []
-    monkeypatch.setattr(actions, "action_workshop_move",
-                        lambda console, direction, app_name, *, dry_run=False:
-                        calls.append((direction, app_name)))
-    actions.action_work(None, "exemple-apps")
-    assert ("to_workshop", "exemple-apps") in calls
+def test_action_work_calls_workshop_create(tmp_path, monkeypatch):
+    called = {}
+    monkeypatch.setattr(actions, "action_workshop_create",
+                        lambda con, slug, *, dry_run=False: called.setdefault("create", slug))
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    actions.action_work(_fake_console(), "shop")
+    assert called.get("create") == "shop"
 
 
-def test_action_ship_calls_workshop_move_to_production(monkeypatch):
-    """action_ship doit appeler action_workshop_move avec direction='to_production'.
-    Utilise dry_run=True pour éviter le prompt interactif de confirmation."""
-    calls = []
-    monkeypatch.setattr(actions, "action_workshop_move",
-                        lambda console, direction, app_name, *, dry_run=False:
-                        calls.append((direction, app_name)))
-    actions.action_ship(None, "exemple-apps", dry_run=True)
-    assert ("to_production", "exemple-apps") in calls
+def test_action_ship_defaults_to_code_only(tmp_path, monkeypatch):
+    called = {}
+    monkeypatch.setattr(actions, "action_prod_deploy",
+                        lambda con, slug, *, copy_db=False, dry_run=False: called.update(slug=slug, copy_db=copy_db))
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    actions.action_ship(_fake_console(), "shop")
+    assert called.get("slug") == "shop"
+    assert called.get("copy_db") is False
 
 
-def test_action_ship_aborts_on_wrong_confirmation(monkeypatch):
-    """action_ship NE doit PAS appeler workshop_move si la confirmation est incorrecte."""
-    calls = []
-    monkeypatch.setattr(actions, "action_workshop_move",
-                        lambda console, direction, app_name, *, dry_run=False:
-                        calls.append((direction, app_name)))
-    monkeypatch.setattr("builtins.input", lambda prompt="": "mauvais-slug")
-    actions.action_ship(None, "exemple-apps")
-    assert ("to_production", "exemple-apps") not in calls, (
-        "workshop_move ne doit pas être appelé si la confirmation échoue"
-    )
+def test_action_ship_copy_db_flag_propagates(monkeypatch):
+    called = {}
+    monkeypatch.setattr(actions, "action_prod_deploy",
+                        lambda con, slug, *, copy_db=False, dry_run=False: called.update(copy_db=copy_db))
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    actions.action_ship(_fake_console(), "shop", copy_db=True, dry_run=False)
+    assert called.get("copy_db") is True
 
 
 def test_action_start_stop_app_calls_app_make(monkeypatch):
