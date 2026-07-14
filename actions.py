@@ -161,6 +161,44 @@ LEGACY_COMPAT_ENABLED=false
     }
 
 
+def _cleanup_existing_hub_containers(console=None, *, dry_run: bool = False) -> None:
+    """Arrête et supprime les conteneurs Hub existants avant un démarrage propre.
+
+    D'abord ``docker compose down`` (gracieux, préserve les volumes), puis
+    ``docker rm -f`` pour les orphelins issus d'un autre projet compose qui
+    partagent les mêmes noms (hub-db, hub-api, hub-frontend).
+    """
+    con = console or _console
+    if dry_run:
+        con.print("[dim](dry-run) docker compose down + cleanup orphelins[/dim]")
+        return
+
+    compose_file = hub_state.HUB_DIR / "docker-compose.yml"
+
+    # 1. docker compose down (gracieux, préserve les volumes)
+    con.print("[dim]Nettoyage des conteneurs existants...[/dim]")
+    try:
+        subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "down"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass  # Non bloquant — on essaie le rm -f ci-dessous
+
+    # 2. Force-remove des conteneurs orphelins par nom
+    for name in ("hub-db", "hub-api", "hub-frontend"):
+        try:
+            r = subprocess.run(
+                ["docker", "inspect", name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                con.print(f"[dim]Suppression du conteneur orphelin : {name}[/dim]")
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=10)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+
 def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> int:
     """Bootstrap complet du Hub : .env → clés JWT → build+up → health → résumé.
 
@@ -183,7 +221,10 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     # ── 3. Générer les clés JWT ──
     _ensure_jwt_keys(con, dry_run=dry_run)
 
-    # ── 4. Build & démarrage ──
+    # ── 4. Nettoyer les anciens conteneurs ──
+    _cleanup_existing_hub_containers(con, dry_run=dry_run)
+
+    # ── 5. Build & démarrage ──
     if dry_run:
         con.print("[dim](dry-run) make -C HUB_base up-prod[/dim]")
     else:
@@ -193,7 +234,7 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
             con.print("[red]✗ Échec du build/démarrage du Hub.[/red]")
             return 1
 
-    # ── 5. Health check ──
+    # ── 6. Health check ──
     if dry_run:
         con.print("[dim](dry-run) Attente health check...[/dim]")
     else:
@@ -203,7 +244,7 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
             con.print("[red]✗ Le Hub ne répond pas après démarrage. Vérifiez `docker compose logs`.[/red]")
             return 1
 
-    # ── 6. Résumé ──
+    # ── 7. Résumé ──
     admin_username = credentials["admin_username"]
     admin_password = credentials["admin_password"]
     host_ip = credentials["host_ip"]

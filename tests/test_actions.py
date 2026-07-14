@@ -1616,6 +1616,7 @@ def test_action_bootstrap_full_flow(monkeypatch, tmp_path):
     with mock.patch.object(actions, "_generate_dotenv",
                            return_value={"admin_username": "admin", "admin_password": "testpwd", "host_ip": "10.0.0.1"}) as mock_gen, \
          mock.patch.object(actions, "_ensure_jwt_keys") as mock_jwt, \
+         mock.patch.object(actions, "_cleanup_existing_hub_containers") as mock_cleanup, \
          mock.patch.object(actions, "hub_make", return_value=0) as mock_make, \
          mock.patch.object(actions, "_health_check", return_value=True) as mock_health, \
          mock.patch.object(actions, "disk_guard", return_value=True):
@@ -1624,6 +1625,7 @@ def test_action_bootstrap_full_flow(monkeypatch, tmp_path):
     assert result == 0
     mock_gen.assert_called_once()
     mock_jwt.assert_called_once()
+    mock_cleanup.assert_called_once()
     mock_make.assert_called_once()
     mock_health.assert_called_once()
     # Vérifie que le résumé a été affiché
@@ -1647,6 +1649,7 @@ def test_action_bootstrap_fails_when_make_fails(monkeypatch, tmp_path):
     with mock.patch.object(actions, "_generate_dotenv",
                            return_value={"admin_username": "admin", "admin_password": "x", "host_ip": "1.2.3.4"}), \
          mock.patch.object(actions, "_ensure_jwt_keys"), \
+         mock.patch.object(actions, "_cleanup_existing_hub_containers"), \
          mock.patch.object(actions, "hub_make", return_value=1):
         result = actions.action_bootstrap(console, force=False, dry_run=False)
     assert result == 1
@@ -1661,6 +1664,7 @@ def test_action_bootstrap_fails_when_health_fails(monkeypatch, tmp_path):
     with mock.patch.object(actions, "_generate_dotenv",
                            return_value={"admin_username": "admin", "admin_password": "x", "host_ip": "1.2.3.4"}), \
          mock.patch.object(actions, "_ensure_jwt_keys"), \
+         mock.patch.object(actions, "_cleanup_existing_hub_containers"), \
          mock.patch.object(actions, "hub_make", return_value=0), \
          mock.patch.object(actions, "_health_check", return_value=False):
         result = actions.action_bootstrap(console, force=False, dry_run=False)
@@ -1681,3 +1685,66 @@ def test_action_bootstrap_dry_run(monkeypatch, tmp_path):
     assert result == 0
     # En dry-run, hub_make ne doit pas être appelé
     make_mock.assert_not_called()
+
+
+# ── _cleanup_existing_hub_containers ──
+
+def test_cleanup_calls_compose_down_then_rm_orphans(monkeypatch, tmp_path):
+    """compose down gracieux + docker rm -f pour les conteneurs orphelins."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if "inspect" in cmd:
+            name = cmd[-1]
+            return mock.Mock(returncode=0 if name == "hub-db" else 1)
+        return mock.Mock(returncode=0)
+
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    actions._cleanup_existing_hub_containers(console=_mock_console(), dry_run=False)
+
+    # compose down a été appelé
+    assert any("down" in c for c in calls)
+    # hub-db existait → docker rm -f hub-db
+    rm_calls = [c for c in calls if "rm" in c]
+    assert any("hub-db" in c for c in rm_calls)
+    # hub-api et hub-frontend n'existaient pas → pas de rm
+    assert not any("hub-api" in c for c in rm_calls)
+    assert not any("hub-frontend" in c for c in rm_calls)
+
+
+def test_cleanup_dry_run_no_docker_commands(monkeypatch, tmp_path):
+    """En dry-run, aucune commande docker n'est exécutée."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    calls = []
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda *a, **kw: calls.append(a) or mock.Mock(returncode=0))
+    actions._cleanup_existing_hub_containers(console=_mock_console(), dry_run=True)
+    assert len(calls) == 0
+
+
+def test_cleanup_no_orphans_means_no_rm(monkeypatch, tmp_path):
+    """Si aucun conteneur n'existe (inspect retourne 1), pas de docker rm."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return mock.Mock(returncode=1)  # tous les inspect échouent
+
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    actions._cleanup_existing_hub_containers(console=_mock_console(), dry_run=False)
+
+    rm_calls = [c for c in calls if "rm" in c]
+    assert len(rm_calls) == 0
