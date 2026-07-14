@@ -181,6 +181,7 @@ def _cleanup_existing_hub_containers(console=None, *, dry_run: bool = False) -> 
         subprocess.run(
             ["docker", "compose", "-f", str(compose_file), "down"],
             capture_output=True, text=True, timeout=30,
+            cwd=str(hub_state.HUB_DIR),
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass  # Non bloquant — on essaie le rm -f ci-dessous
