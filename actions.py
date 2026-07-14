@@ -611,32 +611,31 @@ def hub_make(target: str, *, dry_run: bool, console=None) -> int:
     )
 
 
-def app_make(app_name: str, target: str, *, dry_run: bool, console=None) -> int:
+def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout: int = 120) -> int:
     return utils.run_shell(
         ["make", "-C", str(hub_state.active_apps_dir() / app_name), target],
-        dry_run=dry_run, console=console,
+        dry_run=dry_run, console=console, timeout=timeout,
     )
 
 
 def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> bool:
-    """Build + up + health check. Retourne True si l'app est saine."""
+    """Build + up + health check. Retourne True si l'app est saine.
+
+    Utilise 'make up' qui fait docker compose up -d --build (build + start
+    en une seule commande). Pas de 'make build' séparé — cela ferait un
+    build --no-cache redondant puis un second build au 'up'.
+    """
     con = console or _console
     app_name = dest.name
 
     if dry_run:
-        con.print(f"[dim](dry-run) make -C {dest} build + up[/dim]")
+        con.print(f"[dim](dry-run) make -C {dest} up[/dim]")
         return True
 
-    con.print(f"[cyan]🔨 Build de {app_name}...[/cyan]")
-    rc = app_make(app_name, "build", dry_run=False, console=con)
+    con.print(f"[cyan]🔨 Build & démarrage de {app_name}...[/cyan]")
+    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=600)
     if rc != 0:
-        con.print("[red]✗ Échec du build.[/red]")
-        return False
-
-    con.print(f"[cyan]🚀 Démarrage de {app_name}...[/cyan]")
-    rc = app_make(app_name, "up", dry_run=False, console=con)
-    if rc != 0:
-        con.print("[red]✗ Échec du démarrage.[/red]")
+        con.print("[red]✗ Échec du build/démarrage.[/red]")
         return False
 
     con.print("[cyan]💚 Health check...[/cyan]")
