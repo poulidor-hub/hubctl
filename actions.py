@@ -273,11 +273,13 @@ def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
         con.print("[yellow]⚠ POSTGRES_PASSWORD introuvable dans le .env — sync annulée.[/yellow]")
         return
 
-    # Connexion en tant que superuser `postgres` (trust auth locale dans le conteneur)
-    # Le mot de passe contient des caractères spéciaux → on passe via stdin psql
+    # Connexion en tant que superuser POSTGRES_USER via trust auth locale.
+    # Dans l'image Docker postgres, POSTGRES_USER crée le superuser (pas 'postgres').
+    # Les connexions socket locales utilisent 'trust' (pas de mot de passe requis).
+    # Le mot de passe contient des caractères spéciaux → on passe via stdin psql.
     alter_sql = f"ALTER USER {pg_user} WITH PASSWORD '{pg_password}';"
     result = subprocess.run(
-        ["docker", "exec", "-i", "hub-db", "psql", "-U", "postgres", "-d", "postgres"],
+        ["docker", "exec", "-i", "hub-db", "psql", "-U", pg_user, "-d", pg_user],
         input=alter_sql, capture_output=True, text=True, timeout=15,
     )
     if result.returncode == 0:

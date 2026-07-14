@@ -1803,6 +1803,8 @@ def test_sync_db_password_syncs_when_volume_exists(monkeypatch, tmp_path):
     # Le ALTER USER doit avoir été appelé avec le bon mot de passe
     psql_calls = [c for c in calls if "psql" in c]
     assert len(psql_calls) == 1
+    # La connexion psql doit utiliser POSTGRES_USER (hubadmin), pas 'postgres'
+    assert "hubadmin" in psql_calls[0]
     # Le mot de passe doit être passé via stdin (input=)
     assert len(psql_inputs) == 1
     assert "newpass123" in psql_inputs[0]
