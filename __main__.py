@@ -10,7 +10,7 @@ from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_work, action_ship, action_update, action_start_stop, action_status,
     action_logs, action_restart, action_health, action_db_shell, action_deploy,
-    action_vpn,
+    action_vpn, action_bootstrap,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -104,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     dbshell_parser = sub.add_parser("db-shell", help="Shell PostgreSQL d'une app (interactif)")
     dbshell_parser.add_argument("app", help="Slug de l'app")
 
+    init_parser = sub.add_parser("init", help="Bootstrap automatique du Hub (génère .env, démarre, vérifie la santé)")
+    init_parser.add_argument("--force", action="store_true",
+                             help="Écraser le .env existant sans confirmation")
+
     return p
 
 
@@ -176,6 +180,15 @@ def _run(args) -> int:
     if args.command == "debug":
         from hubctl_cli.debug_agent import run_debug
         return run_debug(args)
+
+    if args.command == "init":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        try:
+            return action_bootstrap(console, force=args.force, dry_run=args.dry_run)
+        except Exception as e:
+            print(f"❌ init a échoué : {e}")
+            return 1
 
     if args.command == "deploy":
         from rich.console import Console as RichConsole

@@ -302,3 +302,45 @@ def test_parser_vpn_rejects_unknown_subcmd(capsys):
     p = build_parser()
     with _pytest.raises(SystemExit):
         p.parse_args(["vpn", "bogus"])   # choices=['sync','status','on','off'] → rejette
+
+
+# ── Task 5: init subcommand parser + dispatch tests ──
+
+def test_parser_parses_init_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["init"])
+    assert args.command == "init"
+    assert args.force == False
+
+
+def test_parser_parses_init_with_force():
+    parser = build_parser()
+    args = parser.parse_args(["init", "--force"])
+    assert args.command == "init"
+    assert args.force == True
+
+
+def test_init_dispatches_to_action_bootstrap(monkeypatch):
+    from hubctl_cli.__main__ import _run
+    called = []
+    def fake_bootstrap(console, force=False, dry_run=False):
+        called.append(("bootstrap", force, dry_run))
+        return 0
+    monkeypatch.setattr("hubctl_cli.__main__.action_bootstrap", fake_bootstrap)
+    args = build_parser().parse_args(["init"])
+    result = _run(args)
+    assert result == 0
+    assert len(called) == 1
+    assert called[0][1] == False  # force=False par défaut
+
+
+def test_init_dispatch_with_force_flag(monkeypatch):
+    from hubctl_cli.__main__ import _run
+    called = []
+    def fake_bootstrap(console, force=False, dry_run=False):
+        called.append(("bootstrap", force, dry_run))
+        return 0
+    monkeypatch.setattr("hubctl_cli.__main__.action_bootstrap", fake_bootstrap)
+    args = build_parser().parse_args(["init", "--force"])
+    _run(args)
+    assert called[0][1] == True  # force=True
