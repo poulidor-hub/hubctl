@@ -29,6 +29,138 @@ def _detect_host_ip() -> str:
         return "127.0.0.1"
 
 
+import string as _string_module
+
+
+def _generate_dotenv(console, *, force: bool = False, dry_run: bool = False) -> dict | None:
+    """Génère HUB_base/.env avec des secrets aléatoires.
+
+    Retourne un dict avec admin_username, admin_password, host_ip,
+    ou None si le .env existe déjà et que l'utilisateur refuse de l'écraser.
+    """
+    import secrets as _secrets
+    env_path = hub_state.HUB_DIR / ".env"
+
+    # ── Vérifier si .env existe déjà ──
+    if env_path.exists() and not force:
+        import sys as _sys
+        if not (_sys.stdin.isatty() and _sys.stdout.isatty()):
+            console.print(
+                "[red]✗ .env existe déjà et mode non interactif — "
+                "utilisez --force pour écraser.[/red]"
+            )
+            return None
+        # Prompt interactif
+        console.print("[yellow]⚠ .env existe déjà.[/yellow]")
+        try:
+            answer = input("   Écraser le .env existant ? (o/N) : ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("[dim]Abandon.[/dim]")
+            return None
+        if answer not in ("o", "oui", "y", "yes"):
+            console.print("[dim].env conservé.[/dim]")
+            return None
+
+    if dry_run:
+        pwd = "DRY_RUN_PWD_" + _secrets.token_hex(8)
+    else:
+        alphabet = _string_module.ascii_letters + _string_module.digits
+        pwd = "".join(_secrets.choice(alphabet) for _ in range(16))
+
+    import socket as _socket
+    host_ip = _detect_host_ip()
+    # Générer la Fernet key pour le chiffrement des secrets
+    from cryptography.fernet import Fernet as _Fernet
+    fernet_key = _Fernet.generate_key().decode() if not dry_run else "DRY_RUN_FERNET_KEY"
+
+    # HOST_UID : uid de l'utilisateur qui exécute hubctl (pour les volumes montés)
+    host_uid = str(os.getuid()) if not dry_run else "1000"
+
+    lines = f"""# Hub POULIDOR — généré automatiquement par hubctl init
+# {__import__('datetime').datetime.now().isoformat()}
+
+# PostgreSQL
+POSTGRES_USER=hubadmin
+POSTGRES_PASSWORD={pwd}
+POSTGRES_DB=hub_auth
+
+# Hub API
+DATABASE_URL=postgresql+asyncpg://hubadmin:{pwd}@db:5432/hub_auth
+JWT_ALGORITHM=RS256
+APP_ENV=production
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# Admin par défaut
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD={pwd}
+ADMIN_EMAIL=admin@local.lan
+
+# Ports
+HUB_API_PORT=8000
+HUB_HOST={host_ip}
+HUB_FRONTEND_PORT=80
+HUB_HTTPS_PORT=443
+
+# Clés JWT
+AUTO_GENERATE_KEYS=true
+
+# Chiffrement secrets
+SECRETS_ENCRYPTION_KEY={fernet_key}
+ALLOW_PLAINTEXT_SECRETS=false
+SKIP_PASSWORD_CHECK=false
+
+# Docker
+DOCKER_SYNC_INTERVAL=300
+DOCKER_SCAN_ENABLED=false
+HOST_UID={host_uid}
+
+# Audit
+AUDIT_SSE_COOLDOWN=5.0
+AUDIT_RETENTION_DAYS=90
+ERROR_RETENTION_DAYS=30
+LOG_PURGE_INTERVAL_HOURS=24
+
+# CORS
+ALLOWED_ORIGINS=https://hub.local,https://{host_ip}
+ALLOWED_ORIGIN_REGEX=
+
+# Whitelist réseaux
+APP_WHITELIST_NETWORKS=10.42.0.0/16,192.168.1.0/24
+
+# PKI / HTTPS
+HUB_HTTPS_ENABLED=true
+PKI_CA_COMMON_NAME=Hub Local CA
+PKI_CA_ORGANIZATION=Hub Internal
+PKI_CA_VALIDITY_YEARS=10
+PKI_CERT_DOMAINS=localhost,hub.local,hub-frontend
+PKI_CERT_IPS=
+PKI_CERT_VALIDITY_DAYS=365
+PKI_KEY_SIZE=4096
+
+# Ports apps
+APP_PORT_API_START=9000
+APP_PORT_API_END=9499
+APP_PORT_FRONTEND_START=4200
+APP_PORT_FRONTEND_END=4699
+PORT_SCAN_DOCKER_ENABLED=true
+
+# Divers
+FORCE_REPLACE_APP=false
+LEGACY_COMPAT_ENABLED=false
+"""
+
+    if not dry_run:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text(lines)
+        env_path.chmod(0o600)
+
+    return {
+        "admin_username": "admin",
+        "admin_password": pwd,
+        "host_ip": host_ip,
+    }
+
+
 APP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _console = Console()

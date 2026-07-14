@@ -1489,3 +1489,101 @@ def test_action_start_stop_hub_start_swallows_vpn_exception(monkeypatch):
     monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
     # Ne doit pas lever — le boot hook est best-effort.
     actions.action_start_stop(None, "start", target="hub")
+
+
+# ── Task 3: _generate_dotenv tests ──
+
+import secrets
+import string
+
+
+def _random_pwd(length=16):
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _mock_env_path(monkeypatch, tmp_path, exists=False):
+    """Configure un HUB_DIR temporaire pour les tests de _generate_dotenv."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    if exists:
+        (hub_dir / ".env").write_text("POSTGRES_PASSWORD=dummy\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    return hub_dir
+
+
+def test_generate_dotenv_creates_fresh(monkeypatch, tmp_path):
+    hub_dir = _mock_env_path(monkeypatch, tmp_path, exists=False)
+    console = _mock_console()
+    result = actions._generate_dotenv(console, force=False, dry_run=False)
+    assert result is not None
+    assert "admin_username" in result
+    assert "admin_password" in result
+    assert len(result["admin_password"]) >= 12
+    env_file = hub_dir / ".env"
+    assert env_file.exists()
+    content = env_file.read_text()
+    assert "POSTGRES_PASSWORD=" in content
+    assert "ADMIN_PASSWORD=" in content
+    assert "SECRETS_ENCRYPTION_KEY=" in content
+    assert "DATABASE_URL=" in content
+    assert "POSTGRES_USER=hubadmin" in content
+
+
+def test_generate_dotenv_prompt_overwrite(monkeypatch, tmp_path):
+    _mock_env_path(monkeypatch, tmp_path, exists=True)
+    console = _mock_console()
+    # Non-TTY → doit abort sans confirmation
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    result = actions._generate_dotenv(console, force=False, dry_run=False)
+    assert result is None  # aborted
+
+
+def test_generate_dotenv_force_overwrite(monkeypatch, tmp_path):
+    hub_dir = _mock_env_path(monkeypatch, tmp_path, exists=True)
+    console = _mock_console()
+    result = actions._generate_dotenv(console, force=True, dry_run=False)
+    assert result is not None
+    assert "admin_password" in result
+    env_file = hub_dir / ".env"
+    content = env_file.read_text()
+    assert "POSTGRES_PASSWORD=" in content
+    # L'ancienne valeur ne doit pas apparaître
+    assert "dummy" not in content
+
+
+def test_generate_dotenv_dry_run_no_write(monkeypatch, tmp_path):
+    hub_dir = _mock_env_path(monkeypatch, tmp_path, exists=False)
+    console = _mock_console()
+    result = actions._generate_dotenv(console, force=False, dry_run=True)
+    assert result is not None
+    assert "admin_password" in result
+    env_file = hub_dir / ".env"
+    assert not env_file.exists()  # rien écrit sur le disque
+
+
+def test_generate_dotenv_creates_env_from_template(monkeypatch, tmp_path):
+    """Vérifie que toutes les variables obligatoires du docker-compose sont présentes."""
+    hub_dir = _mock_env_path(monkeypatch, tmp_path, exists=False)
+    console = _mock_console()
+    result = actions._generate_dotenv(console, force=False, dry_run=False)
+    env_file = hub_dir / ".env"
+    content = env_file.read_text()
+    required_vars = [
+        "POSTGRES_USER=", "POSTGRES_PASSWORD=", "POSTGRES_DB=",
+        "ADMIN_USERNAME=", "ADMIN_PASSWORD=", "ADMIN_EMAIL=",
+        "SECRETS_ENCRYPTION_KEY=", "DATABASE_URL=",
+        "HUB_API_PORT=", "HUB_FRONTEND_PORT=", "HUB_HTTPS_PORT=",
+        "ALLOWED_ORIGINS=", "APP_WHITELIST_NETWORKS=",
+        "HOST_UID=",
+    ]
+    for var in required_vars:
+        assert var in content, f"Variable obligatoire manquante: {var}"
+    # Fernet key doit être valide
+    import re
+    fkey_match = re.search(r"SECRETS_ENCRYPTION_KEY=(\S+)", content)
+    assert fkey_match
+    from cryptography.fernet import Fernet
+    Fernet(fkey_match.group(1))  # ne doit pas lever d'exception
