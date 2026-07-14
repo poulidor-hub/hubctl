@@ -1823,3 +1823,38 @@ def test_sync_db_password_dry_run_no_docker(monkeypatch, tmp_path):
 
     actions._sync_db_password_if_needed(console=_mock_console(), dry_run=True)
     assert len(calls) == 0
+
+
+# ── _clone_app ──
+
+def test_clone_app_success(monkeypatch, tmp_path):
+    """Clone vers la destination et retourne True."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell",
+                        lambda cmd, **kw: calls.append(cmd) or 0)
+
+    dest = apps_dir / "monapp"
+    result = actions._clone_app(_mock_console(), "git@github.com:org/monapp.git", dest, dry_run=False)
+    assert result is True
+    assert any("clone" in str(c) for c in calls)
+
+
+def test_clone_app_dest_exists(monkeypatch, tmp_path):
+    """Refuse si la destination existe déjà."""
+    dest = tmp_path / "APPS" / "monapp"
+    dest.mkdir(parents=True)
+    result = actions._clone_app(_mock_console(), "git@github.com:org/monapp.git", dest, dry_run=False)
+    assert result is False
+
+
+def test_clone_app_dry_run(monkeypatch, tmp_path):
+    """En dry-run, ne clone pas réellement."""
+    dest = tmp_path / "APPS" / "monapp"
+    dest.parent.mkdir(parents=True)
+    result = actions._clone_app(_mock_console(), "git@github.com:org/monapp.git", dest, dry_run=True)
+    assert result is True
+    assert not dest.exists()

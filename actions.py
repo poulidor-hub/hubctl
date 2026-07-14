@@ -384,6 +384,20 @@ def repo_name_from_url(url: str) -> str | None:
     return name
 
 
+def _clone_app(console, url, dest, *, dry_run: bool = False) -> bool:
+    """Clone un dépôt git vers dest. Retourne True si succès."""
+    con = console or _console
+    if dest.exists():
+        con.print(f"[red]✗ L'app existe déjà : {dest}[/red]")
+        return False
+    con.print(f"[cyan]→ Clonage de {url}...[/cyan]")
+    rc = utils.run_shell(["git", "clone", url, str(dest)], dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print(f"[red]✗ Échec du clone : {url}[/red]")
+        return False
+    return True
+
+
 def hub_make(target: str, *, dry_run: bool, console=None) -> int:
     return utils.run_shell(
         ["make", "-C", str(hub_state.HUB_DIR), target],
