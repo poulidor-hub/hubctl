@@ -621,21 +621,33 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout
 def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> bool:
     """Build + up + health check. Retourne True si l'app est saine.
 
-    Utilise 'make up' qui fait docker compose up -d --build (build + start
-    en une seule commande). Pas de 'make build' séparé — cela ferait un
-    build --no-cache redondant puis un second build au 'up'.
+    Étapes :
+    1. make build (docker compose build, avec cache) — timeout 600s
+    2. make up (docker compose up -d) — timeout 120s
+    3. Health check — timeout 60s
+
+    On ne peut pas faire seulement 'make up' car certains Makefiles n'ont
+    pas --build dans la cible up (template canonique). On ne fait pas non
+    plus 'make up --build' car la cible up peut avoir des pré-traitements
+    (sync-env, SSL) qui ne s'appliquent pas au build.
     """
     con = console or _console
     app_name = dest.name
 
     if dry_run:
-        con.print(f"[dim](dry-run) make -C {dest} up[/dim]")
+        con.print(f"[dim](dry-run) make -C {dest} build + up[/dim]")
         return True
 
-    con.print(f"[cyan]🔨 Build & démarrage de {app_name}...[/cyan]")
-    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=600)
+    con.print(f"[cyan]🔨 Build de {app_name}...[/cyan]")
+    rc = app_make(app_name, "build", dry_run=False, console=con, timeout=600)
     if rc != 0:
-        con.print("[red]✗ Échec du build/démarrage.[/red]")
+        con.print("[red]✗ Échec du build.[/red]")
+        return False
+
+    con.print(f"[cyan]🚀 Démarrage de {app_name}...[/cyan]")
+    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=120)
+    if rc != 0:
+        con.print("[red]✗ Échec du démarrage.[/red]")
         return False
 
     con.print("[cyan]💚 Health check...[/cyan]")
