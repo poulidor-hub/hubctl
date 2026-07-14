@@ -469,7 +469,10 @@ def _detect_app_config(name: str) -> dict:
     import string as _string
     from cryptography.fernet import Fernet as _Fernet
 
-    slug = name.lower()
+    # Slug : minuscules + underscores convertis en tirets.
+    # Le Hub exige ^[a-z0-9-]+$ (pas d'underscores), mais les noms de repos
+    # peuvent en contenir (ex: exemple-app-2 → exemple-app).
+    slug = name.lower().replace("_", "-")
     if not valid_app_name(slug):
         raise ValueError(f"Nom d'app invalide (doit matcher ^[a-z][a-z0-9_-]*$) : {slug}")
 

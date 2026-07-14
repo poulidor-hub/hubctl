@@ -1912,6 +1912,8 @@ def test_detect_app_config(monkeypatch, tmp_path):
     # Mock ss pour dire que tous les ports sont libres
     monkeypatch.setattr(actions.subprocess, "run",
                         lambda *a, **kw: mock.Mock(returncode=0, stdout="", stderr=""))
+    # Isoler du filesystem réel : aucune app existante
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: [])
 
     config = actions._detect_app_config("exemple-app")
 
@@ -1941,6 +1943,25 @@ def test_detect_app_config_no_ports_available(monkeypatch, tmp_path):
     import pytest
     with pytest.raises(RuntimeError, match="port"):
         actions._detect_app_config("monapp")
+
+
+def test_detect_app_config_slug_underscore_to_dash(monkeypatch, tmp_path):
+    """Les underscores dans le nom du repo sont convertis en tirets
+    (le Hub exige ^[a-z0-9-]+$ — pas d'underscores)."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".env").write_text(
+        "HUB_HOST=192.168.1.42\n"
+        "APP_PORT_API_START=9000\nAPP_PORT_API_END=9499\n"
+        "APP_PORT_FRONTEND_START=4200\nAPP_PORT_FRONTEND_END=4699\n"
+    )
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda *a, **kw: mock.Mock(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: [])
+
+    config = actions._detect_app_config("exemple-app-2")
+    assert config["slug"] == "exemple-app"  # underscore → tiret
 
 
 # ── _show_and_confirm_config ──
