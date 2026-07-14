@@ -133,6 +133,23 @@ def _vpn_read_enabled(console=None) -> str | None:
     return None
 
 
+def _vpn_set_enabled(value: bool, console=None) -> bool:
+    """UPSERT psql de vpn_enabled. Retourne True si l'écriture a réussi."""
+    val = "true" if value else "false"
+    sql = (
+        "INSERT INTO app_settings (key, value) VALUES ('vpn_enabled', '" + val + "') "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();"
+    )
+    try:
+        r = subprocess.run(
+            ["docker", "exec", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth", "-c", sql],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
 def _vpn_conf_exists() -> bool:
     """Vrai si wg0.conf est présent dans le volume vpn-config (via alpine éphémère)."""
     try:
@@ -216,6 +233,22 @@ def action_vpn(console, subcmd: str, *, dry_run: bool = False) -> None:
             con.print("[yellow]⚠ hub-db injoignable — sync abandonné.[/yellow]")
             return
         _vpn_reconcile(enabled == "true", dry_run=dry_run, console=con)
+        return
+
+    if subcmd == "on":
+        if not _vpn_set_enabled(True, con):
+            con.print("[red]✗ Impossible d'écrire vpn_enabled (hub-db injoignable ?).[/red]")
+            return
+        con.print("[green]✓ vpn_enabled=true[/green]")
+        _vpn_reconcile(True, dry_run=dry_run, console=con)
+        return
+
+    if subcmd == "off":
+        if not _vpn_set_enabled(False, con):
+            con.print("[red]✗ Impossible d'écrire vpn_enabled (hub-db injoignable ?).[/red]")
+            return
+        con.print("[green]✓ vpn_enabled=false[/green]")
+        _vpn_reconcile(False, dry_run=dry_run, console=con)
         return
 
     raise ValueError(f"subcmd inconnu: {subcmd!r} (attendu: sync|status|on|off)")

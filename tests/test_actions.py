@@ -1377,3 +1377,49 @@ def test_vpn_status_aggregates(monkeypatch):
     monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "false")
     monkeypatch.setattr(actions, "_vpn_container_state", lambda: "exited")
     actions.action_vpn(actions._console, "status", dry_run=False)  # ne doit pas planter
+
+
+# ── Task 3: action_vpn on/off (flag DB + reconcile) ──
+
+def test_vpn_on_sets_flag_true_and_starts(monkeypatch):
+    set_calls = []
+    monkeypatch.setattr(actions, "_vpn_set_enabled", lambda v, c: set_calls.append(v) or True)
+    monkeypatch.setattr(actions, "_vpn_conf_exists", lambda: True)
+    rs_calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
+    actions.action_vpn(actions._console, "on", dry_run=False)
+    assert set_calls == [True], "doit écrire vpn_enabled=true"
+    assert any("up" in " ".join(c) and "wireguard" in " ".join(c) for c in rs_calls), "doit démarrer le conteneur"
+
+
+def test_vpn_off_sets_flag_false_and_stops(monkeypatch):
+    set_calls = []
+    monkeypatch.setattr(actions, "_vpn_set_enabled", lambda v, c: set_calls.append(v) or True)
+    rs_calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
+    actions.action_vpn(actions._console, "off", dry_run=False)
+    assert set_calls == [False]
+    assert any("stop" in " ".join(c) and "hub-wireguard" in " ".join(c) for c in rs_calls)
+
+
+def test_vpn_on_db_unreachable_aborts(monkeypatch):
+    """Si _vpn_set_enabled échoue → on n'appelle pas reconcile."""
+    monkeypatch.setattr(actions, "_vpn_set_enabled", lambda v, c: False)
+    rs_calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
+    actions.action_vpn(actions._console, "on", dry_run=False)
+    assert rs_calls == [], "ne doit rien démarrer si l'écriture du flag échoue"
+
+
+def test_vpn_set_enabled_runs_upsert(monkeypatch):
+    """_vpn_set_enabled exécute un UPSERT psql avec la bonne valeur."""
+    seen = {}
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return mock.Mock(returncode=0)
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    ok = actions._vpn_set_enabled(True, None)
+    assert ok is True
+    assert "psql" in seen["cmd"]
+    assert any("ON CONFLICT" in str(a) for a in seen["cmd"]), "doit utiliser un UPSERT"
+    assert any("'true'" in str(a) for a in seen["cmd"])
