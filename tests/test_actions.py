@@ -1444,3 +1444,26 @@ def test_action_start_stop_hub_stop_does_not_call_vpn(monkeypatch):
     monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 0)
     actions.action_start_stop(None, "stop", target="hub")
     assert vpn_calls == []
+
+
+def test_action_start_stop_hub_start_skips_vpn_if_hub_make_fails(monkeypatch):
+    """Si hub_make('up-prod') échoue (rc != 0), on ne doit PAS appeler action_vpn('sync')."""
+    vpn_calls = []
+    monkeypatch.setattr(actions, "action_vpn", lambda con, sub, *, dry_run=False: vpn_calls.append(sub))
+    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 1)  # rc != 0
+    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
+    actions.action_start_stop(None, "start", target="hub")
+    assert vpn_calls == [], "ne doit pas appeler vpn sync si le hub n'a pas démarré"
+
+
+def _raise(*a, **k):
+    raise RuntimeError("boom")
+
+
+def test_action_start_stop_hub_start_swallows_vpn_exception(monkeypatch):
+    """Une exception dans action_vpn('sync') ne doit pas faire échouer le démarrage du hub."""
+    monkeypatch.setattr(actions, "action_vpn", _raise)
+    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 0)
+    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
+    # Ne doit pas lever — le boot hook est best-effort.
+    actions.action_start_stop(None, "start", target="hub")

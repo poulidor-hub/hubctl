@@ -117,7 +117,7 @@ WG_PROFILE = "wireguard"
 
 
 def _vpn_read_enabled(console=None) -> str | None:
-    """Lit vpn_enabled en DB. Retourne 'true'/'false', ou None si hub-db injoignable."""
+    """Lit vpn_enabled en DB. Retourne 'true'/'false', '' si la ligne est absente, ou None si hub-db injoignable."""
     for _ in range(3):
         try:
             r = subprocess.run(
@@ -765,7 +765,7 @@ def action_start_stop(console, sub: str, target: str = "hub", *, dry_run: bool =
             if rc == 0:
                 # Réconcilier le conteneur WireGuard avec vpn_enabled (démarrage ssi activé).
                 try:
-                    action_vpn(console, "sync")
+                    action_vpn(console, "sync", dry_run=dry_run)
                 except Exception as e:
                     console.print(f"[yellow]⚠ VPN sync au boot échoué : {e}[/yellow]") if console else None
         elif sub in ("stop", "restart"):
