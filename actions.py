@@ -414,6 +414,118 @@ def _validate_app_structure(console, dest, *, dry_run: bool = False) -> bool:
     return True
 
 
+def _read_hub_env_value_at(env_path: Path, key: str, default: str = "") -> str:
+    """Lit une valeur KEY=VALUE depuis un fichier .env dont le chemin est explicite."""
+    try:
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return default
+
+
+def _find_free_port(start: int, end: int, used: set[int] | None = None) -> int | None:
+    """Trouve le premier port libre dans [start, end] via ss."""
+    used = used or set()
+    # Ports déjà occupés sur le système
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnH"], capture_output=True, text=True, timeout=5,
+        )
+        system_used: set[int] = set()
+        for line in result.stdout.splitlines():
+            # Format réel ss : LISTEN 0 128 *:9000 *:*
+            parts = line.split()
+            for p in parts:
+                if p.startswith("*:") or p.startswith("0.0.0.0:") or p.startswith("127.0.0.1:") or p.startswith("[::]:"):
+                    try:
+                        port = int(p.rsplit(":", 1)[1])
+                        system_used.add(port)
+                    except (ValueError, IndexError):
+                        pass
+            # Format simplifié (mocks / sortie brute) : une ligne = un port
+            stripped = line.strip()
+            if stripped.isdigit():
+                try:
+                    port = int(stripped)
+                    if 1 <= port <= 65535:
+                        system_used.add(port)
+                except ValueError:
+                    pass
+        used |= system_used
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    for port in range(start, end + 1):
+        if port not in used:
+            return port
+    return None
+
+
+def _detect_app_config(name: str) -> dict:
+    """Auto-détecte slug, ports libres, secrets, Hub URL."""
+    import secrets as _secrets
+    import string as _string
+    from cryptography.fernet import Fernet as _Fernet
+
+    slug = name.lower()
+    if not valid_app_name(slug):
+        raise ValueError(f"Nom d'app invalide (doit matcher ^[a-z][a-z0-9_-]*$) : {slug}")
+
+    # Lire les plages de ports depuis HUB_base/.env
+    api_start = int(_read_hub_env_value("APP_PORT_API_START", "9000"))
+    api_end = int(_read_hub_env_value("APP_PORT_API_END", "9499"))
+    fe_start = int(_read_hub_env_value("APP_PORT_FRONTEND_START", "4200"))
+    fe_end = int(_read_hub_env_value("APP_PORT_FRONTEND_END", "4699"))
+
+    # Ports déjà utilisés par les apps existantes
+    used_ports: set[int] = set()
+    try:
+        for app in hub_state.get_active_apps():
+            app_env = hub_state.active_apps_dir() / app.name / ".env"
+            if app_env.exists():
+                for key in ("APP_PORT", "APP_PORT_API", "FRONTEND_PORT", "API_PORT"):
+                    val = _read_hub_env_value_at(app_env, key)
+                    if val:
+                        try:
+                            used_ports.add(int(val))
+                        except ValueError:
+                            pass
+    except Exception:
+        pass
+
+    api_port = _find_free_port(api_start, api_end, used_ports)
+    if api_port is None:
+        raise RuntimeError(f"Aucun port API libre dans la plage {api_start}-{api_end}")
+    used_ports.add(api_port)
+
+    frontend_port = _find_free_port(fe_start, fe_end, used_ports)
+    if frontend_port is None:
+        raise RuntimeError(f"Aucun port frontend libre dans la plage {fe_start}-{fe_end}")
+
+    # Secrets
+    alphabet = _string.ascii_letters + _string.digits
+    pg_password = "".join(_secrets.choice(alphabet) for _ in range(16))
+    fernet_key = _Fernet.generate_key().decode()
+
+    # Hub
+    hub_host = _read_hub_env_value("HUB_HOST", "localhost")
+    hub_api_port = _read_hub_env_value("HUB_API_PORT", "8000")
+    host_ip = _detect_host_ip()
+
+    return {
+        "slug": slug,
+        "api_port": api_port,
+        "frontend_port": frontend_port,
+        "postgres_password": pg_password,
+        "fernet_key": fernet_key,
+        "hub_host": hub_host,
+        "hub_url": f"http://{hub_host}:{hub_api_port}",
+        "host_ip": host_ip,
+    }
+
+
 def hub_make(target: str, *, dry_run: bool, console=None) -> int:
     return utils.run_shell(
         ["make", "-C", str(hub_state.HUB_DIR), target],

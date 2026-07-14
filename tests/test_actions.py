@@ -1892,3 +1892,52 @@ def test_validate_structure_dry_run(tmp_path):
     result = actions._validate_app_structure(_mock_console(), dest, dry_run=True)
     assert result is False
     assert dest.exists()  # NON supprimé en dry-run
+
+
+# ── _detect_app_config ──
+
+def test_detect_app_config(monkeypatch, tmp_path):
+    """Détecte slug, ports libres, secrets, Hub URL."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".env").write_text(
+        "HUB_HOST=192.168.1.42\n"
+        "HUB_API_PORT=8000\n"
+        "APP_PORT_API_START=9000\n"
+        "APP_PORT_API_END=9499\n"
+        "APP_PORT_FRONTEND_START=4200\n"
+        "APP_PORT_FRONTEND_END=4699\n"
+    )
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    # Mock ss pour dire que tous les ports sont libres
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda *a, **kw: mock.Mock(returncode=0, stdout="", stderr=""))
+
+    config = actions._detect_app_config("exemple-app")
+
+    assert config["slug"] == "exemple-app"
+    assert config["api_port"] == 9000
+    assert config["frontend_port"] == 4200
+    assert len(config["postgres_password"]) >= 12
+    assert config["hub_host"] == "192.168.1.42"
+    assert config["hub_url"] == "http://192.168.1.42:8000"
+
+
+def test_detect_app_config_no_ports_available(monkeypatch, tmp_path):
+    """Lève une erreur si aucun port libre dans la plage."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / ".env").write_text(
+        "HUB_HOST=192.168.1.42\nAPP_PORT_API_START=9000\nAPP_PORT_API_END=9000\n"
+        "APP_PORT_FRONTEND_START=4200\nAPP_PORT_FRONTEND_END=4200\n"
+    )
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    # Mock ss : tous les ports occupés
+    def fake_ss(cmd, **kw):
+        return mock.Mock(returncode=0, stdout="9000\n4200\n")
+    monkeypatch.setattr(actions.subprocess, "run", fake_ss)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="port"):
+        actions._detect_app_config("monapp")
