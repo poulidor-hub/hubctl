@@ -161,6 +161,72 @@ LEGACY_COMPAT_ENABLED=false
     }
 
 
+def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> int:
+    """Bootstrap complet du Hub : .env → clés JWT → build+up → health → résumé.
+
+    Point d'entrée de `hubctl init`.
+    Retourne 0 si succès, 1 si échec.
+    """
+    con = console or _console
+
+    # ── 1. Vérifier Docker ──
+    if hub_state.check_docker() is False:
+        con.print("[red]✗ Docker injoignable. Vérifiez que le daemon tourne.[/red]")
+        return 1
+
+    # ── 2. Générer le .env ──
+    credentials = _generate_dotenv(con, force=force, dry_run=dry_run)
+    if credentials is None:
+        con.print("[red]✗ Impossible de générer le .env. Abandon.[/red]")
+        return 1
+
+    # ── 3. Générer les clés JWT ──
+    _ensure_jwt_keys(con, dry_run=dry_run)
+
+    # ── 4. Build & démarrage ──
+    if dry_run:
+        con.print("[dim](dry-run) make -C HUB_base up-prod[/dim]")
+    else:
+        con.print("[bold]🔨 Build & démarrage du Hub...[/bold]")
+        rc = hub_make("up-prod", dry_run=False, console=con)
+        if rc != 0:
+            con.print("[red]✗ Échec du build/démarrage du Hub.[/red]")
+            return 1
+
+    # ── 5. Health check ──
+    if dry_run:
+        con.print("[dim](dry-run) Attente health check...[/dim]")
+    else:
+        con.print("[bold]💚 Attente du health check...[/bold]")
+        ok = _health_check("hub", console=con, timeout=120)
+        if not ok:
+            con.print("[red]✗ Le Hub ne répond pas après démarrage. Vérifiez `docker compose logs`.[/red]")
+            return 1
+
+    # ── 6. Résumé ──
+    admin_username = credentials["admin_username"]
+    admin_password = credentials["admin_password"]
+    host_ip = credentials["host_ip"]
+
+    con.print("")
+    con.print("[green bold]✅ Hub POULIDOR opérationnel ![/green bold]")
+    con.print("")
+    t = Table(title="Accès")
+    t.add_column("Service", style="bold cyan")
+    t.add_column("URL")
+    t.add_row("Hub (HTTPS)", f"https://{host_ip}")
+    t.add_row("Hub (HTTP)", f"http://{host_ip}:80")
+    t.add_row("API", f"https://{host_ip}:8000")
+    con.print(t)
+    con.print("")
+    con.print(f"[bold]Login :[/bold] {admin_username}")
+    con.print(f"[bold]Mot de passe :[/bold] {admin_password}")
+    con.print("")
+    con.print("[dim yellow]⚠ Changez le mot de passe admin dès la première connexion.[/dim yellow]")
+
+    return 0
+
+
 APP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _console = Console()

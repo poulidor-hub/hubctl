@@ -1587,3 +1587,97 @@ def test_generate_dotenv_creates_env_from_template(monkeypatch, tmp_path):
     assert fkey_match
     from cryptography.fernet import Fernet
     Fernet(fkey_match.group(1))  # ne doit pas lever d'exception
+
+
+# ── action_bootstrap tests ──
+
+def _patch_bootstrap_mocks(monkeypatch, tmp_path):
+    """Setup commun pour les tests d'action_bootstrap."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path / "APPS")
+    # Mock docker
+    mock_docker_check = mock.Mock(return_value=True)
+    monkeypatch.setattr(actions.hub_state, "check_docker", mock_docker_check)
+    return hub_dir
+
+
+def test_action_bootstrap_full_flow(monkeypatch, tmp_path):
+    """Test du flux complet avec mocks."""
+    hub_dir = _patch_bootstrap_mocks(monkeypatch, tmp_path)
+    console = _mock_console()
+    # Créer le docker-compose.yml pour que hub_make ne faille pas
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    (hub_dir / "Makefile").write_text("up-prod:\n\tdocker compose up -d\n")
+    (hub_dir / "secrets").mkdir(exist_ok=True)
+
+    with mock.patch.object(actions, "_generate_dotenv",
+                           return_value={"admin_username": "admin", "admin_password": "testpwd", "host_ip": "10.0.0.1"}) as mock_gen, \
+         mock.patch.object(actions, "_ensure_jwt_keys") as mock_jwt, \
+         mock.patch.object(actions, "hub_make", return_value=0) as mock_make, \
+         mock.patch.object(actions, "_health_check", return_value=True) as mock_health, \
+         mock.patch.object(actions, "disk_guard", return_value=True):
+        result = actions.action_bootstrap(console, force=False, dry_run=False)
+
+    assert result == 0
+    mock_gen.assert_called_once()
+    mock_jwt.assert_called_once()
+    mock_make.assert_called_once()
+    mock_health.assert_called_once()
+    # Vérifie que le résumé a été affiché
+    assert console.print.call_count >= 1
+
+
+def test_action_bootstrap_fails_when_no_dotenv_generated(monkeypatch, tmp_path):
+    _patch_bootstrap_mocks(monkeypatch, tmp_path)
+    console = _mock_console()
+    with mock.patch.object(actions, "_generate_dotenv", return_value=None):
+        result = actions.action_bootstrap(console, force=False, dry_run=False)
+    assert result == 1
+
+
+def test_action_bootstrap_fails_when_make_fails(monkeypatch, tmp_path):
+    hub_dir = _patch_bootstrap_mocks(monkeypatch, tmp_path)
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    (hub_dir / "Makefile").write_text("up-prod:\n\tdocker compose up -d\n")
+    (hub_dir / "secrets").mkdir(exist_ok=True)
+    console = _mock_console()
+    with mock.patch.object(actions, "_generate_dotenv",
+                           return_value={"admin_username": "admin", "admin_password": "x", "host_ip": "1.2.3.4"}), \
+         mock.patch.object(actions, "_ensure_jwt_keys"), \
+         mock.patch.object(actions, "hub_make", return_value=1):
+        result = actions.action_bootstrap(console, force=False, dry_run=False)
+    assert result == 1
+
+
+def test_action_bootstrap_fails_when_health_fails(monkeypatch, tmp_path):
+    hub_dir = _patch_bootstrap_mocks(monkeypatch, tmp_path)
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    (hub_dir / "Makefile").write_text("up-prod:\n\tdocker compose up -d\n")
+    (hub_dir / "secrets").mkdir(exist_ok=True)
+    console = _mock_console()
+    with mock.patch.object(actions, "_generate_dotenv",
+                           return_value={"admin_username": "admin", "admin_password": "x", "host_ip": "1.2.3.4"}), \
+         mock.patch.object(actions, "_ensure_jwt_keys"), \
+         mock.patch.object(actions, "hub_make", return_value=0), \
+         mock.patch.object(actions, "_health_check", return_value=False):
+        result = actions.action_bootstrap(console, force=False, dry_run=False)
+    assert result == 1
+
+
+def test_action_bootstrap_dry_run(monkeypatch, tmp_path):
+    hub_dir = _patch_bootstrap_mocks(monkeypatch, tmp_path)
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    (hub_dir / "Makefile").write_text("up-prod:\n\tdocker compose up -d\n")
+    (hub_dir / "secrets").mkdir(exist_ok=True)
+    console = _mock_console()
+    with mock.patch.object(actions, "_generate_dotenv",
+                           return_value={"admin_username": "admin", "admin_password": "drypwd", "host_ip": "1.1.1.1"}), \
+         mock.patch.object(actions, "_ensure_jwt_keys") as jwt_mock, \
+         mock.patch.object(actions, "hub_make", return_value=0) as make_mock:
+        result = actions.action_bootstrap(console, force=False, dry_run=True)
+    assert result == 0
+    # En dry-run, hub_make ne doit pas être appelé
+    make_mock.assert_not_called()
