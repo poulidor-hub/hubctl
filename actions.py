@@ -398,6 +398,22 @@ def _clone_app(console, url, dest, *, dry_run: bool = False) -> bool:
     return True
 
 
+def _validate_app_structure(console, dest, *, dry_run: bool = False) -> bool:
+    """Vérifie la structure template POULIDOR. Supprime dest si invalide."""
+    con = console or _console
+    required = ["docker-compose.yml", "Makefile", ".env.example"]
+    missing = [f for f in required if not (dest / f).exists()]
+    if missing:
+        con.print(f"[red]✗ Cette app ne suit pas le template POULIDOR.[/red]")
+        con.print(f"[red]  Fichiers manquants : {', '.join(missing)}[/red]")
+        if not dry_run:
+            shutil.rmtree(dest, ignore_errors=True)
+            con.print("[dim]Dossier cloné supprimé.[/dim]")
+        return False
+    con.print("[green]✓ Structure template valide[/green]")
+    return True
+
+
 def hub_make(target: str, *, dry_run: bool, console=None) -> int:
     return utils.run_shell(
         ["make", "-C", str(hub_state.HUB_DIR), target],

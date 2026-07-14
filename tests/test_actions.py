@@ -1858,3 +1858,37 @@ def test_clone_app_dry_run(monkeypatch, tmp_path):
     result = actions._clone_app(_mock_console(), "git@github.com:org/monapp.git", dest, dry_run=True)
     assert result is True
     assert not dest.exists()
+
+
+# ── _validate_app_structure ──
+
+def test_validate_structure_ok(tmp_path):
+    """Valide si docker-compose.yml + Makefile + .env.example présents."""
+    dest = tmp_path / "monapp"
+    dest.mkdir()
+    (dest / "docker-compose.yml").write_text("services: {}\n")
+    (dest / "Makefile").write_text("up:\n\tdocker compose up -d\n")
+    (dest / ".env.example").write_text("APP_SLUG=example\n")
+    result = actions._validate_app_structure(_mock_console(), dest, dry_run=False)
+    assert result is True
+
+
+def test_validate_structure_missing_file(tmp_path):
+    """Rejette et supprime le dossier si un fichier obligatoire manque."""
+    dest = tmp_path / "monapp"
+    dest.mkdir()
+    (dest / "docker-compose.yml").write_text("services: {}\n")
+    # Makefile et .env.example manquants
+    result = actions._validate_app_structure(_mock_console(), dest, dry_run=False)
+    assert result is False
+    assert not dest.exists()  # dossier supprimé
+
+
+def test_validate_structure_dry_run(tmp_path):
+    """En dry-run, ne supprime pas le dossier."""
+    dest = tmp_path / "monapp"
+    dest.mkdir()
+    (dest / "docker-compose.yml").write_text("services: {}\n")
+    result = actions._validate_app_structure(_mock_console(), dest, dry_run=True)
+    assert result is False
+    assert dest.exists()  # NON supprimé en dry-run
