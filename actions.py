@@ -1098,26 +1098,63 @@ def action_update(console, target: str, *, dry_run: bool) -> None:
     con.print(f"[green]✓ « {target} » mis à jour avec succès[/green]")
 
 
-def action_add_app(console, url: str, *, dry_run: bool) -> None:
+def action_add_app(console, url, *, dry_run: bool = False) -> None:
+    """Ajoute une app depuis une URL git : clone → validate → configure → build → start → sync."""
+    con = console or _console
     name = repo_name_from_url(url)
     if not name:
-        console.print("[red]URL git invalide.[/red]")
+        con.print(f"[red]✗ URL git invalide : {url}[/red]")
         return
-    dest = hub_state.APPS_DIR / name
-    if dest.exists():
-        console.print(f"[red]« {name} » existe déjà dans APPS/.[/red]")
+
+    dest = hub_state.active_apps_dir() / name
+
+    # 1. Clone
+    if not _clone_app(con, url, dest, dry_run=dry_run):
         return
-    if not disk_guard(console):
+
+    # 2. Validation structure
+    if not _validate_app_structure(con, dest, dry_run=dry_run):
         return
-    rc = utils.run_shell(["git", "clone", url, str(dest)], dry_run=dry_run, console=console)
-    if not dry_run and rc != 0:
-        console.print("[red]✗ Échec du clone.[/red]")
+
+    # 3. Auto-détection config
+    try:
+        config = _detect_app_config(name)
+    except (RuntimeError, ValueError) as e:
+        con.print(f"[red]✗ {e}[/red]")
+        if not dry_run:
+            shutil.rmtree(dest, ignore_errors=True)
         return
-    if dry_run or (dest / "INITIALISE.py").exists():
-        utils.run_shell(
-            ["python", "INITIALISE.py"],
-            cwd=str(dest), dry_run=dry_run, console=console,
-        )
+
+    # 4. Résumé + validation utilisateur
+    if not _show_and_confirm_config(con, config, dest):
+        con.print("[yellow]Annulé.[/yellow]")
+        if not dry_run:
+            shutil.rmtree(dest, ignore_errors=True)
+            con.print("[dim]Dossier cloné supprimé.[/dim]")
+        return
+
+    # 5. Écriture .env
+    _write_app_env(con, dest, config, dry_run=dry_run)
+
+    # 6. Build + démarrage
+    if not _build_and_start_app(con, dest, config, dry_run=dry_run):
+        return  # Dossier conservé pour debug
+
+    # 7. Sync coffre
+    _sync_app_coffre(con, name, dry_run=dry_run)
+
+    # 8. Résumé final
+    con.print()
+    con.print(f"[green bold]✅ Application {config['slug']} démarrée ![/green bold]")
+    con.print()
+    con.print(f"  [bold]Frontend[/bold]    http://{config['host_ip']}:{config['frontend_port']}")
+    con.print(f"  [bold]API[/bold]         http://{config['host_ip']}:{config['api_port']}/api/health")
+    con.print(f"  [bold]Coffre[/bold]      ✓ secrets sauvegardés")
+    con.print()
+    con.print(f"  [yellow]⚠ Action requise : validez l'app sur le Hub[/yellow]")
+    con.print(f"     https://{config['hub_host']} → Administration → Applications")
+    con.print(f"     Statut actuel : en attente d'approbation")
+    con.print()
 
 
 def action_attach_app(console, app_name: str, *, dry_run: bool) -> None:

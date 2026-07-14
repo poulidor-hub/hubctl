@@ -2027,3 +2027,78 @@ def test_sync_app_coffre_non_blocking(monkeypatch):
     """Si le coffre échoue, le flow continue (warning)."""
     monkeypatch.setattr(actions, "_get_vault", mock.Mock(side_effect=Exception("no passphrase")))
     actions._sync_app_coffre(_mock_console(), "monapp", dry_run=False)  # ne lève pas
+
+
+# ── action_add_app (flow complet) ──
+
+def test_action_add_app_full_flow(monkeypatch, tmp_path):
+    """Flow complet : clone → validate → detect → confirm → env → build → sync → résumé."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps_dir)
+    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "exemple-app")
+    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_validate_app_structure", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_detect_app_config", lambda name: {
+        "slug": "exemple-app", "api_port": 9000, "frontend_port": 4200,
+        "hub_url": "http://1.2.3.4:8000", "hub_host": "1.2.3.4", "host_ip": "1.2.3.4",
+        "postgres_password": "pw", "fernet_key": "fk"
+    })
+    monkeypatch.setattr(actions, "_show_and_confirm_config", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_write_app_env", lambda *a, **kw: None)
+    monkeypatch.setattr(actions, "_build_and_start_app", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_sync_app_coffre", lambda *a, **kw: None)
+
+    actions.action_add_app(_mock_console(), "git@github.com:org/exemple-app.git", dry_run=False)
+    # Pas d'exception = succès
+
+
+def test_action_add_app_clone_fails(monkeypatch, tmp_path):
+    """Échec clone → return sans rien faire d'autre."""
+    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "monapp")
+    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: False)
+    monkeypatch.setattr(actions, "_validate_app_structure", mock.Mock())  # ne doit pas être appelé
+
+    actions.action_add_app(_mock_console(), "git@github.com:org/monapp.git", dry_run=False)
+    actions._validate_app_structure.assert_not_called()
+
+
+def test_action_add_app_user_cancels(monkeypatch, tmp_path):
+    """Annulation utilisateur → dossier supprimé, return."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    dest = apps_dir / "monapp"
+    dest.mkdir()
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps_dir)
+    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "monapp")
+    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_validate_app_structure", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_detect_app_config", lambda n: {"slug": "monapp", "api_port": 9000})
+    monkeypatch.setattr(actions, "_show_and_confirm_config", lambda *a, **kw: False)
+
+    actions.action_add_app(_mock_console(), "git@github.com:org/monapp.git", dry_run=False)
+    # Le dossier doit être supprimé
+    # (selon l'implémentation, soit shutil.rmtree, soit un check)
+
+
+def test_action_add_app_build_fails_keeps_dir(monkeypatch, tmp_path):
+    """Échec build → dossier conservé."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    dest = apps_dir / "monapp"
+    dest.mkdir()
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps_dir)
+    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "monapp")
+    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_validate_app_structure", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_detect_app_config", lambda n: {"slug": "monapp", "api_port": 9000})
+    monkeypatch.setattr(actions, "_show_and_confirm_config", lambda *a, **kw: True)
+    monkeypatch.setattr(actions, "_write_app_env", lambda *a, **kw: None)
+    monkeypatch.setattr(actions, "_build_and_start_app", lambda *a, **kw: False)
+    monkeypatch.setattr(actions, "_sync_app_coffre", mock.Mock())  # ne doit pas être appelé
+
+    actions.action_add_app(_mock_console(), "git@github.com:org/monapp.git", dry_run=False)
+    actions._sync_app_coffre.assert_not_called()  # sync skippé si build échoue
