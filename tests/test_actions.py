@@ -1981,3 +1981,49 @@ def test_write_app_env(tmp_path):
     assert "APP_PORT=9001" in env
     assert "FRONTEND_PORT=4201" in env
     assert "HUB_URL=http://1.2.3.4:8000" in env
+
+
+# ── Task 5: _build_and_start_app + _sync_app_coffre ──
+
+def test_build_and_start_success(monkeypatch, tmp_path):
+    """Build + up + health OK → True."""
+    dest = tmp_path / "monapp"
+    dest.mkdir()
+    (dest / "Makefile").write_text("build:\nup:\n")
+    monkeypatch.setattr(actions, "app_make", lambda *a, **kw: 0)
+    monkeypatch.setattr(actions, "_health_check", lambda *a, **kw: True)
+    config = {"api_port": 9000}
+    result = actions._build_and_start_app(_mock_console(), dest, config, dry_run=False)
+    assert result is True
+
+
+def test_build_and_start_health_fail(monkeypatch, tmp_path):
+    """Build OK mais health KO → False, dossier conservé."""
+    dest = tmp_path / "monapp"
+    dest.mkdir()
+    monkeypatch.setattr(actions, "app_make", lambda *a, **kw: 0)
+    monkeypatch.setattr(actions, "_health_check", lambda *a, **kw: False)
+    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: mock.Mock(returncode=0, stdout=""))
+    config = {"api_port": 9000}
+    result = actions._build_and_start_app(_mock_console(), dest, config, dry_run=False)
+    assert result is False
+    assert dest.exists()  # dossier conservé
+
+
+# ── _sync_app_coffre ──
+
+def test_sync_app_coffre_success(monkeypatch, tmp_path):
+    """Sync coffre appelle le vault."""
+    apps = tmp_path / "APPS"; (apps / "monapp").mkdir(parents=True)
+    (apps / "monapp" / ".env").write_text("API_PORT=9000\n")
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps)
+    mock_vault = mock.Mock()
+    monkeypatch.setattr(actions, "_get_vault", lambda: mock_vault)
+    actions._sync_app_coffre(_mock_console(), "monapp", dry_run=False)
+    mock_vault.backup_app_env.assert_called_once()
+
+
+def test_sync_app_coffre_non_blocking(monkeypatch):
+    """Si le coffre échoue, le flow continue (warning)."""
+    monkeypatch.setattr(actions, "_get_vault", mock.Mock(side_effect=Exception("no passphrase")))
+    actions._sync_app_coffre(_mock_console(), "monapp", dry_run=False)  # ne lève pas

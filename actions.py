@@ -598,6 +598,69 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None) -> int:
     )
 
 
+def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> bool:
+    """Build + up + health check. Retourne True si l'app est saine."""
+    con = console or _console
+    app_name = dest.name
+
+    if dry_run:
+        con.print(f"[dim](dry-run) make -C {dest} build + up[/dim]")
+        return True
+
+    con.print(f"[cyan]🔨 Build de {app_name}...[/cyan]")
+    rc = app_make(app_name, "build", dry_run=False, console=con)
+    if rc != 0:
+        con.print("[red]✗ Échec du build.[/red]")
+        return False
+
+    con.print(f"[cyan]🚀 Démarrage de {app_name}...[/cyan]")
+    rc = app_make(app_name, "up", dry_run=False, console=con)
+    if rc != 0:
+        con.print("[red]✗ Échec du démarrage.[/red]")
+        return False
+
+    con.print("[cyan]💚 Health check...[/cyan]")
+    ok = _health_check(app_name, console=con, timeout=60)
+    if not ok:
+        con.print("[yellow]⚠ L'app n'a pas passé le health check.[/yellow]")
+        con.print("[dim]Logs récents :[/dim]")
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "logs", "api", "--tail", "20"],
+                capture_output=True, text=True, timeout=10, cwd=str(dest),
+            )
+            con.print(f"[dim]{result.stdout[-500:]}[/dim]")
+        except Exception:
+            pass
+        con.print(f"[yellow]L'app est clonée dans {dest} — corrige le .env et relance 'make up'.[/yellow]")
+        return False
+
+    return True
+
+
+def _get_vault():
+    """Récupère le coffre du parc (lazy import pour éviter les dépendances circulaires)."""
+    from hubctl_cli.coffre import Vault
+    vault_path = hub_state.PARC_ROOT / ".coffre"
+    return Vault(vault_path)
+
+
+def _sync_app_coffre(console, name, *, dry_run: bool = False) -> None:
+    """Pousse le .env de l'app vers le coffre chiffré. Non-bloquant."""
+    con = console or _console
+    if dry_run:
+        con.print(f"[dim](dry-run) Sync coffre : {name}[/dim]")
+        return
+    try:
+        vault = _get_vault()
+        app_env = hub_state.active_apps_dir() / name / ".env"
+        if app_env.exists():
+            vault.backup_app_env(name, app_env)
+            con.print(f"[green]✓ Secrets de {name} sauvegardés dans le coffre[/green]")
+    except Exception as e:
+        con.print(f"[yellow]⚠ Sync coffre échoué ({e}) — l'app est démarrée, le coffre peut être sync plus tard.[/yellow]")
+
+
 def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
     secrets_dir = hub_state.HUB_DIR / "secrets"
     priv = secrets_dir / "jwt_private_key.pem"
