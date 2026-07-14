@@ -761,7 +761,13 @@ def action_start_stop(console, sub: str, target: str = "hub", *, dry_run: bool =
         if sub in ("start", "restart"):
             _ensure_jwt_keys(console, dry_run=dry_run)
         if sub == "start":
-            hub_make("up-prod", dry_run=dry_run, console=console)
+            rc = hub_make("up-prod", dry_run=dry_run, console=console)
+            if rc == 0:
+                # Réconcilier le conteneur WireGuard avec vpn_enabled (démarrage ssi activé).
+                try:
+                    action_vpn(console, "sync")
+                except Exception as e:
+                    console.print(f"[yellow]⚠ VPN sync au boot échoué : {e}[/yellow]") if console else None
         elif sub in ("stop", "restart"):
             hub_make("down", dry_run=dry_run, console=console)
             if sub == "restart":

@@ -1423,3 +1423,24 @@ def test_vpn_set_enabled_runs_upsert(monkeypatch):
     assert "psql" in seen["cmd"]
     assert any("ON CONFLICT" in str(a) for a in seen["cmd"]), "doit utiliser un UPSERT"
     assert any("'true'" in str(a) for a in seen["cmd"])
+
+
+# ── Task 4: hook boot WG (action_start_stop start+hub → vpn sync) ──
+
+def test_action_start_stop_hub_start_calls_vpn_sync(monkeypatch):
+    """Démarrer le hub (start) → appelle action_vpn('sync') pour réconcilier le conteneur WG."""
+    vpn_calls = []
+    monkeypatch.setattr(actions, "action_vpn", lambda con, sub, **kw: vpn_calls.append(sub))
+    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 0)
+    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
+    actions.action_start_stop(None, "start", target="hub")
+    assert "sync" in vpn_calls, "le boot du hub doit appeler action_vpn('sync')"
+
+
+def test_action_start_stop_hub_stop_does_not_call_vpn(monkeypatch):
+    """Stop le hub → pas de vpn sync."""
+    vpn_calls = []
+    monkeypatch.setattr(actions, "action_vpn", lambda con, sub, **kw: vpn_calls.append(sub))
+    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 0)
+    actions.action_start_stop(None, "stop", target="hub")
+    assert vpn_calls == []

@@ -10,6 +10,7 @@ from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_work, action_ship, action_update, action_start_stop, action_status,
     action_logs, action_restart, action_health, action_db_shell, action_deploy,
+    action_vpn,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -70,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop_parser = sub.add_parser("stop", help="Arrêter le Hub ou une app")
     stop_parser.add_argument("target", help="'hub' ou le slug de l'app")
+
+    vpn_parser = sub.add_parser("vpn", help="Cycle de vie du conteneur WireGuard (sync/status/on/off)")
+    vpn_parser.add_argument("subcmd", choices=["sync", "status", "on", "off"],
+                            help="sync | status | on | off")
 
     deploy_parser = sub.add_parser("deploy", help="Déploiement blue-green (zéro downtime, prod)")
     deploy_parser.add_argument("target", help="'hub' ou le slug de l'app")
@@ -183,7 +188,7 @@ def _run(args) -> int:
             print(f"❌ deploy a échoué : {e}")
             return 1
 
-    if args.command in ("work", "ship", "update", "start", "stop", "status"):
+    if args.command in ("work", "ship", "update", "start", "stop", "status", "vpn"):
         from rich.console import Console as RichConsole
         console = RichConsole()
         # Résoudre le mode avant l'action
@@ -201,6 +206,8 @@ def _run(args) -> int:
                 action_start_stop(console, "stop", target=args.target)
             elif args.command == "status":
                 action_status(console)
+            elif args.command == "vpn":
+                action_vpn(console, args.subcmd, dry_run=args.dry_run)
             return 0
         except Exception as e:
             print(f"❌ {args.command} a échoué : {e}")

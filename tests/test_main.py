@@ -281,3 +281,24 @@ def test_parser_deploy_flags():
     p = build_parser()
     a = p.parse_args(["deploy", "hub", "--validate", "--dry-run"])
     assert a.target == "hub" and a.validate is True and a.dry_run is True
+
+
+# ── Task 4: vpn subcommand dispatch + argparse choices ──
+
+def test_dispatch_vpn_calls_action_vpn(monkeypatch):
+    """hubctl vpn sync → action_vpn(console, 'sync')."""
+    called = {}
+    monkeypatch.setattr("hubctl_cli.__main__.action_vpn",
+                        lambda con, sub, *, dry_run=False: called.update(sub=sub))
+    from hubctl_cli.__main__ import main
+    rc = main(["vpn", "sync"])
+    assert rc == 0
+    assert called.get("sub") == "sync"
+
+
+def test_parser_vpn_rejects_unknown_subcmd(capsys):
+    from hubctl_cli.__main__ import build_parser
+    import pytest as _pytest
+    p = build_parser()
+    with _pytest.raises(SystemExit):
+        p.parse_args(["vpn", "bogus"])   # choices=['sync','status','on','off'] → rejette
