@@ -106,6 +106,121 @@ def _db_snapshot(console=None) -> Path | None:
         return None
 
 
+# =============================================================================
+# VPN WireGuard — cycle de vie du conteneur (réconciliation host-level)
+# =============================================================================
+
+VPN_VOLUME = "hub_base_vpn-config"
+WG_CONTAINER = "hub-wireguard"
+WG_SERVICE = "wireguard-client"   # nom du service compose (≠ container_name)
+WG_PROFILE = "wireguard"
+
+
+def _vpn_read_enabled(console=None) -> str | None:
+    """Lit vpn_enabled en DB. Retourne 'true'/'false', ou None si hub-db injoignable."""
+    for _ in range(3):
+        try:
+            r = subprocess.run(
+                ["docker", "exec", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
+                 "-tAc", "SELECT value FROM app_settings WHERE key='vpn_enabled'"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                return r.stdout.strip()
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+        time.sleep(2)
+    return None
+
+
+def _vpn_conf_exists() -> bool:
+    """Vrai si wg0.conf est présent dans le volume vpn-config (via alpine éphémère)."""
+    try:
+        r = subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{VPN_VOLUME}:/vpn:ro",
+             "alpine", "sh", "-c", "test -f /vpn/wg_confs/wg0.conf"],
+            capture_output=True, timeout=15,
+        )
+        return r.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def _vpn_container_state() -> str:
+    """Retourne 'running'/'exited'/'absent'."""
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Status}}", WG_CONTAINER],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0:
+            return "absent"
+        return r.stdout.strip() or "absent"
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return "absent"
+
+
+def _vpn_compose_up(*, dry_run: bool, console=None) -> int:
+    return utils.run_shell(
+        ["docker", "compose", "-f", str(hub_state.HUB_DIR / "docker-compose.yml"),
+         "--profile", WG_PROFILE, "up", "-d", WG_SERVICE],
+        dry_run=dry_run, console=console, timeout=120,
+    )
+
+
+def _vpn_stop(*, dry_run: bool, console=None) -> int:
+    return utils.run_shell(
+        ["docker", "stop", WG_CONTAINER],
+        dry_run=dry_run, console=console, timeout=30,
+    )
+
+
+def _vpn_reconcile(enabled: bool, *, dry_run: bool, console=None) -> None:
+    """Démarre (enabled=true) ou arrête (enabled=false) le conteneur WG."""
+    con = console or _console
+    if enabled:
+        conf = _vpn_conf_exists()
+        con.print(f"[bold]→ vpn_enabled=true, conf={'présente' if conf else 'ABSENTE'} — démarrage conteneur…[/bold]")
+        _vpn_compose_up(dry_run=dry_run, console=con)
+        if not conf:
+            con.print("[yellow]⚠ Aucune wg0.conf — wg0 ne montera pas. Déploie la conf via l'UI admin.[/yellow]")
+    else:
+        con.print("[bold]→ vpn_enabled=false — arrêt conteneur…[/bold]")
+        _vpn_stop(dry_run=dry_run, console=con)
+
+
+def action_vpn(console, subcmd: str, *, dry_run: bool = False) -> None:
+    """Cycle de vie du conteneur WireGuard : sync | status | on | off."""
+    con = console or _console
+
+    if subcmd == "status":
+        enabled = _vpn_read_enabled(con)
+        state = _vpn_container_state()
+        con.print(f"vpn_enabled (DB) : {enabled if enabled is not None else '(DB injoignable)'}")
+        con.print(f"conteneur        : {state}")
+        if state == "running" and not dry_run:
+            try:
+                wg = subprocess.run(
+                    ["docker", "exec", WG_CONTAINER, "wg", "show", "wg0"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if wg.stdout.strip():
+                    con.print(f"[dim]{wg.stdout.strip()}[/dim]")
+            except subprocess.SubprocessError:
+                pass
+        return
+
+    if subcmd == "sync":
+        enabled = _vpn_read_enabled(con)
+        if enabled is None:
+            con.print("[yellow]⚠ hub-db injoignable — sync abandonné.[/yellow]")
+            return
+        _vpn_reconcile(enabled == "true", dry_run=dry_run, console=con)
+        return
+
+    raise ValueError(f"subcmd inconnu: {subcmd!r} (attendu: sync|status|on|off)")
+
+
 def _port_in_use(port: int) -> bool:
     try:
         result = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)

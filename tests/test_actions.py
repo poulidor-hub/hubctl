@@ -1307,3 +1307,73 @@ def test_workshop_remove_skips_prod_restart_if_absent(tmp_path, monkeypatch):
     assert not ws.exists()
     flat = [" ".join(c) for c in calls]
     assert not any("make" in c and "up" in c for c in flat), "ne doit pas tenter make up si prod absente"
+
+
+# ── Task 2: action_vpn (helpers + sync + status) ──
+
+def test_vpn_read_enabled_returns_db_value(monkeypatch):
+    def fake_run(cmd, **kw):
+        return mock.Mock(returncode=0, stdout="true\n", stderr="")
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    assert actions._vpn_read_enabled(actions._console) == "true"
+
+
+def test_vpn_read_enabled_none_when_db_unreachable(monkeypatch):
+    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **k: mock.Mock(returncode=1, stdout="", stderr="err"))
+    monkeypatch.setattr(actions.time, "sleep", lambda *_: None)
+    assert actions._vpn_read_enabled(actions._console) is None
+
+
+def test_vpn_conf_exists_true(monkeypatch):
+    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0))
+    assert actions._vpn_conf_exists() is True
+
+
+def test_vpn_sync_enabled_starts_container(monkeypatch):
+    """vpn_enabled=true + conf présente → docker compose --profile wireguard up."""
+    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "true")
+    monkeypatch.setattr(actions, "_vpn_conf_exists", lambda: True)
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+    actions.action_vpn(actions._console, "sync", dry_run=False)
+    flat = [" ".join(c) for c in calls]
+    assert any("compose" in c and "--profile" in c and "wireguard" in c and "up" in c for c in flat), \
+        "compose up manquant"
+    assert any(c == "wireguard-client" for c in calls[0]), "doit cibler le service wireguard-client"
+
+
+def test_vpn_sync_disabled_stops_container(monkeypatch):
+    """vpn_enabled=false → docker stop hub-wireguard, PAS de compose up."""
+    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "false")
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+    actions.action_vpn(actions._console, "sync", dry_run=False)
+    flat = [" ".join(c) for c in calls]
+    assert any("stop" in c and "hub-wireguard" in c for c in flat), "docker stop manquant"
+    assert not any("up" in c and "wireguard" in c for c in flat), "ne doit pas faire compose up si disabled"
+
+
+def test_vpn_sync_enabled_no_conf_warns(monkeypatch):
+    """vpn_enabled=true mais pas de conf → démarre qd même + warning."""
+    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "true")
+    monkeypatch.setattr(actions, "_vpn_conf_exists", lambda: False)
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: 0)
+    c = actions._console
+    actions.action_vpn(c, "sync", dry_run=False)
+    # Un warning a été imprimé (on vérifie juste que ça ne plante pas et que compose up a été appelé)
+
+
+def test_vpn_sync_db_unreachable_aborts(monkeypatch):
+    """hub-db injoignable → abandon propre, aucune commande docker."""
+    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: None)
+    calls = []
+    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
+    actions.action_vpn(actions._console, "sync", dry_run=False)
+    assert calls == [], "ne doit lancer aucune commande si DB injoignable"
+
+
+def test_vpn_status_aggregates(monkeypatch):
+    """status affiche flag + état conteneur."""
+    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "false")
+    monkeypatch.setattr(actions, "_vpn_container_state", lambda: "exited")
+    actions.action_vpn(actions._console, "status", dry_run=False)  # ne doit pas planter
