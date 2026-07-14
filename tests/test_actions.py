@@ -1941,3 +1941,43 @@ def test_detect_app_config_no_ports_available(monkeypatch, tmp_path):
     import pytest
     with pytest.raises(RuntimeError, match="port"):
         actions._detect_app_config("monapp")
+
+
+# ── _show_and_confirm_config ──
+
+def test_show_and_confirm_accept(monkeypatch):
+    """Retourne True si l'utilisateur valide."""
+    config = {"slug": "monapp", "api_port": 9000, "frontend_port": 4200,
+              "hub_url": "http://1.2.3.4:8000", "hub_host": "1.2.3.4"}
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    result = actions._show_and_confirm_config(_mock_console(), config, Path("/tmp/monapp"))
+    assert result is True
+
+
+def test_show_and_confirm_reject(monkeypatch):
+    """Retourne False si l'utilisateur refuse."""
+    config = {"slug": "monapp", "api_port": 9000, "frontend_port": 4200,
+              "hub_url": "http://1.2.3.4:8000", "hub_host": "1.2.3.4"}
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    result = actions._show_and_confirm_config(_mock_console(), config, Path("/tmp/monapp"))
+    assert result is False
+
+
+# ── _write_app_env ──
+
+def test_write_app_env(tmp_path):
+    """Substitue les variables du .env.example."""
+    dest = tmp_path / "monapp"
+    dest.mkdir()
+    (dest / ".env.example").write_text(
+        "APP_SLUG=example\nAPP_PORT=8000\nFRONTEND_PORT=4200\nHUB_URL=\n"
+    )
+    config = {"slug": "monapp", "api_port": 9001, "frontend_port": 4201,
+              "hub_url": "http://1.2.3.4:8000", "postgres_password": "secret123",
+              "fernet_key": "fernetkey", "host_ip": "1.2.3.4", "hub_host": "1.2.3.4"}
+    actions._write_app_env(_mock_console(), dest, config, dry_run=False)
+    env = (dest / ".env").read_text()
+    assert "APP_SLUG=monapp" in env
+    assert "APP_PORT=9001" in env
+    assert "FRONTEND_PORT=4201" in env
+    assert "HUB_URL=http://1.2.3.4:8000" in env

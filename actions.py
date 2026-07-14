@@ -526,6 +526,64 @@ def _detect_app_config(name: str) -> dict:
     }
 
 
+def _show_and_confirm_config(console, config, dest) -> bool:
+    """Affiche un tableau Rich et demande validation."""
+    con = console or _console
+    t = Table(title="Nouvelle application détectée")
+    t.add_column("Paramètre", style="bold cyan")
+    t.add_column("Valeur")
+    t.add_row("Slug", config["slug"])
+    t.add_row("Destination", str(dest))
+    t.add_row("Port API", str(config["api_port"]))
+    t.add_row("Port Frontend", str(config["frontend_port"]))
+    t.add_row("Hub", config["hub_url"])
+    con.print(t)
+    con.print("[dim]Secrets générés : mot de passe DB + clé Fernet (stockés dans .env + coffre)[/dim]")
+    con.print()
+    try:
+        answer = input("  Valider et démarrer ? [O/n] : ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("", "o", "oui", "y", "yes")
+
+
+def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
+    """Génère dest/.env depuis .env.example avec les valeurs détectées."""
+    con = console or _console
+    example = dest / ".env.example"
+    if not example.exists():
+        con.print("[yellow]⚠ .env.example introuvable — .env non généré[/yellow]")
+        return
+    content = example.read_text()
+
+    host_uid = str(os.getuid())
+    replacements = {
+        "APP_SLUG": config["slug"],
+        "APP_NAME": config["slug"],
+        "APP_PORT": str(config["api_port"]),
+        "APP_PORT_API": str(config["api_port"]),
+        "FRONTEND_PORT": str(config["frontend_port"]),
+        "POSTGRES_PASSWORD": config["postgres_password"],
+        "SECRETS_ENCRYPTION_KEY": config["fernet_key"],
+        "HUB_URL": config["hub_url"],
+        "HUB_HOST": config["hub_host"],
+        "HOST_IP": config["host_ip"],
+        "HOST_UID": host_uid,
+    }
+
+    # Construire DATABASE_URL si présent dans le template
+    db_url = f"postgresql+asyncpg://app_user:{config['postgres_password']}@db:5432/app_db"
+    replacements["DATABASE_URL"] = db_url
+
+    for key, val in replacements.items():
+        content = re.sub(rf"^{key}=.*$", f"{key}={val}", content, flags=re.MULTILINE)
+
+    env_path = dest / ".env"
+    env_path.write_text(content)
+    os.chmod(env_path, 0o600)
+    con.print("[green]✓ .env généré[/green]")
+
+
 def hub_make(target: str, *, dry_run: bool, console=None) -> int:
     return utils.run_shell(
         ["make", "-C", str(hub_state.HUB_DIR), target],
