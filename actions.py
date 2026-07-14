@@ -200,6 +200,94 @@ def _cleanup_existing_hub_containers(console=None, *, dry_run: bool = False) -> 
             pass
 
 
+def _read_hub_env_value(key: str, default: str = "") -> str:
+    """Lit une valeur depuis HUB_base/.env (parsing simple KEY=VALUE)."""
+    env_path = hub_state.HUB_DIR / ".env"
+    try:
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return default
+
+
+def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
+    """Synchronise le mot de passe PostgreSQL du volume avec le .env actuel.
+
+    PostgreSQL n'honore ``POSTGRES_PASSWORD`` que lors de la première
+    initialisation du volume. Si le .env a été régénéré (``--force``) avec un
+    nouveau mot de passe alors que le volume existe déjà, le hub-api obtiendra
+    une ``InvalidPasswordError``. Cette fonction détecte ce cas et resync le
+    mot de passe via ``ALTER USER`` (non-destructif — préserve les données).
+
+    Skip si le volume n'existe pas (fresh install) ou si le conteneur DB
+    est introuvable.
+    """
+    con = console or _console
+    if dry_run:
+        con.print("[dim](dry-run) Sync mot de passe DB si volume existant[/dim]")
+        return
+
+    compose_file = hub_state.HUB_DIR / "docker-compose.yml"
+
+    # 1. Vérifier si le volume PostgreSQL existe déjà
+    vol_check = subprocess.run(
+        ["docker", "volume", "ls", "--format", "{{.Name}}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    existing_volumes = vol_check.stdout.strip().splitlines() if vol_check.stdout.strip() else []
+    pg_volume_name = "hub_base_postgres_data"
+    if pg_volume_name not in existing_volumes:
+        return  # Volume inexistant → fresh install, rien à sync
+
+    # 2. Démarrer le DB seul (si pas déjà running)
+    con.print("[dim]Volume DB existant détecté — sync du mot de passe...[/dim]")
+    try:
+        subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "up", "-d", "db"],
+            capture_output=True, text=True, timeout=60,
+            cwd=str(hub_state.HUB_DIR),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        con.print("[yellow]⚠ Impossible de démarrer le DB pour la sync. Le volume pourrait avoir un mot de passe périmé.[/yellow]")
+        return
+
+    # 3. Attendre que le DB soit sain (max 60s)
+    for _ in range(30):
+        health = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Health.Status}}", "hub-db"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if "healthy" in health.stdout:
+            break
+        time.sleep(2)
+    else:
+        con.print("[yellow]⚠ DB non sain après 60s — sync du mot de passe annulée.[/yellow]")
+        return
+
+    # 4. Lire le mot de passe + user du .env et sync via ALTER USER
+    pg_password = _read_hub_env_value("POSTGRES_PASSWORD")
+    pg_user = _read_hub_env_value("POSTGRES_USER", "hubadmin")
+    if not pg_password:
+        con.print("[yellow]⚠ POSTGRES_PASSWORD introuvable dans le .env — sync annulée.[/yellow]")
+        return
+
+    # Connexion en tant que superuser `postgres` (trust auth locale dans le conteneur)
+    # Le mot de passe contient des caractères spéciaux → on passe via stdin psql
+    alter_sql = f"ALTER USER {pg_user} WITH PASSWORD '{pg_password}';"
+    result = subprocess.run(
+        ["docker", "exec", "-i", "hub-db", "psql", "-U", "postgres", "-d", "postgres"],
+        input=alter_sql, capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode == 0:
+        con.print("[green]✓ Mot de passe PostgreSQL synchronisé avec le .env[/green]")
+    else:
+        con.print(f"[yellow]⚠ Sync mot de passe DB échoué : {result.stderr.strip()[:200]}[/yellow]")
+        con.print("[yellow]  Si le hub-api échoue avec InvalidPasswordError, supprimez le volume :[/yellow]")
+        con.print(f"[yellow]  docker volume rm {pg_volume_name}[/yellow]")
+
+
 def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> int:
     """Bootstrap complet du Hub : .env → clés JWT → build+up → health → résumé.
 
@@ -224,6 +312,9 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
 
     # ── 4. Nettoyer les anciens conteneurs ──
     _cleanup_existing_hub_containers(con, dry_run=dry_run)
+
+    # ── 4b. Sync mot de passe DB si le volume existe (évite InvalidPasswordError) ──
+    _sync_db_password_if_needed(con, dry_run=dry_run)
 
     # ── 5. Build & démarrage ──
     if dry_run:
@@ -1003,7 +1094,7 @@ def cleanup_orphan_tests(console=None) -> None:
                     ["docker", "compose", "-p", name, "down", "-v"],
                     capture_output=True, timeout=30,
                 )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError):
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
 
 

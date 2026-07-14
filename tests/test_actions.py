@@ -1617,6 +1617,7 @@ def test_action_bootstrap_full_flow(monkeypatch, tmp_path):
                            return_value={"admin_username": "admin", "admin_password": "testpwd", "host_ip": "10.0.0.1"}) as mock_gen, \
          mock.patch.object(actions, "_ensure_jwt_keys") as mock_jwt, \
          mock.patch.object(actions, "_cleanup_existing_hub_containers") as mock_cleanup, \
+         mock.patch.object(actions, "_sync_db_password_if_needed") as mock_sync, \
          mock.patch.object(actions, "hub_make", return_value=0) as mock_make, \
          mock.patch.object(actions, "_health_check", return_value=True) as mock_health, \
          mock.patch.object(actions, "disk_guard", return_value=True):
@@ -1650,6 +1651,7 @@ def test_action_bootstrap_fails_when_make_fails(monkeypatch, tmp_path):
                            return_value={"admin_username": "admin", "admin_password": "x", "host_ip": "1.2.3.4"}), \
          mock.patch.object(actions, "_ensure_jwt_keys"), \
          mock.patch.object(actions, "_cleanup_existing_hub_containers"), \
+         mock.patch.object(actions, "_sync_db_password_if_needed"), \
          mock.patch.object(actions, "hub_make", return_value=1):
         result = actions.action_bootstrap(console, force=False, dry_run=False)
     assert result == 1
@@ -1665,6 +1667,7 @@ def test_action_bootstrap_fails_when_health_fails(monkeypatch, tmp_path):
                            return_value={"admin_username": "admin", "admin_password": "x", "host_ip": "1.2.3.4"}), \
          mock.patch.object(actions, "_ensure_jwt_keys"), \
          mock.patch.object(actions, "_cleanup_existing_hub_containers"), \
+         mock.patch.object(actions, "_sync_db_password_if_needed"), \
          mock.patch.object(actions, "hub_make", return_value=0), \
          mock.patch.object(actions, "_health_check", return_value=False):
         result = actions.action_bootstrap(console, force=False, dry_run=False)
@@ -1680,6 +1683,7 @@ def test_action_bootstrap_dry_run(monkeypatch, tmp_path):
     with mock.patch.object(actions, "_generate_dotenv",
                            return_value={"admin_username": "admin", "admin_password": "drypwd", "host_ip": "1.1.1.1"}), \
          mock.patch.object(actions, "_ensure_jwt_keys") as jwt_mock, \
+         mock.patch.object(actions, "_sync_db_password_if_needed") as sync_mock, \
          mock.patch.object(actions, "hub_make", return_value=0) as make_mock:
         result = actions.action_bootstrap(console, force=False, dry_run=True)
     assert result == 0
@@ -1748,3 +1752,72 @@ def test_cleanup_no_orphans_means_no_rm(monkeypatch, tmp_path):
 
     rm_calls = [c for c in calls if "rm" in c]
     assert len(rm_calls) == 0
+
+
+# ── _sync_db_password_if_needed ──
+
+def test_sync_db_password_skips_when_no_volume(monkeypatch, tmp_path):
+    """Si le volume PostgreSQL n'existe pas (fresh install), la fonction skip."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    (hub_dir / ".env").write_text("POSTGRES_PASSWORD=newpass\nPOSTGRES_USER=hubadmin\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    calls = []
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda *a, **kw: calls.append(a) or mock.Mock(returncode=0, stdout=""))
+
+    actions._sync_db_password_if_needed(console=_mock_console(), dry_run=False)
+    # Seul l'appel `docker volume ls` doit avoir lieu
+    assert len(calls) == 1
+    assert "volume" in calls[0][0] and "ls" in calls[0][0]
+
+
+def test_sync_db_password_syncs_when_volume_exists(monkeypatch, tmp_path):
+    """Si le volume existe, la fonction démarre le DB, attend qu'il soit sain, puis ALTER USER."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    (hub_dir / ".env").write_text("POSTGRES_PASSWORD=newpass123\nPOSTGRES_USER=hubadmin\n")
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    calls = []
+    psql_inputs = []
+
+    def fake_run(cmd, **kwargs):
+        cmd_list = list(cmd)
+        calls.append(cmd_list)
+        if "volume" in cmd_list and "ls" in cmd_list:
+            return mock.Mock(returncode=0, stdout="hub_base_postgres_data\n")
+        if "inspect" in cmd_list:
+            return mock.Mock(returncode=0, stdout="healthy\n")
+        if "psql" in cmd_list:
+            psql_inputs.append(kwargs.get("input", ""))
+            return mock.Mock(returncode=0, stdout="ALTER ROLE\n", stderr="")
+        return mock.Mock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+
+    actions._sync_db_password_if_needed(console=_mock_console(), dry_run=False)
+
+    # Le ALTER USER doit avoir été appelé avec le bon mot de passe
+    psql_calls = [c for c in calls if "psql" in c]
+    assert len(psql_calls) == 1
+    # Le mot de passe doit être passé via stdin (input=)
+    assert len(psql_inputs) == 1
+    assert "newpass123" in psql_inputs[0]
+
+
+def test_sync_db_password_dry_run_no_docker(monkeypatch, tmp_path):
+    """En dry-run, aucune commande docker n'est exécutée."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    (hub_dir / ".env").write_text("POSTGRES_PASSWORD=x\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+
+    calls = []
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda *a, **kw: calls.append(a) or mock.Mock(returncode=0))
+
+    actions._sync_db_password_if_needed(console=_mock_console(), dry_run=True)
+    assert len(calls) == 0
