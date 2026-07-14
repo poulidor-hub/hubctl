@@ -557,17 +557,34 @@ def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
     content = example.read_text()
 
     host_uid = str(os.getuid())
+    api_port = str(config["api_port"])
+    frontend_port = str(config["frontend_port"])
+
+    # Map de substitution : chaque clé = nom de variable dans .env.example.
+    # On couvre toutes les variantes utilisées par les apps réelles du parc :
+    #   - API_PORT (template canonique, exemple-app-2, exemple-app)
+    #   - APP_PORT / APP_PORT_API (variants historiques)
+    #   - APP_HOST (template canonique, exemple-app)
+    #   - SERVER_IP (exemple-app-2)
+    #   - HOST_IP (variant)
     replacements = {
         "APP_SLUG": config["slug"],
         "APP_NAME": config["slug"],
-        "APP_PORT": str(config["api_port"]),
-        "APP_PORT_API": str(config["api_port"]),
-        "FRONTEND_PORT": str(config["frontend_port"]),
+        # Ports — toutes les variantes connues
+        "API_PORT": api_port,
+        "APP_PORT": api_port,
+        "APP_PORT_API": api_port,
+        "FRONTEND_PORT": frontend_port,
+        # Host — toutes les variantes connues
+        "APP_HOST": config["host_ip"],
+        "SERVER_IP": config["host_ip"],
+        "HOST_IP": config["host_ip"],
+        # Secrets
         "POSTGRES_PASSWORD": config["postgres_password"],
         "SECRETS_ENCRYPTION_KEY": config["fernet_key"],
+        # Hub
         "HUB_URL": config["hub_url"],
         "HUB_HOST": config["hub_host"],
-        "HOST_IP": config["host_ip"],
         "HOST_UID": host_uid,
     }
 

@@ -1983,6 +1983,33 @@ def test_write_app_env(tmp_path):
     assert "HUB_URL=http://1.2.3.4:8000" in env
 
 
+def test_write_app_env_real_world_variants(tmp_path):
+    """Substitue les vrais noms de variables utilisés par les apps du parc
+    (API_PORT, SERVER_IP, APP_HOST — pas seulement APP_PORT/HOST_IP)."""
+    dest = tmp_path / "exemple-app"
+    dest.mkdir()
+    (dest / ".env.example").write_text(
+        "APP_SLUG=exemple-app\n"
+        "APP_NAME=exemple-app\n"
+        "API_PORT=9040\n"
+        "FRONTEND_PORT=4240\n"
+        "SERVER_IP=192.170.50.62\n"
+        "HUB_HOST=192.170.50.62\n"
+        "POSTGRES_PASSWORD=changeme\n"
+    )
+    config = {"slug": "exemple-app", "api_port": 9000, "frontend_port": 4200,
+              "hub_url": "http://192.168.1.42:8000", "postgres_password": "Gen3r4t3dPw!",
+              "fernet_key": "fernetkey", "host_ip": "192.168.1.42", "hub_host": "192.168.1.42"}
+    actions._write_app_env(_mock_console(), dest, config, dry_run=False)
+    env = (dest / ".env").read_text()
+    assert "APP_SLUG=exemple-app" in env
+    assert "API_PORT=9000" in env          # pas 9040
+    assert "FRONTEND_PORT=4200" in env     # pas 4240
+    assert "SERVER_IP=192.168.1.42" in env  # pas 192.170.50.62
+    assert "HUB_HOST=192.168.1.42" in env   # pas 192.170.50.62
+    assert "POSTGRES_PASSWORD=Gen3r4t3dPw!" in env
+
+
 # ── Task 5: _build_and_start_app + _sync_app_coffre ──
 
 def test_build_and_start_success(monkeypatch, tmp_path):
