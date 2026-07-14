@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tarfile
 import time
@@ -13,6 +14,20 @@ from rich.console import Console
 from rich.table import Table
 
 from hubctl_cli import hub_state, utils, env_manager
+
+
+def _detect_host_ip() -> str:
+    """Détecte l'IP hôte qui sera utilisée dans le .env (HUB_HOST)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2)
+        s.connect(("1.1.1.1", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
+
 
 APP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")

@@ -533,6 +533,28 @@ def test_action_start_stop_hub_default_unchanged(monkeypatch):
     assert "down" in calls
 
 
+# ── Task 2: _detect_host_ip ──
+
+def test_detect_host_ip_returns_string():
+    ip = actions._detect_host_ip()
+    assert isinstance(ip, str)
+    assert len(ip) > 0
+    # Doit ressembler à une IP v4 ou v6
+    parts = ip.split(".")
+    if len(parts) == 4:
+        assert all(0 <= int(p) <= 255 for p in parts)
+
+
+def test_detect_host_ip_fallback(monkeypatch):
+    import socket
+    # Simule échec de connexion
+    def fake_socket(*args, **kwargs):
+        raise OSError("no route")
+    monkeypatch.setattr(socket, "socket", fake_socket)
+    ip = actions._detect_host_ip()
+    assert ip == "127.0.0.1"  # fallback
+
+
 # ── Task 1: action_logs + action_restart + _compose_file ──
 
 def test_compose_file_hub():
