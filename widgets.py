@@ -24,7 +24,10 @@ def select(canvas, message: str, choices: list[str], *, disabled: set[str] | Non
     pages = max(1, (n + per_page - 1) // per_page)
 
     def enabled(i: int) -> bool:
-        return choices[i] not in disabled
+        item = choices[i]
+        if isinstance(item, Text):
+            return item.plain not in disabled
+        return item not in disabled
 
     def first_enabled() -> int:
         for i in range(n):
@@ -214,7 +217,8 @@ def _build_select(message, visible, sel_idx, page, pages, disabled=None):
         else:
             rendered_choice = Text(str(choice))
         prefix = Text(f"   {num}. ")
-        if choice in disabled:
+        is_disabled = (choice.plain if isinstance(choice, Text) else choice) in disabled
+        if is_disabled:
             prefix = Text(f"   {num}. ", style="dim")
             rendered_choice.stylize("dim")
             lines.append(Text.assemble(prefix, rendered_choice))
