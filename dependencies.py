@@ -2,23 +2,46 @@
 
 Offline-first : ne dépend ni du hub ni de Docker. Utilisé par le menu workshop
 pour calculer les groupes cohérents d'apps à emmener en atelier ensemble.
+
+Si PyYAML n'est pas installé dans l'environnement hubctl, toutes les fonctions
+continuent de fonctionner (elles retournent des résultats vides). Le workshop
+reste utilisable, simplement sans suggestions de dépendances.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from . import hub_state
+
+_HAS_YAML: bool | None = None
+
+
+def _get_yaml():
+    """Lazy import de yaml. Retourne le module ou None si non installé."""
+    global _HAS_YAML
+    if _HAS_YAML is None:
+        try:
+            import yaml as _yaml
+            _HAS_YAML = True
+            return _yaml
+        except ImportError:
+            _HAS_YAML = False
+            return None
+    if _HAS_YAML:
+        import yaml as _yaml
+        return _yaml
+    return None
 
 
 def load_depends(app_dir: Path) -> list[str]:
     """Retourne la liste des slugs cibles déclarés dans ``app_dir/depends.yaml``.
 
     Retourne ``[]`` si le fichier est absent, vide, sans clé ``depends_on``,
-    ou illisible (YAML cassé). Jamais d'exception — le workshop doit démarrer
-    même si un fichier est corrompu.
+    illisible, ou si PyYAML n'est pas installé. Jamais d'exception.
     """
+    yaml = _get_yaml()
+    if yaml is None:
+        return []
     f = app_dir / "depends.yaml"
     if not f.exists():
         return []
