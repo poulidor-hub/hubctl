@@ -630,6 +630,38 @@ def _run_action(canvas: Canvas, label: str, fn, *args, **kw) -> bool:
     return success
 
 
+# ── Workshop menu styling helpers ──
+
+def _ws_section(title: str) -> Text:
+    """En-tête de section dans le menu workshop."""
+    return Text(f"── {title} ──", style="bold cyan")
+
+
+def _ws_choice(
+    action: str,
+    action_style: str,
+    app: str,
+    app_style: str,
+    detail: str,
+    detail_style: str,
+) -> Text:
+    """Construit une ligne de choix workshop stylée.
+
+    Format : ``  {action} {app}  {detail}``
+    Le plain text reste parsable (startswith, split).
+    """
+    parts: list[Text | tuple[str, str]] = [
+        ("  ", ""),
+        (action, action_style),
+        (" ", ""),
+        (app, app_style),
+    ]
+    if detail:
+        parts.append(("  ", ""))
+        parts.append((detail, detail_style))
+    return Text.assemble(*parts)
+
+
 def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
     while True:
         with _modal(canvas):
@@ -639,34 +671,62 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
 
             choices = []
             if apps_ws:
-                choices.append("── APP_Workshop/ (développement) ──")
+                choices.append(_ws_section("APP_Workshop/ (développement)"))
                 for a in apps_ws:
-                    choices.append(f"  [←] {a.name}  → déployer vers la prod (git pull)")
+                    choices.append(_ws_choice(
+                        action="[←]", action_style="bold blue",
+                        app=a.name, app_style="bold magenta",
+                        detail="→ déployer vers la prod (git pull)", detail_style="dim",
+                    ))
                 for a in apps_ws:
-                    choices.append(f"  [×] {a.name}  → supprimer l'atelier")
+                    choices.append(_ws_choice(
+                        action="[×]", action_style="bold red",
+                        app=a.name, app_style="bold magenta",
+                        detail="→ supprimer l'atelier", detail_style="dim",
+                    ))
             if apps_prod:
-                choices.append("── APPS/ (production) ──")
+                choices.append(_ws_section("APPS/ (production)"))
                 # Calculer le graphe une fois pour les indicateurs 🔗
                 prod_graph = dependencies.build_graph()
                 for a in apps_prod:
                     deps = prod_graph.get(a.name, [])
                     if a.name in ws_bases:
-                        choices.append(f"  ⏸  {a.name}  (en atelier — prod stoppée)")
+                        choices.append(_ws_choice(
+                            action="⏸ ", action_style="yellow",
+                            app=a.name, app_style="dim",
+                            detail="(en atelier — prod stoppée)", detail_style="dim",
+                        ))
                     elif deps:
-                        choices.append(f"  [→] {a.name}  🔗 a besoin de {', '.join(deps)}")
+                        choices.append(_ws_choice(
+                            action="[→]", action_style="bold green",
+                            app=a.name, app_style="bold cyan",
+                            detail=f"🔗 a besoin de {', '.join(deps)}", detail_style="dim",
+                        ))
                     else:
-                        choices.append(f"  [→] {a.name}  🔗 autonome")
+                        choices.append(_ws_choice(
+                            action="[→]", action_style="bold green",
+                            app=a.name, app_style="bold cyan",
+                            detail="🔗 autonome", detail_style="dim",
+                        ))
                 # Multi-sélection (si au moins une app prod n'est pas déjà en atelier)
                 multi_candidates = [a for a in apps_prod if a.name not in ws_bases]
                 if multi_candidates:
-                    choices.append("  [→→] Multi-sélection (mettre plusieurs apps en atelier)")
+                    choices.append(_ws_choice(
+                        action="[→→]", action_style="bold green",
+                        app="Multi-sélection", app_style="bold",
+                        detail="(mettre plusieurs apps en atelier)", detail_style="dim",
+                    ))
                 # [→+] Ajouter à l'atelier existant (visible si atelier non vide)
                 if apps_ws and multi_candidates:
-                    choices.append("  [→+] Ajouter une app à l'atelier existant")
+                    choices.append(_ws_choice(
+                        action="[→+]", action_style="bold green",
+                        app="Ajouter une app à l'atelier existant", app_style="bold",
+                        detail="", detail_style="",
+                    ))
             if not apps_prod and not apps_ws:
-                choices.append("Aucune app trouvée.")
-            choices.append("ℹ Copie DB (avancé) : hubctl ship <slug> --copy-db")
-            choices.append("← Retour")
+                choices.append(Text("Aucune app trouvée.", style="dim"))
+            choices.append(Text("ℹ Copie DB (avancé) : hubctl ship <slug> --copy-db", style="dim"))
+            choices.append(Text("← Retour", style="dim"))
 
             sel = widgets.select(canvas, "Workshop :", choices)
             if sel is widgets.ESC or sel is None or sel == "← Retour" or sel.startswith("ℹ"):
@@ -676,7 +736,10 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
 
             if sel.startswith("  [→→]"):
                 # Construire la liste des apps sélectionnables (slugs prod hors atelier)
-                multi_choices = [f"  {a.name}" for a in multi_candidates]
+                multi_choices: list[Text | str] = [
+                    Text.assemble(("  ", ""), (a.name, "bold cyan"))
+                    for a in multi_candidates
+                ]
                 selected = widgets.multiselect(
                     canvas,
                     "Apps à mettre en atelier :",
@@ -712,7 +775,10 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                         )
                     return
             elif sel.startswith("  [→+]"):
-                add_choices = [f"  {a.name}" for a in multi_candidates]
+                add_choices = [
+                    Text.assemble(("  ", ""), (a.name, "bold cyan"))
+                    for a in multi_candidates
+                ]
                 picked = widgets.select(
                     canvas,
                     "App à ajouter à l'atelier :",

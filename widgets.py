@@ -115,13 +115,22 @@ def multiselect(canvas, message: str, choices, *, disabled=None):
 def _build_multiselect(message, choices, selected_idx, toggled):
     lines = [Text(message, style="bold"), Text()]
     for i, label in enumerate(choices):
-        is_sep = label.startswith("──") or label.startswith("ℹ") or label == "← Retour"
+        # Déterminer si c'est un séparateur (texte brut ou Text)
+        plain = label.plain if isinstance(label, Text) else str(label)
+        is_sep = plain.startswith("──") or plain.startswith("ℹ") or plain == "← Retour"
         if is_sep:
-            lines.append(Text(label, style="dim"))
+            if isinstance(label, Text):
+                lines.append(Text.assemble(label, style="dim"))
+            else:
+                lines.append(Text(label, style="dim"))
             continue
         marker = "[x]" if i in toggled else "[ ]"
         cursor = ">" if i == selected_idx else " "
-        line = Text(f"{cursor} {marker} {label}")
+        rendered = label if isinstance(label, Text) else Text(str(label))
+        line = Text.assemble(
+            Text(f"{cursor} {marker} "),
+            rendered,
+        )
         if i == selected_idx:
             line.stylize("bold cyan")
         lines.append(line)
@@ -199,12 +208,21 @@ def _build_select(message, visible, sel_idx, page, pages, disabled=None):
     lines.append(Text(""))
     for i, choice in enumerate(visible):
         num = i + 1
-        if choice in disabled:
-            lines.append(Text(f"   {num}. {choice}", style="dim"))
-        elif i == sel_idx:
-            lines.append(Text(f" ▸ {num}. {choice}", style="reverse"))
+        # Si le choix est déjà un Text (stylé), on le réutilise tel quel
+        if isinstance(choice, Text):
+            rendered_choice = choice
         else:
-            lines.append(Text(f"   {num}. {choice}"))
+            rendered_choice = Text(str(choice))
+        prefix = Text(f"   {num}. ")
+        if choice in disabled:
+            prefix = Text(f"   {num}. ", style="dim")
+            rendered_choice.stylize("dim")
+            lines.append(Text.assemble(prefix, rendered_choice))
+        elif i == sel_idx:
+            prefix = Text(f" ▸ {num}. ")
+            lines.append(Text.assemble(prefix, rendered_choice, style="reverse"))
+        else:
+            lines.append(Text.assemble(prefix, rendered_choice))
     lines.append(Text(""))
     hints = [(GLYPH_UPDN, "naviguer"), (GLYPH_ENTER, "valider"), (GLYPH_ESC, "retour")]
     if pages > 1:

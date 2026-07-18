@@ -5,6 +5,11 @@ from hubctl_cli import menu
 from hubctl_cli.keys import KeyChar, KeyEnter, KeyCtrlC
 
 
+def _plain(obj) -> str:
+    """Retourne la représentation texte d'un objet (str ou Text)."""
+    return obj.plain if hasattr(obj, 'plain') else str(obj)
+
+
 def _fake_canvas():
     c = mock.Mock()
     c.inner_rows = 28
@@ -252,7 +257,7 @@ def test_workshop_menu_hides_arrow_if_already_in_workshop(monkeypatch):
     flat = [c for choices in captured for c in choices]
     assert not any("[→]" in c and "myapp" in c for c in flat), \
         "[→] ne doit pas s'afficher pour une app déjà en atelier"
-    assert any("en atelier" in c.lower() and "myapp" in c for c in flat), \
+    assert any("en atelier" in _plain(c).lower() and "myapp" in _plain(c) for c in flat), \
         "ligne ⏸ (en atelier) attendue pour myapp"
 
 
