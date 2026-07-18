@@ -8,7 +8,7 @@ from collections import OrderedDict
 from rich.console import Console
 from rich.text import Text
 
-from hubctl_cli import actions, hub_state, keys, setup_wizard, utils, widgets
+from hubctl_cli import actions, dependencies, hub_state, keys, setup_wizard, utils, widgets
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.vault_manager import VaultManager
 
@@ -648,10 +648,45 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
 
             if sel.startswith("  [→]"):
                 app_name = sel.split()[1]
-                msg = f"Mettre « {app_name} » en atelier ({app_name}-ws) ? Clone DB, prod stoppée."
-                if widgets.confirm(canvas, msg, default=False) is True:
-                    _run_action(canvas, f"Atelier → {app_name}",
-                                actions.action_workshop_create, _ACTION_CONSOLE, app_name, dry_run=dry_run)
+                # Calculer le groupe cohérent (app + deps transitives)
+                graph = dependencies.build_graph()
+                group = dependencies.resolve_group(app_name, graph)
+                # Apps déjà en atelier (ne pas re-proposer)
+                ws_names = {a.name for a in apps_ws}
+                ws_bases = {n[:-3] for n in ws_names if n.endswith("-ws")}
+                # Apps à potentiellement emmener (hors atelier existant)
+                missing = sorted(group - ws_bases - {app_name})
+                # Filtrer celles qui existent vraiment dans APPS/
+                prod_names = {a.name for a in apps_prod}
+                missing = [m for m in missing if m in prod_names]
+
+                if missing:
+                    suggestion_choices = [
+                        f"Oui (recommandé) — emmène le groupe complet ({', '.join([app_name] + missing)})",
+                        f"Non, seulement {app_name} — risque de défaut M2M",
+                    ]
+                    sug = widgets.select(
+                        canvas,
+                        f"{app_name} a besoin de : {', '.join(missing)}. Les emmener aussi ?",
+                        suggestion_choices,
+                    )
+                    if sug is widgets.ESC or sug is None:
+                        continue
+                    if sug.startswith("Oui"):
+                        slugs = [app_name] + missing
+                    else:
+                        slugs = [app_name]
+                else:
+                    slugs = [app_name]
+
+                list_str = ", ".join(slugs)
+                msg = f"Mettre « {list_str} » en atelier ? Clone DB, prod stoppée."
+                if widgets.confirm(canvas, msg, default=len(slugs) == 1) is True:
+                    for s in slugs:
+                        _run_action(
+                            canvas, f"Atelier → {s}",
+                            actions.action_workshop_create, _ACTION_CONSOLE, s, dry_run=dry_run,
+                        )
                     return
             elif sel.startswith("  [←]"):
                 ws_name = sel.split()[1]

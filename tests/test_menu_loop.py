@@ -9,6 +9,10 @@ def _fake_canvas():
     c = mock.Mock()
     c.inner_rows = 28
     c.inner_cols = 98
+    def _stream_command(runner, label=""):
+        retcode = runner()
+        return (retcode, False)
+    c.stream_command = _stream_command
     return c
 
 
@@ -304,3 +308,84 @@ def test_workshop_menu_deploy_calls_prod_deploy_with_base_slug(monkeypatch):
     assert args[2] is menu.actions.action_prod_deploy
     assert args[4] == "myapp", \
         "le slug passé à action_prod_deploy doit être le BASE (sans -ws)"
+
+
+def test_workshop_arrow_proposes_deps_when_missing(monkeypatch):
+    """[→] X où X dépend de Y (pas en atelier) → propose d'emmener Y aussi."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+
+    prod_apps = [
+        AppInfo("exemple-apps", Path("."), "1", False, 0, legacy=False),
+        AppInfo("exemple-app-2", Path("."), "1", False, 0, legacy=False),
+    ]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+
+    # Graphe : exemple-apps dépend de exemple-app-2
+    monkeypatch.setattr(
+        menu.dependencies, "build_graph",
+        lambda: {"exemple-apps": ["exemple-app-2"], "exemple-app-2": []},
+    )
+
+    # Séquence d'interactions :
+    # 1. select initial → choix "[→] exemple-apps"
+    # 2. select suggestion → "Oui (recommandé)"
+    # 3. confirm final → True
+    interactions = iter([
+        "  [→] exemple-apps  → mettre en atelier",
+        "Oui (recommandé)",
+    ])
+    monkeypatch.setattr(menu.widgets, "select", lambda c, m, choices, **kw: next(interactions))
+    monkeypatch.setattr(menu.widgets, "confirm", lambda c, m, **kw: True)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+
+    created = []
+    monkeypatch.setattr(
+        menu.actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    # Les deux apps ont été emmenées
+    assert sorted(created) == ["exemple-app-2", "exemple-apps"]
+
+
+def test_workshop_arrow_no_deps_no_suggestion(monkeypatch):
+    """[→] X où X est autonome → pas de suggestion, action directe."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+
+    prod_apps = [AppInfo("alone", Path("."), "1", False, 0, legacy=False)]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+    monkeypatch.setattr(
+        menu.dependencies, "build_graph", lambda: {"alone": []},
+    )
+
+    select_calls = []
+    def fake_select(c, m, choices, **kw):
+        select_calls.append(list(choices))
+        return "  [→] alone  → mettre en atelier"
+    monkeypatch.setattr(menu.widgets, "select", fake_select)
+    monkeypatch.setattr(menu.widgets, "confirm", lambda c, m, **kw: True)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+
+    created = []
+    monkeypatch.setattr(
+        menu.actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    assert created == ["alone"]
+    # Un seul appel à select (pas de menu de suggestion)
+    assert len(select_calls) == 1
