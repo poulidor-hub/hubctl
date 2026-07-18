@@ -663,8 +663,11 @@ def _ws_choice(
 
 
 def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
-    while True:
-        with _modal(canvas):
+    # Prendre le plein écran (layout dashboard désactivé) pour la durée de l'atelier
+    old_layout = canvas._use_layout
+    canvas._use_layout = False
+    try:
+        while True:
             apps_prod = hub_state.get_apps()
             apps_ws = hub_state.get_workshop_apps()
             ws_bases = {a.name[:-3] for a in apps_ws if a.name.endswith("-ws")}
@@ -866,6 +869,8 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                     _run_action(canvas, f"Supprimer atelier {ws_name}",
                                 actions.action_workshop_remove, _ACTION_CONSOLE, ws_name, dry_run=dry_run)
                     return
+    finally:
+        canvas._use_layout = old_layout
 
 
 # ── Détection clone frais ──
@@ -975,18 +980,7 @@ def _offer_init_fresh(canvas: Canvas, *, dry_run: bool) -> None:
 
 @contextlib.contextmanager
 def _modal(canvas: Canvas):
-    """Passe le canvas en mode plein écran (layout dashboard désactivé).
-
-    Tous les menus modaux (workshop, select, confirm, etc.) prennent
-    ainsi la totalité de l'écran au lieu d'être coincés dans la
-    colonne de droite du dashboard. Le layout est restauré à la sortie.
-    """
-    old_layout = canvas._use_layout
-    canvas._use_layout = False
-    try:
-        yield
-    finally:
-        canvas._use_layout = old_layout
+    yield
 
 
 # ── Unit action executors (reusable by dispatch + scenarios) ──
