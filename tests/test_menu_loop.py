@@ -493,6 +493,31 @@ def test_workshop_add_to_existing_hidden_when_workshop_empty(monkeypatch):
     assert not any("[→+]" in c for c in flat)
 
 
+def test_apps_menu_has_workshop_in_dev_mode(monkeypatch):
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "dev")
+    items = menu._build_apps_menu()
+    assert "5" in items
+    assert items["5"][1] == "workshop"
+
+
+def test_apps_menu_no_workshop_in_prod_mode(monkeypatch):
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
+    items = menu._build_apps_menu()
+    assert "5" not in items
+    # Les 4 options statiques + retour sont présentes
+    assert items["1"][1] == "update_app"
+    assert items["0"][1] == "__back__"
+
+
+def test_current_context_routes_apps_to_build_apps_menu(monkeypatch):
+    """`_current_context` avec ctx="apps" appelle _build_apps_menu (pas MENU_TREE)."""
+    monkeypatch.setattr(menu, "_nav_stack", ["apps"])
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "dev")
+    ctx = menu._current_context()
+    # En mode DEV, l'option 5 est workshop
+    assert ctx["5"][1] == "workshop"
+
+
 def test_workshop_add_to_existing_dispatches_create(monkeypatch):
     from hubctl_cli.hub_state import AppInfo
     from pathlib import Path

@@ -273,6 +273,8 @@ def _current_context() -> OrderedDict:
     ctx_name = _nav_stack[-1]
     if ctx_name == "main":
         return _build_main_menu()
+    if ctx_name == "apps":
+        return _build_apps_menu()
     if ctx_name == "config":
         return _build_config_menu()
     return MENU_TREE.get(ctx_name, _build_main_menu())
@@ -300,6 +302,20 @@ def _build_config_menu() -> OrderedDict:
     ])
     if hub_state.get_mode() == "dev":
         items["6"] = ("Workshop", "workshop")
+    items["0"] = ("← Retour", "__back__")
+    return items
+
+
+def _build_apps_menu() -> OrderedDict:
+    """Menu APPS dynamique. Ajoute 'Atelier (workshop)' en mode DEV uniquement."""
+    items = OrderedDict([
+        ("1", ("Update app", "update_app")),
+        ("2", ("Ajouter une app", "add_app")),
+        ("3", ("Supprimer une app", "remove_app")),
+        ("4", ("Logs app", "logs_app")),
+    ])
+    if hub_state.get_mode() == "dev":
+        items["5"] = ("Atelier (workshop)", "workshop")
     items["0"] = ("← Retour", "__back__")
     return items
 
