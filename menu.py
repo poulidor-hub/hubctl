@@ -729,12 +729,14 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
             choices.append(Text("← Retour", style="dim"))
 
             sel = widgets.select(canvas, "Workshop :", choices)
-            if sel is widgets.ESC or sel is None or sel == "← Retour" or sel.startswith("ℹ"):
+            # sel peut être un Text (choices stylés) — utiliser .plain pour les opérations string
+            sel_plain = sel.plain if isinstance(sel, Text) else str(sel or "")
+            if sel is widgets.ESC or sel is None or sel == "← Retour" or sel_plain.startswith("ℹ"):
                 if sel is widgets.ESC or sel is None or sel == "← Retour":
                     return
                 continue
 
-            if sel.startswith("  [→→]"):
+            if sel_plain.startswith("  [→→]"):
                 # Construire la liste des apps sélectionnables (slugs prod hors atelier)
                 multi_choices: list[Text | str] = [
                     Text.assemble(("  ", ""), (a.name, "bold cyan"))
@@ -774,7 +776,7 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                             actions.action_workshop_create, _ACTION_CONSOLE, s, dry_run=dry_run,
                         )
                     return
-            elif sel.startswith("  [→+]"):
+            elif sel_plain.startswith("  [→+]"):
                 add_choices = [
                     Text.assemble(("  ", ""), (a.name, "bold cyan"))
                     for a in multi_candidates
@@ -794,8 +796,8 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                         actions.action_workshop_create, _ACTION_CONSOLE, app_name, dry_run=dry_run,
                     )
                     return
-            elif sel.startswith("  [→]"):
-                app_name = sel.split()[1]
+            elif sel_plain.startswith("  [→]"):
+                app_name = sel_plain.split()[1]
                 # Calculer le groupe cohérent (app + deps transitives)
                 graph = dependencies.build_graph()
                 group = dependencies.resolve_group(app_name, graph)
@@ -849,16 +851,16 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                             actions.action_workshop_create, _ACTION_CONSOLE, s, dry_run=dry_run,
                         )
                     return
-            elif sel.startswith("  [←]"):
-                ws_name = sel.split()[1]
+            elif sel_plain.startswith("  [←]"):
+                ws_name = sel_plain.split()[1]
                 base = ws_name[:-3] if ws_name.endswith("-ws") else ws_name
                 msg = f"Déployer « {ws_name} » vers la prod via git pull ? (DB prod préservée)"
                 if widgets.confirm(canvas, msg, default=True) is True:
                     _run_action(canvas, f"Déployer ← {base}",
                                 actions.action_prod_deploy, _ACTION_CONSOLE, base, dry_run=dry_run)
                     return
-            elif sel.startswith("  [×]"):
-                ws_name = sel.split()[1]
+            elif sel_plain.startswith("  [×]"):
+                ws_name = sel_plain.split()[1]
                 msg = f"Supprimer l'atelier « {ws_name} » ? (down -v + backup, prod redémarrée)"
                 if widgets.confirm(canvas, msg, default=False) is True:
                     _run_action(canvas, f"Supprimer atelier {ws_name}",
