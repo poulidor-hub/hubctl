@@ -1141,6 +1141,8 @@ def _exec_toggle_mode(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) 
     hub_state.set_mode(new_mode)
     global _nav_stack
     _nav_stack = ["main"]
+    # Rafraîchir immédiatement l'état des apps pour le nouveau mode
+    _refresh_apps_status(state)
     canvas.render(Text(f"✓ Mode basculé : {new_mode.upper()}", style="bold green"))
     return False
 
