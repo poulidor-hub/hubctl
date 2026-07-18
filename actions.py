@@ -1941,11 +1941,20 @@ def action_deploy(console, target: str, *, validate: bool = False, dry_run: bool
 
 
 def action_work(console, slug: str, *, dry_run: bool = False) -> None:
-    """Met une app en atelier (APPS → APP_Workshop, clone DB). La prod est stoppée mais conservée."""
+    """Met une ou plusieurs apps en atelier (APPS → APP_Workshop, clone DB).
+
+    Accepte un slug simple ("X") ou plusieurs séparés par virgules ("X,Y,Z").
+    La prod est stoppée mais conservée pour chaque app.
+    """
     con = console or _console
-    con.print(f"[bold]→ Mise en atelier de « {slug} »[/bold]")
-    action_workshop_create(con, slug, dry_run=dry_run)
-    con.print(f"[green]✅ {slug} prête en atelier (APP_Workshop/{slug}-ws). Prod stoppée (en place).[/green]")
+    slugs = [s.strip() for s in slug.split(",") if s.strip()]
+    if not slugs:
+        con.print("[red]✗ Aucun slug fourni.[/red]")
+        return
+    for s in slugs:
+        con.print(f"[bold]→ Mise en atelier de « {s} »[/bold]")
+        action_workshop_create(con, s, dry_run=dry_run)
+        con.print(f"[green]✅ {s} prête en atelier (APP_Workshop/{s}-ws). Prod stoppée (en place).[/green]")
 
 
 def action_ship(console, slug: str, *, copy_db: bool = False, dry_run: bool = False) -> None:

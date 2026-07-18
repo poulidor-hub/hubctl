@@ -493,6 +493,62 @@ def test_action_work_calls_workshop_create(tmp_path, monkeypatch):
     assert called.get("create") == "shop"
 
 
+def test_action_work_accepts_comma_separated_slugs(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    actions.action_work(_fake_console(), "alpha,beta,gamma")
+
+    assert created == ["alpha", "beta", "gamma"]
+
+
+def test_action_work_strips_whitespace_in_slugs(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    actions.action_work(_fake_console(), "alpha , beta , gamma")
+
+    assert created == ["alpha", "beta", "gamma"]
+
+
+def test_action_work_single_slug_still_works(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    actions.action_work(_fake_console(), "alpha")
+
+    assert created == ["alpha"]
+
+
+def test_action_work_ignores_empty_segments(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    actions.action_work(_fake_console(), "alpha,,beta,")
+
+    assert created == ["alpha", "beta"]
+
+
 def test_action_ship_defaults_to_code_only(tmp_path, monkeypatch):
     called = {}
     monkeypatch.setattr(actions, "action_prod_deploy",
