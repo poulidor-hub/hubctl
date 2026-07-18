@@ -65,3 +65,36 @@ def test_build_graph_empty_when_no_apps(monkeypatch, tmp_path):
     monkeypatch.setattr(dependencies.hub_state, "APPS_DIR", tmp_path / "APPS")
     monkeypatch.setattr(dependencies.hub_state, "WORKSHOP_DIR", tmp_path / "APP_Workshop")
     assert dependencies.build_graph() == {}
+
+
+def test_resolve_group_includes_transitive_deps():
+    graph = {
+        "A": ["B"],
+        "B": ["C"],
+        "C": [],
+    }
+    assert dependencies.resolve_group("A", graph) == {"A", "B", "C"}
+
+
+def test_resolve_group_single_autonomous_app():
+    assert dependencies.resolve_group("X", {"X": []}) == {"X"}
+
+
+def test_resolve_group_unknown_slug_returns_empty():
+    assert dependencies.resolve_group("unknown", {"X": []}) == set()
+
+
+def test_resolve_group_handles_cycle():
+    graph = {"A": ["B"], "B": ["A"]}
+    assert dependencies.resolve_group("A", graph) == {"A", "B"}
+
+
+def test_resolve_group_self_reference():
+    assert dependencies.resolve_group("A", {"A": ["A"]}) == {"A"}
+
+
+def test_resolve_group_uses_build_graph_when_no_graph_given(monkeypatch):
+    monkeypatch.setattr(
+        dependencies, "build_graph", lambda: {"X": ["Y"], "Y": []}
+    )
+    assert dependencies.resolve_group("X") == {"X", "Y"}

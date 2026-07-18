@@ -48,3 +48,29 @@ def build_graph() -> dict[str, list[str]]:
                 continue
             graph[app_dir.name] = load_depends(app_dir)
     return graph
+
+
+def resolve_group(slug: str, graph: dict[str, list[str]] | None = None) -> set[str]:
+    """Retourne l'ensemble cohérent : ``slug`` + toutes ses dépendances transitives.
+
+    Effectue un DFS sur le graphe. Protégé contre les cycles (visited set) et
+    les self-references. Si ``slug`` est absent du graphe, retourne ``set()``
+    (on ne peut pas résoudre un nœud inconnu).
+
+    Si ``graph`` est ``None``, appelle ``build_graph()`` (lecture disque).
+    """
+    graph = graph if graph is not None else build_graph()
+    if slug not in graph:
+        return set()
+
+    visited: set[str] = set()
+
+    def _walk(node: str) -> None:
+        if node in visited:
+            return
+        visited.add(node)
+        for dep in graph.get(node, []):
+            _walk(dep)
+
+    _walk(slug)
+    return visited
