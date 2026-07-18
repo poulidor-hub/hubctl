@@ -1460,6 +1460,36 @@ def action_start_stop(console, sub: str, target: str = "hub", *, dry_run: bool =
                 app_make(target, "up", dry_run=dry_run, console=console)
 
 
+# ── Workshop: répertoires exclus de la copie (lourds, régénérables) ──
+
+_WORKSHOP_IGNORE_DIRS: set[str] = {
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".venv", "venv", "env", ".env",
+    "node_modules", ".next", "dist", "build",
+    ".git",  # le git clone sera refait au premier update
+}
+
+_WS_IGNORE_NAMES: tuple[str, ...] = (
+    "*.pyc", "*.pyo", "*.egg-info", ".DS_Store", "*.log",
+)
+
+
+def _workshop_ignore(src_dir: str, names: list[str]) -> set[str]:
+    """Filtre les répertoires/fichiers à exclure lors de la copie atelier."""
+    import fnmatch
+    ignored: set[str] = set()
+    for name in names:
+        full = os.path.join(src_dir, name)
+        if os.path.isdir(full) and name in _WORKSHOP_IGNORE_DIRS:
+            ignored.add(name)
+        elif os.path.isfile(full):
+            for pat in _WS_IGNORE_NAMES:
+                if fnmatch.fnmatch(name, pat):
+                    ignored.add(name)
+                    break
+    return ignored
+
+
 def action_workshop_create(console, app_name: str, *, dry_run: bool = False) -> None:
     """Met une app en atelier : APPS/X → APP_Workshop/X-ws (clone DB).
     La prod X est stoppée mais LAISSÉE EN PLACE (jamais supprimée).
@@ -1502,7 +1532,8 @@ def action_workshop_create(console, app_name: str, *, dry_run: bool = False) -> 
     if dry_run:
         con.print(f"[dim]$ cp -r {source_dir} {dest_dir} (dry-run)[/dim]")
     else:
-        shutil.copytree(str(source_dir), str(dest_dir), symlinks=True)
+        shutil.copytree(str(source_dir), str(dest_dir), symlinks=True,
+                        ignore=_workshop_ignore)
 
     # ── 4. VOLUME COPY (clone DB prod → atelier) ──
     src_vol, dst_vol = f"{source_slug}-postgres-data", f"{dest_slug}-postgres-data"
