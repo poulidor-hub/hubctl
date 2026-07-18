@@ -153,22 +153,18 @@ def _build_welcome(state: dict) -> Text:
     version = state.get("hub_version", "v?.?")
     cpu = _cpu_pct()
     now = time.strftime("%H:%M UTC", time.gmtime())
-    mode_badge = (
-        Text(" DEV ", style="reverse bold cyan")
-        if is_dev
-        else Text(" PROD ", style="bold magenta")
-    )
-    header = Text.assemble(
-        " HUB MASTER OS ", (version, ""), "  |  UPTIME: ", (_uptime(), ""),
-        "  |  LOAD: ", (f"{cpu:.2f}", ""), "  |  ", (now, ""),
-        "  ", mode_badge,
-    )
-    padded = Text.assemble(header)
-    # Remplir la fin de ligne jusqu'à 96 caractères
-    plain_len = len(padded.plain)
-    if plain_len < width:
-        padded.append(" " * (width - plain_len), style="bold white")
-    text.append(padded, style="bold white")
+    mode_badge_str = " DEV " if is_dev else " PROD "
+    badge_style = "reverse bold cyan" if is_dev else "bold magenta"
+    header_line = f" HUB MASTER OS {version}  |  UPTIME: {_uptime()}  |  LOAD: {cpu:.2f}  |  {now}  {mode_badge_str}"
+    padded = header_line.ljust(width)
+
+    # Construire la ligne d'en-tête avec le badge stylisé
+    header_text = Text(padded, style="bold white")
+    badge_start = len(header_line) - len(mode_badge_str)
+    badge_end = len(header_line)
+    header_text.stylize(badge_style, badge_start, badge_end)
+
+    text.append(header_text)
     return text
 
 
