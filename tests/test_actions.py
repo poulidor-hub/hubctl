@@ -2161,14 +2161,28 @@ def test_build_and_start_health_fail(monkeypatch, tmp_path):
 # ── _sync_app_coffre ──
 
 def test_sync_app_coffre_success(monkeypatch, tmp_path):
-    """Sync coffre appelle le vault."""
-    apps = tmp_path / "APPS"; (apps / "monapp").mkdir(parents=True)
+    """Sync coffre appelle le VaultManager."""
+    from hubctl_cli.coffre import Vault
+    from hubctl_cli import hub_state as hs
+
+    parc = tmp_path
+    hub = parc / "HUB_base"
+    hub.mkdir()
+    (hub / ".env").write_text("HUB=1\n")
+    (hub / "secrets").mkdir()
+    apps = parc / "APPS"; (apps / "monapp").mkdir(parents=True)
     (apps / "monapp" / ".env").write_text("API_PORT=9000\n")
+    monkeypatch.setattr(hs, "PARC_ROOT", parc)
+    monkeypatch.setattr(hs, "HUB_DIR", hub)
+    monkeypatch.setattr(hs, "APPS_DIR", apps)
+    monkeypatch.setattr(hs, "WORKSHOP_DIR", parc / "APP_Workshop")
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps)
-    mock_vault = mock.Mock()
-    monkeypatch.setattr(actions, "_get_vault", lambda: mock_vault)
+
+    vault = Vault(parc / "hubctl_cli" / "vault" / "parc.vault.enc")
+    vault.unlock("pw")
+    monkeypatch.setattr(actions, "_get_vault", lambda: vault)
     actions._sync_app_coffre(_mock_console(), "monapp", dry_run=False)
-    mock_vault.backup_app_env.assert_called_once()
+    assert "app:monapp" in vault.list_entries()
 
 
 def test_sync_app_coffre_non_blocking(monkeypatch):
@@ -2250,3 +2264,61 @@ def test_action_add_app_build_fails_keeps_dir(monkeypatch, tmp_path):
 
     actions.action_add_app(_mock_console(), "git@github.com:org/monapp.git", dry_run=False)
     actions._sync_app_coffre.assert_not_called()  # sync skippé si build échoue
+
+
+# ── regressions: sync_app_coffre vers le coffre reel ──
+
+def test_sync_app_coffre_uses_vault_manager(tmp_path, monkeypatch):
+    """_sync_app_coffre doit utiliser VaultManager.backup_all, pas .backup_app_env."""
+    from hubctl_cli.coffre import Vault
+    from hubctl_cli import hub_state as hs
+
+    parc = tmp_path; hub = parc / "HUB_base"; secrets = hub / "secrets"
+    hub.mkdir(); secrets.mkdir()
+    (hub / ".env").write_text("HUB_KEY=1\n")
+    apps = parc / "APPS"; app = apps / "demo"; app.mkdir(parents=True)
+    (app / ".env").write_text("APP_PASSWORD=sentinel\n")
+    monkeypatch.setattr(hs, "PARC_ROOT", parc)
+    monkeypatch.setattr(hs, "HUB_DIR", hub)
+    monkeypatch.setattr(hs, "APPS_DIR", apps)
+    monkeypatch.setattr(hs, "WORKSHOP_DIR", parc / "APP_Workshop")
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps)
+
+    vault_path = parc / "hubctl_cli" / "vault" / "parc.vault.enc"
+    vault = Vault(vault_path)
+    vault.unlock("test-pw")
+    import hubctl_cli.actions as act
+    monkeypatch.setattr(act, "_get_vault", lambda: vault)
+
+    # Appeler le vrai _sync_app_coffre
+    act._sync_app_coffre(None, "demo", dry_run=False)
+    assert vault.get_entry("hub") == {"HUB_KEY": "1"}
+    assert vault.get_entry("app:demo") == {"APP_PASSWORD": "sentinel"}
+
+
+def test_sync_app_coffre_does_nothing_when_vault_locked(tmp_path, monkeypatch):
+    """_sync_app_coffre ne doit pas planter si le vault est verrouille."""
+    from hubctl_cli.coffre import Vault
+    from hubctl_cli import hub_state as hs
+
+    parc = tmp_path; hub = parc / "HUB_base"; (hub).mkdir()
+    (hub / ".env").write_text("HUB_KEY=1\n")
+    apps = parc / "APPS"; app = apps / "demo"; app.mkdir(parents=True)
+    (app / ".env").write_text("APP_PASSWORD=x\n")
+    monkeypatch.setattr(hs, "PARC_ROOT", parc)
+    monkeypatch.setattr(hs, "HUB_DIR", hub)
+    monkeypatch.setattr(hs, "APPS_DIR", apps)
+    monkeypatch.setattr(hs, "WORKSHOP_DIR", parc / "APP_Workshop")
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps)
+
+    vault = Vault(parc / "hubctl_cli" / "vault" / "parc.vault.enc")
+    # NE PAS unlock → vault verrouille
+    import hubctl_cli.actions as act
+    monkeypatch.setattr(act, "_get_vault", lambda: vault)
+
+    io_ = __import__('io').StringIO()
+    from rich.console import Console
+    act._sync_app_coffre(Console(file=io_), "demo", dry_run=False)
+    output = io_.getvalue()
+    assert "verrouillé" in output.lower() or "non sauvegard" in output.lower()
+    # Ne doit pas lever d'exception

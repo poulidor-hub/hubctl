@@ -34,14 +34,20 @@ class Vault:
             blob = self.path.read_bytes()
             if not blob.startswith(MAGIC):
                 return False
-            self._salt = blob[len(MAGIC):len(MAGIC) + 16]
+            salt = blob[len(MAGIC):len(MAGIC) + 16]
             token = blob[len(MAGIC) + 16:]
-            fernet = Fernet(derive_key(passphrase, self._salt))
+            fernet = Fernet(derive_key(passphrase, salt))
             try:
-                self._data = json.loads(fernet.decrypt(token))
+                data = json.loads(fernet.decrypt(token))
             except (InvalidToken, ValueError):
+                # Ne pas corrompre l'état existant : réinitialiser
+                self._salt = None
+                self._fernet = None
+                self._data = None
                 return False
+            self._salt = salt
             self._fernet = fernet
+            self._data = data
         else:
             self._salt = os.urandom(16)
             self._fernet = Fernet(derive_key(passphrase, self._salt))
@@ -91,21 +97,32 @@ class Vault:
 
     def sync(self) -> None:
         assert self._data is not None, "vault verrouillé"
+        # Nettoyer les entrées obsoletes (apps/ws qui n'existent plus sur le disque)
+        current_entries: set[str] = set()
         hub = env_manager.read_env(hub_state.HUB_DIR / ".env")
         if hub:
             self._data["hub"] = hub
+            current_entries.add("hub")
         if hub_state.APPS_DIR.exists():
             for d in sorted(hub_state.APPS_DIR.iterdir()):
-                if d.is_dir() and not d.name.startswith("."):
+                if d.is_dir() and not d.is_symlink() and not d.name.startswith("."):
                     env = env_manager.read_env(d / ".env")
                     if env:
-                        self._data[f"app:{d.name}"] = env
+                        key = f"app:{d.name}"
+                        self._data[key] = env
+                        current_entries.add(key)
         if hub_state.WORKSHOP_DIR.exists():
             for d in sorted(hub_state.WORKSHOP_DIR.iterdir()):
-                if d.is_dir() and not d.name.startswith("."):
+                if d.is_dir() and not d.is_symlink() and not d.name.startswith("."):
                     env = env_manager.read_env(d / ".env")
                     if env:
-                        self._data[f"ws:{d.name}"] = env
+                        key = f"ws:{d.name}"
+                        self._data[key] = env
+                        current_entries.add(key)
+        # Supprimer les entrees d'apps disparues
+        stale = [k for k in self._data if k.startswith(("app:", "ws:")) and k not in current_entries]
+        for k in stale:
+            self._data.pop(k, None)
 
     def save(self) -> None:
         assert self._fernet is not None and self._salt is not None

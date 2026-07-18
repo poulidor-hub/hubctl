@@ -81,3 +81,43 @@ def test_export_recovery_files_are_not_world_readable(tmp_path, monkeypatch):
 def test_managed_api_removed():
     for attr in ("push_env", "pull_env", "auto_import_missing", "toggle_managed", "managed_env"):
         assert not hasattr(VaultManager, attr)
+
+
+def test_backup_all_denies_symlinked_app(tmp_path, monkeypatch):
+    """backup_all ne doit PAS sauvegarder les .env de dossiers symlinks."""
+    monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(hub_state, "WORKSHOP_DIR", tmp_path / "APP_Workshop")
+    (tmp_path / "HUB_base" / "secrets").mkdir(parents=True)
+    (tmp_path / "HUB_base" / ".env").write_text("POSTGRES_PASSWORD=sec\n")
+    external = tmp_path / "external"; external.mkdir()
+    (external / ".env").write_text("OUTSIDE=1\n")
+    (tmp_path / "APPS").mkdir()
+    (tmp_path / "APPS" / "linked").symlink_to(external, target_is_directory=True)
+    v = Vault(tmp_path / "vault" / "v.enc")
+    v.unlock("pw")
+    mgr = VaultManager(v)
+    mgr.backup_all()
+    assert "app:linked" not in v.list_entries()
+
+
+def test_backup_all_cleans_stale_app_entries(tmp_path, monkeypatch):
+    """backup_all doit supprimer les entrées d'apps disparues du disque."""
+    monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(hub_state, "WORKSHOP_DIR", tmp_path / "APP_Workshop")
+    (tmp_path / "HUB_base" / "secrets").mkdir(parents=True)
+    (tmp_path / "HUB_base" / ".env").write_text("POSTGRES_PASSWORD=sec\n")
+    app = tmp_path / "APPS" / "gone"; app.mkdir(parents=True)
+    (app / ".env").write_text("DEAD=1\n")
+    v = Vault(tmp_path / "vault" / "v.enc")
+    v.unlock("pw")
+    mgr = VaultManager(v)
+    mgr.backup_all()
+    assert "app:gone" in v.list_entries()
+    # Supprimer l'app physique puis re-sauvegarder
+    (app / ".env").unlink(); app.rmdir()
+    mgr.backup_all()
+    assert "app:gone" not in v.list_entries()

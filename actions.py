@@ -340,7 +340,6 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
 
     # ── 7. Résumé ──
     admin_username = credentials["admin_username"]
-    admin_password = credentials["admin_password"]
     host_ip = credentials["host_ip"]
 
     con.print("")
@@ -355,7 +354,7 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     con.print(t)
     con.print("")
     con.print(f"[bold]Login :[/bold] {admin_username}")
-    con.print(f"[bold]Mot de passe :[/bold] {admin_password}")
+    con.print(f"[bold]Mot de passe :[/bold] [dim]stocké dans {hub_state.HUB_DIR / '.env'} et dans le coffre[/dim]")
     con.print("")
     con.print("[dim yellow]⚠ Changez le mot de passe admin dès la première connexion.[/dim yellow]")
 
@@ -672,7 +671,7 @@ def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> boo
 def _get_vault():
     """Récupère le coffre du parc (lazy import pour éviter les dépendances circulaires)."""
     from hubctl_cli.coffre import Vault
-    vault_path = hub_state.PARC_ROOT / ".coffre"
+    vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
     return Vault(vault_path)
 
 
@@ -683,11 +682,15 @@ def _sync_app_coffre(console, name, *, dry_run: bool = False) -> None:
         con.print(f"[dim](dry-run) Sync coffre : {name}[/dim]")
         return
     try:
+        from hubctl_cli.vault_manager import VaultManager
         vault = _get_vault()
-        app_env = hub_state.active_apps_dir() / name / ".env"
-        if app_env.exists():
-            vault.backup_app_env(name, app_env)
-            con.print(f"[green]✓ Secrets de {name} sauvegardés dans le coffre[/green]")
+        # Le vault peut être verrouillé — on ne force pas le déverrouillage
+        if vault.is_locked:
+            con.print(f"[yellow]⚠ Coffre verrouillé — secrets de {name} non sauvegardés. Sync manuelle via le menu Coffre.[/yellow]")
+            return
+        mgr = VaultManager(vault)
+        mgr.backup_all()
+        con.print(f"[green]✓ Secrets de {name} sauvegardés dans le coffre[/green]")
     except Exception as e:
         con.print(f"[yellow]⚠ Sync coffre échoué ({e}) — l'app est démarrée, le coffre peut être sync plus tard.[/yellow]")
 
@@ -741,10 +744,14 @@ def _db_snapshot(console=None) -> Path | None:
             ["docker", "exec", "hub-db", "pg_dump", "-U", "hubadmin", "hub_auth"],
             stdout=open(path, "w"), stderr=subprocess.PIPE, timeout=30, check=True,
         )
+        if path.exists():
+            os.chmod(path, 0o600)
         con.print(f"[green]✓ Snapshot DB →[/green] {path.name}")
         return path
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         con.print(f"[yellow]⚠ Snapshot DB échoué : {e}[/yellow]")
+        if path.exists():
+            os.chmod(path, 0o600)  # sécuriser même le dump partiel
         return None
 
 
@@ -878,18 +885,24 @@ def action_vpn(console, subcmd: str, *, dry_run: bool = False) -> None:
         return
 
     if subcmd == "on":
-        if not _vpn_set_enabled(True, con):
-            con.print("[red]✗ Impossible d'écrire vpn_enabled (hub-db injoignable ?).[/red]")
-            return
-        con.print("[green]✓ vpn_enabled=true[/green]")
+        if dry_run:
+            con.print("[dim](dry-run) vpn_enabled=true (non écrit en DB)[/dim]")
+        else:
+            if not _vpn_set_enabled(True, con):
+                con.print("[red]✗ Impossible d'écrire vpn_enabled (hub-db injoignable ?).[/red]")
+                return
+            con.print("[green]✓ vpn_enabled=true[/green]")
         _vpn_reconcile(True, dry_run=dry_run, console=con)
         return
 
     if subcmd == "off":
-        if not _vpn_set_enabled(False, con):
-            con.print("[red]✗ Impossible d'écrire vpn_enabled (hub-db injoignable ?).[/red]")
-            return
-        con.print("[green]✓ vpn_enabled=false[/green]")
+        if dry_run:
+            con.print("[dim](dry-run) vpn_enabled=false (non écrit en DB)[/dim]")
+        else:
+            if not _vpn_set_enabled(False, con):
+                con.print("[red]✗ Impossible d'écrire vpn_enabled (hub-db injoignable ?).[/red]")
+                return
+            con.print("[green]✓ vpn_enabled=false[/green]")
         _vpn_reconcile(False, dry_run=dry_run, console=con)
         return
 
@@ -927,6 +940,8 @@ def _db_snapshot_app(app_name: str, console=None) -> Path | None:
                  "pg_dump", "-U", user, db],
                 stdout=f, stderr=subprocess.PIPE, timeout=60, check=True,
             )
+        if path.exists():
+            os.chmod(path, 0o600)
         con.print(f"[green]✓ Snapshot DB {app_name} →[/green] {path.name}")
         return path
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
@@ -1245,6 +1260,8 @@ def action_remove_app(console, app_name: str, vault, *, dry_run: bool) -> None:
     archive = backups / f"{app_name}-{stamp}.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
         tar.add(path, arcname=app_name)
+    if archive.exists():
+        os.chmod(archive, 0o600)
     console.print(f"[green]✓ Backup :[/green] {archive}")
     shutil.move(str(path), str(trash / f"{app_name}-{stamp}"))
     console.print(f"[green]✓ App déplacée dans la corbeille[/green] ({trash}).")
@@ -1265,7 +1282,12 @@ def action_repair(console, *, dry_run: bool) -> None:
 
 
 def _compose_file(target: str) -> Path | None:
-    """Retourne le docker-compose.yml du hub ou de l'app, ou None si introuvable."""
+    """Retourne le docker-compose.yml du hub ou de l'app, ou None si introuvable.
+    Rejette les chemins absolus, les '.' et '..' pour eviter la traversee de repertoire."""
+    import os as _os
+    # Securite : refuser les chemins absolus et les tentatives de traversee
+    if _os.path.isabs(target) or ".." in target.split(_os.sep):
+        return None
     if target == "hub":
         p = hub_state.HUB_DIR / "docker-compose.yml"
     else:
@@ -1708,6 +1730,8 @@ def action_workshop_remove(console, app_name: str, *, dry_run: bool = False) -> 
     else:
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(str(ws_dir), arcname=ws_dir.name)
+        if archive.exists():
+            os.chmod(archive, 0o600)
 
     con.print(f"[bold]→ Déplacement atelier vers corbeille…[/bold]")
     if dry_run:

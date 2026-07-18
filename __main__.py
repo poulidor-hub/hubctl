@@ -23,11 +23,15 @@ from hubctl_cli.park_restore import restore_park
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hubctl", description="Menu CLI de pilotage du hub POULIDOR.")
     p.add_argument("--no-anim", action="store_true", help="Désactiver l'intro animée.")
-    p.add_argument("--dry-run", action="store_true", help="Imprimer les commandes sans les exécuter.")
+    p.add_argument("--dry-run", action="store_true", dest="global_dry_run",
+                   help="Imprimer les commandes sans les exécuter.")
     p.add_argument("--anim", default=None, help="Nom de l'animation d'intro (ou 'random').")
     p.add_argument("--init", action="store_true", help="Cloner tous les dépôts listés dans manifest.json.")
-    p.add_argument("--dev", action="store_true", help="Forcer le mode DEV")
-    p.add_argument("--prod", action="store_true", help="Forcer le mode PROD")
+
+    # --dev et --prod sont mutuellement exclusifs
+    devprod = p.add_mutually_exclusive_group()
+    devprod.add_argument("--dev", action="store_true", dest="dev", help="Forcer le mode DEV")
+    devprod.add_argument("--prod", action="store_true", dest="prod", help="Forcer le mode PROD")
 
     sub = p.add_subparsers(dest="command", help="Commandes")
 
@@ -140,8 +144,20 @@ def _poll_quit() -> bool:
     return False
 
 
+def _sanitize_slug(value: str) -> str | None:
+    """Rejette les slugs contenant '/'', '..' ou des caracteres dangereux. Retourne None si invalide."""
+    import os as _os
+    if not value or _os.path.isabs(value):
+        return None
+    if ".." in value or "/" in value or "\\" in value:
+        return None
+    return value.strip()
+
+
 def _run(args) -> int:
     interactive = _interactive()
+    # Le --dry-run global est stocké dans global_dry_run (evite ecrasement par sous-parsers)
+    global_dry_run = getattr(args, "global_dry_run", False)
 
     # Commandes non-interactives (pas de TUI)
     if args.command == "park-export":
@@ -185,7 +201,7 @@ def _run(args) -> int:
         from rich.console import Console as RichConsole
         console = RichConsole()
         try:
-            return action_bootstrap(console, force=args.force, dry_run=args.dry_run)
+            return action_bootstrap(console, force=args.force, dry_run=global_dry_run)
         except Exception as e:
             print(f"❌ init a échoué : {e}")
             return 1
@@ -194,8 +210,14 @@ def _run(args) -> int:
         from rich.console import Console as RichConsole
         console = RichConsole()
         _resolve_mode(args)
+        # Valider la cible
+        if _sanitize_slug(args.target) is None:
+            print(f"❌ Cible invalide : {args.target!r}")
+            return 1
+        # Le --dry-run global est prioritaire sur celui du sous-parser si non specifie
+        effective_dry_run = global_dry_run or getattr(args, "dry_run", False)
         try:
-            action_deploy(console, args.target, validate=args.validate, dry_run=args.dry_run)
+            action_deploy(console, args.target, validate=args.validate, dry_run=effective_dry_run)
             return 0
         except Exception as e:
             print(f"❌ deploy a échoué : {e}")
@@ -206,21 +228,29 @@ def _run(args) -> int:
         console = RichConsole()
         # Résoudre le mode avant l'action
         _resolve_mode(args)
+        # Valider les slugs (les slugs separes par ',' sont autorises pour work)
+        slug_raw = getattr(args, "slug", None) or getattr(args, "target", None)
+        if slug_raw:
+            parts = slug_raw.split(",") if args.command == "work" else [slug_raw]
+            for part in parts:
+                if _sanitize_slug(part) is None:
+                    print(f"❌ Cible invalide : {part!r}")
+                    return 1
         try:
             if args.command == "work":
-                action_work(console, args.slug, dry_run=args.dry_run)
+                action_work(console, args.slug, dry_run=global_dry_run)
             elif args.command == "ship":
-                action_ship(console, args.slug, copy_db=args.copy_db, dry_run=args.dry_run)
+                action_ship(console, args.slug, copy_db=args.copy_db, dry_run=global_dry_run)
             elif args.command == "update":
-                action_update(console, args.target, dry_run=False)
+                action_update(console, args.target, dry_run=global_dry_run)
             elif args.command == "start":
-                action_start_stop(console, "start", target=args.target)
+                action_start_stop(console, "start", target=args.target, dry_run=global_dry_run)
             elif args.command == "stop":
-                action_start_stop(console, "stop", target=args.target)
+                action_start_stop(console, "stop", target=args.target, dry_run=global_dry_run)
             elif args.command == "status":
                 action_status(console)
             elif args.command == "vpn":
-                action_vpn(console, args.subcmd, dry_run=args.dry_run)
+                action_vpn(console, args.subcmd, dry_run=global_dry_run)
             return 0
         except Exception as e:
             print(f"❌ {args.command} a échoué : {e}")
@@ -230,6 +260,11 @@ def _run(args) -> int:
         from rich.console import Console as RichConsole
         console = RichConsole()
         _resolve_mode(args)
+        # Valider les slugs
+        target_slug = getattr(args, "target", None) or getattr(args, "app", None)
+        if target_slug and _sanitize_slug(target_slug) is None:
+            print(f"❌ Cible invalide : {target_slug!r}")
+            return 1
         try:
             if args.command == "logs":
                 service = "api" if args.api else "postgres" if args.db else "frontend" if args.frontend else None
@@ -250,7 +285,7 @@ def _run(args) -> int:
 
     if args.init:
         console = Console()
-        actions.action_init(console, dry_run=args.dry_run)
+        actions.action_init(console, dry_run=global_dry_run)
         return 0
 
     state: dict = {}
@@ -306,7 +341,7 @@ def _run(args) -> int:
         vault = Vault(vault_path)
         vault_mgr = VaultManager(vault)
         if not hub_state.HUB_DIR.exists():
-            menu._offer_init_fresh(canvas, dry_run=args.dry_run)
+            menu._offer_init_fresh(canvas, dry_run=global_dry_run)
         menu.install_layout(canvas, state)
         mode = _resolve_mode(args)
         from rich.console import Console as RichConsole
@@ -316,8 +351,8 @@ def _run(args) -> int:
             RichConsole().print("[dim]Mode auto-détecté : PROD (APPS/)[/dim]")
         menu._require_vault(canvas, vault_mgr)
         if mode == "dev" and hub_state.APPS_DIR.exists():
-            menu._offer_snapshot(canvas, vault_mgr, dry_run=args.dry_run)
-        menu.main_loop(canvas, state, vault_mgr, dry_run=args.dry_run)
+            menu._offer_snapshot(canvas, vault_mgr, dry_run=global_dry_run)
+        menu.main_loop(canvas, state, vault_mgr, dry_run=global_dry_run)
         return 0
 
     except (KeyboardInterrupt, EOFError):

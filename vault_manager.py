@@ -108,10 +108,10 @@ class VaultManager:
             targets.append("hub")
         if hub_state.APPS_DIR.exists():
             for d in sorted(hub_state.APPS_DIR.iterdir()):
-                if d.is_dir() and not d.name.startswith(".") and (d / ".env").exists():
+                if d.is_dir() and not d.is_symlink() and not d.name.startswith(".") and (d / ".env").exists():
                     targets.append(f"app:{d.name}")
         if hub_state.WORKSHOP_DIR.exists():
             for d in sorted(hub_state.WORKSHOP_DIR.iterdir()):
-                if d.is_dir() and not d.name.startswith(".") and (d / ".env").exists():
+                if d.is_dir() and not d.is_symlink() and not d.name.startswith(".") and (d / ".env").exists():
                     targets.append(f"ws:{d.name}")
         return targets
