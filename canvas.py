@@ -5,6 +5,7 @@ import signal
 import sys
 import termios
 import threading
+import time
 import tty
 from typing import Any
 
@@ -294,27 +295,33 @@ class Canvas:
 
             fd = self._raw_fd if self._raw_fd is not None else sys.stdin.fileno()
             tail = 30
+            render_interval = 0.25  # 4 fps max — évite l'étranglement du terminal
+            last_render = 0.0
 
             while not done.is_set():
-                visible = lines_buf[-tail:]
-                log_text = Text()
-                log_text.append(f"▸ {label}\n", style="bold yellow")
-                log_text.append("─" * 60 + "\n", style="dim")
-                for line in visible:
-                    ll = line.strip()
-                    if not ll:
-                        continue
-                    if any(w in ll.lower() for w in ("✗", "error", "fail", "traceback")):
-                        log_text.append(f"  {ll}\n", style="red")
-                    elif any(w in ll.lower() for w in ("✓", "success", "ok")):
-                        log_text.append(f"  {ll}\n", style="green")
-                    elif any(w in ll for w in ("WARN", "warning")):
-                        log_text.append(f"  {ll}\n", style="yellow")
-                    else:
-                        log_text.append(f"  {ll}\n", style="dim")
-                log_text.append("\n[Ctrl-C pour annuler]", style="dim")
-
-                self.render(log_text)
+                now = time.monotonic()
+                # Ne rendre que toutes les render_interval secondes,
+                # sauf à la première itération et après annulation
+                if now - last_render >= render_interval:
+                    visible = lines_buf[-tail:]
+                    log_text = Text()
+                    log_text.append(f"▸ {label}\n", style="bold yellow")
+                    log_text.append("─" * 60 + "\n", style="dim")
+                    for line in visible:
+                        ll = line.strip()
+                        if not ll:
+                            continue
+                        if any(w in ll.lower() for w in ("✗", "error", "fail", "traceback")):
+                            log_text.append(f"  {ll}\n", style="red")
+                        elif any(w in ll.lower() for w in ("✓", "success", "ok")):
+                            log_text.append(f"  {ll}\n", style="green")
+                        elif any(w in ll for w in ("WARN", "warning")):
+                            log_text.append(f"  {ll}\n", style="yellow")
+                        else:
+                            log_text.append(f"  {ll}\n", style="dim")
+                    log_text.append("\n[Ctrl-C pour annuler]", style="dim")
+                    self.render(log_text)
+                    last_render = now
 
                 k = keys.read_key(fd, timeout=0.15)
                 if isinstance(k, (keys.KeyCtrlC, keys.KeyEsc)):
