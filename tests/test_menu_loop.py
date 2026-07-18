@@ -447,3 +447,87 @@ def test_workshop_multiselect_dispatches_to_multiselect_widget(monkeypatch):
     menu._workshop_menu(_fake_canvas(), dry_run=True)
 
     assert sorted(created) == ["alpha", "beta"]
+
+
+def test_workshop_add_to_existing_option_visible_when_workshop_nonempty(monkeypatch):
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        menu.hub_state, "get_apps",
+        lambda: [AppInfo("alpha", Path("."), "1", False, 0),
+                 AppInfo("beta", Path("."), "1", False, 0)],
+    )
+    monkeypatch.setattr(
+        menu.hub_state, "get_workshop_apps",
+        lambda: [AppInfo("alpha-ws", Path("."), "1", False, 0)],
+    )
+
+    captured = []
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: captured.append(list(choices)) or menu.widgets.ESC)
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    flat = [c for choices in captured for c in choices]
+    assert any("[→+]" in c and "Ajouter" in c for c in flat)
+
+
+def test_workshop_add_to_existing_hidden_when_workshop_empty(monkeypatch):
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        menu.hub_state, "get_apps",
+        lambda: [AppInfo("alpha", Path("."), "1", False, 0)],
+    )
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+
+    captured = []
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: captured.append(list(choices)) or menu.widgets.ESC)
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    flat = [c for choices in captured for c in choices]
+    assert not any("[→+]" in c for c in flat)
+
+
+def test_workshop_add_to_existing_dispatches_create(monkeypatch):
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+
+    monkeypatch.setattr(
+        menu.hub_state, "get_apps",
+        lambda: [AppInfo("alpha", Path("."), "1", False, 0),
+                 AppInfo("beta", Path("."), "1", False, 0)],
+    )
+    monkeypatch.setattr(
+        menu.hub_state, "get_workshop_apps",
+        lambda: [AppInfo("alpha-ws", Path("."), "1", False, 0)],
+    )
+    monkeypatch.setattr(menu.dependencies, "build_graph",
+                        lambda: {"alpha": [], "beta": []})
+
+    # select principal → [→+] ; select app → beta ; confirm → True
+    select_returns = iter([
+        "  [→+] Ajouter une app à l'atelier existant",
+        "  beta",
+    ])
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: next(select_returns))
+    monkeypatch.setattr(menu.widgets, "confirm", lambda c, m, **kw: True)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+
+    created = []
+    monkeypatch.setattr(
+        menu.actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    assert created == ["beta"]

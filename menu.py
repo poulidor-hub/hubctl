@@ -639,6 +639,9 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                 multi_candidates = [a for a in apps_prod if a.name not in ws_bases]
                 if multi_candidates:
                     choices.append("  [→→] Multi-sélection (mettre plusieurs apps en atelier)")
+                # [→+] Ajouter à l'atelier existant (visible si atelier non vide)
+                if apps_ws and multi_candidates:
+                    choices.append("  [→+] Ajouter une app à l'atelier existant")
             if not apps_prod and not apps_ws:
                 choices.append("Aucune app trouvée.")
             choices.append("ℹ Copie DB (avancé) : hubctl ship <slug> --copy-db")
@@ -686,6 +689,23 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                             canvas, f"Atelier → {s}",
                             actions.action_workshop_create, _ACTION_CONSOLE, s, dry_run=dry_run,
                         )
+                    return
+            elif sel.startswith("  [→+]"):
+                add_choices = [f"  {a.name}" for a in multi_candidates]
+                picked = widgets.select(
+                    canvas,
+                    "App à ajouter à l'atelier :",
+                    add_choices,
+                )
+                if picked is widgets.ESC or picked is None:
+                    continue
+                app_name = picked.strip()
+                msg = f"Ajouter « {app_name} » à l'atelier (sans toucher à l'existant) ?"
+                if widgets.confirm(canvas, msg, default=False) is True:
+                    _run_action(
+                        canvas, f"Atelier + {app_name}",
+                        actions.action_workshop_create, _ACTION_CONSOLE, app_name, dry_run=dry_run,
+                    )
                     return
             elif sel.startswith("  [→]"):
                 app_name = sel.split()[1]
