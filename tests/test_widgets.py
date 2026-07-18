@@ -235,3 +235,41 @@ def test_confirm_by_typing_no_match(monkeypatch):
 def test_confirm_by_typing_esc(monkeypatch):
     monkeypatch.setattr(widgets, "_text_input", lambda canvas, message, mask=None: widgets.ESC)
     assert widgets.confirm_by_typing(mock.Mock(), "Tapez 'shop' :", "shop") is False
+
+
+def test_multiselect_returns_empty_on_enter_without_toggle(monkeypatch):
+    canvas = _fake_canvas()
+    _patch_keys(monkeypatch, [KeyEnter()])
+    result = widgets.multiselect(canvas, "Choix :", ["a", "b", "c"])
+    assert result == []
+
+
+def test_multiselect_toggles_with_space_and_returns_selection(monkeypatch):
+    canvas = _fake_canvas()
+    _patch_keys(monkeypatch, [
+        KeyDown(),
+        KeyChar(" "),
+        KeyDown(),
+        KeyChar(" "),
+        KeyEnter(),
+    ])
+    result = widgets.multiselect(canvas, "Choix :", ["a", "b", "c"])
+    assert result == ["b", "c"]
+
+
+def test_multiselect_returns_esc_on_escape(monkeypatch):
+    canvas = _fake_canvas()
+    _patch_keys(monkeypatch, [KeyEsc()])
+    result = widgets.multiselect(canvas, "Choix :", ["a", "b"])
+    assert result is widgets.ESC
+
+
+def test_multiselect_toggle_off_deselects(monkeypatch):
+    canvas = _fake_canvas()
+    _patch_keys(monkeypatch, [
+        KeyChar(" "),
+        KeyChar(" "),
+        KeyEnter(),
+    ])
+    result = widgets.multiselect(canvas, "Choix :", ["a", "b"])
+    assert result == []
