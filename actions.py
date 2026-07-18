@@ -1464,7 +1464,7 @@ def action_start_stop(console, sub: str, target: str = "hub", *, dry_run: bool =
 
 _WORKSHOP_IGNORE_DIRS: set[str] = {
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    ".venv", "venv", "env", ".env",
+    ".venv", "venv", "env",
     "node_modules", ".next", "dist", "build",
     ".git",  # le git clone sera refait au premier update
 }
