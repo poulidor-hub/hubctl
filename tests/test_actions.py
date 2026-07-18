@@ -549,6 +549,50 @@ def test_action_work_ignores_empty_segments(monkeypatch):
     assert created == ["alpha", "beta"]
 
 
+def test_action_work_continues_on_failure(monkeypatch):
+    """Si un slug échoue, les suivants sont quand même traités (best-effort)."""
+    created = []
+    failures = []
+
+    def fake_create(con, slug, *, dry_run=False):
+        if slug == "beta":
+            failures.append(slug)
+            raise RuntimeError("beta failed")
+        created.append(slug)
+
+    monkeypatch.setattr(actions, "action_workshop_create", fake_create)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    actions.action_work(_fake_console(), "alpha,beta,gamma")
+
+    assert created == ["alpha", "gamma"], "alpha et gamma doivent être créés malgré l'échec de beta"
+    assert failures == ["beta"], "beta doit avoir échoué"
+
+
+def test_action_work_single_failure_does_not_raise(monkeypatch):
+    """Un seul slug qui échoue ne lève pas — l'erreur est loggée (best-effort)."""
+    def fake_create(con, slug, *, dry_run=False):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(actions, "action_workshop_create", fake_create)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+
+    # Ne doit pas lever — best-effort
+    actions.action_work(_fake_console(), "alpha")
+
+    # Pour le multi-slug, le premier qui échoue ne bloque pas les suivants
+    created = []
+    def fake_create_multi(con, slug, *, dry_run=False):
+        if slug == "alpha":
+            raise RuntimeError("alpha failed")
+        created.append(slug)
+
+    monkeypatch.setattr(actions, "action_workshop_create", fake_create_multi)
+    # Ne doit pas lever — beta et gamma sont traités
+    actions.action_work(_fake_console(), "alpha,beta,gamma")
+    assert created == ["beta", "gamma"]
+
+
 def test_action_ship_defaults_to_code_only(tmp_path, monkeypatch):
     called = {}
     monkeypatch.setattr(actions, "action_prod_deploy",

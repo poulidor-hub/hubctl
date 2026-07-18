@@ -556,3 +556,173 @@ def test_workshop_add_to_existing_dispatches_create(monkeypatch):
     menu._workshop_menu(_fake_canvas(), dry_run=True)
 
     assert created == ["beta"]
+
+
+# ── Corrections audit : indicateur 🔗 + warning défaut M2M + warning slug inconnu ──
+
+
+def test_workshop_menu_shows_link_indicator_for_apps_with_deps(monkeypatch):
+    """Une app avec deps est affichée avec 🔗 et la liste de ses deps directes."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    prod_apps = [
+        AppInfo("exemple-apps", Path("."), "1", False, 0, legacy=False),
+        AppInfo("exemple-app-2", Path("."), "1", False, 0, legacy=False),
+    ]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+    monkeypatch.setattr(
+        menu.dependencies, "build_graph",
+        lambda: {"exemple-apps": ["exemple-app-2"], "exemple-app-2": []},
+    )
+
+    captured = []
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: captured.append(list(choices)) or menu.widgets.ESC)
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    flat = [c for choices in captured for c in choices]
+    # exemple-apps a une dep → doit afficher 🔗 + exemple-app-2
+    assert any("🔗" in c and "exemple-apps" in c and "exemple-app-2" in c for c in flat), \
+        "l'app avec deps doit afficher 🔗 + la liste de ses deps"
+    # exemple-app-2 est autonome → doit afficher 🔗 autonome
+    assert any("🔗" in c and "autonome" in c and "exemple-app-2" in c for c in flat), \
+        "l'app sans deps doit afficher 🔗 autonome"
+
+
+def test_workshop_arrow_warning_when_user_refuses_deps(monkeypatch):
+    """Si l'utilisateur refuse d'emmener les deps, un warning de défaut M2M s'affiche
+    et demande une confirmation secondaire avant de continuer."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+
+    prod_apps = [
+        AppInfo("exemple-apps", Path("."), "1", False, 0, legacy=False),
+        AppInfo("exemple-app-2", Path("."), "1", False, 0, legacy=False),
+    ]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+    monkeypatch.setattr(
+        menu.dependencies, "build_graph",
+        lambda: {"exemple-apps": ["exemple-app-2"], "exemple-app-2": []},
+    )
+
+    # Séquence : select [→] exemple-apps → select "Non, seulement..." → confirm warning → True
+    select_returns = iter([
+        "  [→] exemple-apps  → mettre en atelier",
+        "Non, seulement exemple-apps — risque de défaut M2M",
+    ])
+    confirm_calls = []
+    def fake_confirm(c, m, **kw):
+        confirm_calls.append(m)
+        return True
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: next(select_returns))
+    monkeypatch.setattr(menu.widgets, "confirm", fake_confirm)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+
+    created = []
+    monkeypatch.setattr(
+        menu.actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    # Seulement exemple-apps est créé (l'utilisateur a refusé exemple-app-2)
+    assert created == ["exemple-apps"]
+    # Le 1er confirm (warning défaut M2M) doit contenir le risque
+    assert len(confirm_calls) >= 2, "doit y avoir un confirm de warning après refus"
+    warning_msg = confirm_calls[0]  # premier confirm = warning défaut M2M
+    assert "défaut" in warning_msg.lower() or "sans exemple-app-2".lower() in warning_msg.lower() or "risque" in warning_msg.lower(), \
+        f"le warning doit mentionner le défaut/risque M2M : {warning_msg!r}"
+
+
+def test_workshop_arrow_warning_user_cancels_after_refusing_deps(monkeypatch):
+    """Si l'utilisateur refuse les deps PUIS annule le warning, rien n'est créé."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+
+    prod_apps = [
+        AppInfo("exemple-apps", Path("."), "1", False, 0, legacy=False),
+        AppInfo("exemple-app-2", Path("."), "1", False, 0, legacy=False),
+    ]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+    monkeypatch.setattr(
+        menu.dependencies, "build_graph",
+        lambda: {"exemple-apps": ["exemple-app-2"], "exemple-app-2": []},
+    )
+
+    select_returns = iter([
+        "  [→] exemple-apps  → mettre en atelier",
+        "Non, seulement exemple-apps — risque de défaut M2M",
+        menu.widgets.ESC,  # après continue (annulation), retour au menu → ESC pour sortir
+    ])
+    # 1er confirm (warning) → False (annulation)
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: next(select_returns))
+    monkeypatch.setattr(menu.widgets, "confirm", lambda c, m, **kw: False)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+
+    created = []
+    monkeypatch.setattr(
+        menu.actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    # Rien n'a été créé — l'utilisateur a annulé face au warning
+    assert created == []
+
+
+def test_workshop_arrow_warns_on_unknown_deps(monkeypatch):
+    """Une dep vers un slug qui n'existe pas dans APPS/ génère un warning non bloquant."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+
+    prod_apps = [AppInfo("exemple-apps", Path("."), "1", False, 0, legacy=False)]
+    monkeypatch.setattr(menu.hub_state, "get_apps", lambda: prod_apps)
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+    # exemple-apps dépend de GhostApp qui n'existe pas dans APPS/
+    monkeypatch.setattr(
+        menu.dependencies, "build_graph",
+        lambda: {"exemple-apps": ["GhostApp"]},
+    )
+
+    # Capture les messages de confirm pour vérifier le warning
+    confirm_calls = []
+    def fake_confirm(c, m, **kw):
+        confirm_calls.append(m)
+        return True
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: "  [→] exemple-apps  → mettre en atelier")
+    monkeypatch.setattr(menu.widgets, "confirm", fake_confirm)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+
+    created = []
+    monkeypatch.setattr(
+        menu.actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    # exemple-apps est créé quand même (warning non bloquant)
+    assert created == ["exemple-apps"]
+    # Le confirm final doit mentionner la dep inconnue
+    final_msg = confirm_calls[-1]
+    assert "GhostApp" in final_msg, \
+        f"le warning doit mentionner la dep inconnue GhostApp : {final_msg!r}"

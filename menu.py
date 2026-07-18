@@ -646,11 +646,16 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                     choices.append(f"  [×] {a.name}  → supprimer l'atelier")
             if apps_prod:
                 choices.append("── APPS/ (production) ──")
+                # Calculer le graphe une fois pour les indicateurs 🔗
+                prod_graph = dependencies.build_graph()
                 for a in apps_prod:
+                    deps = prod_graph.get(a.name, [])
                     if a.name in ws_bases:
                         choices.append(f"  ⏸  {a.name}  (en atelier — prod stoppée)")
+                    elif deps:
+                        choices.append(f"  [→] {a.name}  🔗 a besoin de {', '.join(deps)}")
                     else:
-                        choices.append(f"  [→] {a.name}  → mettre en atelier")
+                        choices.append(f"  [→] {a.name}  🔗 autonome")
                 # Multi-sélection (si au moins une app prod n'est pas déjà en atelier)
                 multi_candidates = [a for a in apps_prod if a.name not in ws_bases]
                 if multi_candidates:
@@ -729,35 +734,48 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                 graph = dependencies.build_graph()
                 group = dependencies.resolve_group(app_name, graph)
                 # Apps déjà en atelier (ne pas re-proposer)
-                ws_names = {a.name for a in apps_ws}
-                ws_bases = {n[:-3] for n in ws_names if n.endswith("-ws")}
-                # Apps à potentiellement emmener (hors atelier existant)
-                missing = sorted(group - ws_bases - {app_name})
-                # Filtrer celles qui existent vraiment dans APPS/
                 prod_names = {a.name for a in apps_prod}
-                missing = [m for m in missing if m in prod_names]
+                # Apps à potentiellement emmener (hors atelier existant, hors app elle-même)
+                missing = sorted(group - ws_bases - {app_name})
+                # Séparer les deps connues (dans APPS/) des deps inconnues (slugs orphelins)
+                missing_known = [m for m in missing if m in prod_names]
+                missing_unknown = [m for m in missing if m not in prod_names]
 
-                if missing:
+                slugs = [app_name]
+                if missing_known:
                     suggestion_choices = [
-                        f"Oui (recommandé) — emmène le groupe complet ({', '.join([app_name] + missing)})",
+                        f"Oui (recommandé) — emmène le groupe complet ({', '.join([app_name] + missing_known)})",
                         f"Non, seulement {app_name} — risque de défaut M2M",
                     ]
                     sug = widgets.select(
                         canvas,
-                        f"{app_name} a besoin de : {', '.join(missing)}. Les emmener aussi ?",
+                        f"{app_name} a besoin de : {', '.join(missing_known)}. Les emmener aussi ?",
                         suggestion_choices,
                     )
                     if sug is widgets.ESC or sug is None:
                         continue
                     if sug.startswith("Oui"):
-                        slugs = [app_name] + missing
+                        slugs = [app_name] + missing_known
                     else:
-                        slugs = [app_name]
-                else:
-                    slugs = [app_name]
+                        # L'utilisateur refuse d'emmener les deps → warning de défaut M2M
+                        warn_msg = (
+                            f"⚠ {app_name} sera en atelier sans {', '.join(missing_known)}.\n"
+                            f"Les appels M2M pointeront vers la prod (slug inchangé).\n"
+                            f"Risque de défaut de synchro ou de données incohérentes.\n"
+                            f"Continuer quand même ?"
+                        )
+                        if widgets.confirm(canvas, warn_msg, default=False) is not True:
+                            continue  # Annulé : retour au menu sans rien créer
 
+                # Construire le message final, en mentionnant les deps inconnues si présentes
                 list_str = ", ".join(slugs)
                 msg = f"Mettre « {list_str} » en atelier ? Clone DB, prod stoppée."
+                if missing_unknown:
+                    msg = (
+                        f"⚠ Dépendance(s) inconnue(s) : {', '.join(missing_unknown)}\n"
+                        f"(slug(s) non trouvé(s) dans APPS/ — ignored dans la sélection)\n\n"
+                        + msg
+                    )
                 if widgets.confirm(canvas, msg, default=len(slugs) == 1) is True:
                     for s in slugs:
                         _run_action(

@@ -1945,16 +1945,28 @@ def action_work(console, slug: str, *, dry_run: bool = False) -> None:
 
     Accepte un slug simple ("X") ou plusieurs séparés par virgules ("X,Y,Z").
     La prod est stoppée mais conservée pour chaque app.
+    Si un slug échoue, les suivants sont quand même traités (best-effort).
     """
     con = console or _console
     slugs = [s.strip() for s in slug.split(",") if s.strip()]
     if not slugs:
         con.print("[red]✗ Aucun slug fourni.[/red]")
         return
+    ok_count = 0
     for s in slugs:
         con.print(f"[bold]→ Mise en atelier de « {s} »[/bold]")
-        action_workshop_create(con, s, dry_run=dry_run)
-        con.print(f"[green]✅ {s} prête en atelier (APP_Workshop/{s}-ws). Prod stoppée (en place).[/green]")
+        try:
+            action_workshop_create(con, s, dry_run=dry_run)
+            con.print(f"[green]✅ {s} prête en atelier (APP_Workshop/{s}-ws). Prod stoppée (en place).[/green]")
+            ok_count += 1
+        except Exception:
+            con.print(f"[red]✗ Échec de la mise en atelier de « {s} ».[/red]")
+    if len(slugs) > 1:
+        fail_count = len(slugs) - ok_count
+        if fail_count:
+            con.print(f"[yellow]⚠ {ok_count}/{len(slugs)} app(s) mises en atelier, {fail_count} échec(s).[/yellow]")
+        else:
+            con.print(f"[green]✅ {ok_count}/{len(slugs)} app(s) mises en atelier.[/green]")
 
 
 def action_ship(console, slug: str, *, copy_db: bool = False, dry_run: bool = False) -> None:
