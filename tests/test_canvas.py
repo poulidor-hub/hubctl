@@ -16,13 +16,19 @@ def test_geometry_larger_terminal():
 
 
 def test_geometry_too_narrow():
-    g = canvas.canvas_geometry(80, 40, 100, 30)
-    assert g["is_too_small"] is True
+    g = canvas.canvas_geometry(50, 40, 100, 30)
+    assert g["is_too_small"] is True  # 50 < 60 (hard minimum)
 
 
 def test_geometry_too_short():
-    g = canvas.canvas_geometry(120, 20, 100, 30)
-    assert g["is_too_small"] is True
+    g = canvas.canvas_geometry(120, 10, 100, 30)
+    assert g["is_too_small"] is True  # 10 < 15 (hard minimum)
+
+
+def test_geometry_adequate_smaller_terminal():
+    """80×24 est maintenant accepté (adaptation automatique)."""
+    g = canvas.canvas_geometry(80, 24, 100, 30)
+    assert g["is_too_small"] is False
 
 
 def test_geometry_inner_size():

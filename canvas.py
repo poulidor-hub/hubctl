@@ -14,9 +14,50 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+# ── Dimensions minimales acceptables ──
+_MIN_COLS = 80
+_MIN_ROWS = 20
+_HARD_MIN_COLS = 60
+_HARD_MIN_ROWS = 15
+
+# ── Largeurs de colonnes du dashboard (base) ──
+# Pour un terminal de 100 cols, les colonnes font 23+27+44 = 94 chars internes (+ 3 bordures = 97)
+_BASE_COL_W1 = 23
+_BASE_COL_W2 = 27
+_BASE_COL_W3 = 44
+_BASE_INNER_WIDTH = _BASE_COL_W1 + _BASE_COL_W2 + _BASE_COL_W3  # 94
+
+
+def _effective_dims(target_cols: int, target_rows: int) -> tuple[int, int]:
+    """Calcule les dimensions effectives adaptées au terminal.
+
+    Jamais plus grandes que target, jamais plus petites que _MIN_*.
+    """
+    cols, rows = shutil.get_terminal_size()
+    eff_c = min(target_cols, max(_MIN_COLS, cols))
+    eff_r = min(target_rows, max(_MIN_ROWS, rows))
+    return eff_c, eff_r
+
+
+def _scaled_cols(eff_cols: int) -> tuple[int, int, int]:
+    """Répartit les colonnes du dashboard proportionnellement à la largeur effective.
+
+    w1: ~24%, w2: ~29%, w3: ~47% de la largeur interne (eff_cols - 2 pour la bordure).
+    """
+    inner = eff_cols - 2
+    if inner >= _BASE_INNER_WIDTH:
+        # Assez large : utiliser les tailles de base
+        return _BASE_COL_W1, _BASE_COL_W2, _BASE_COL_W3
+    # Échelle réduite : répartir proportionnellement
+    total_ratio = _BASE_INNER_WIDTH
+    w1 = max(12, int(inner * _BASE_COL_W1 / total_ratio))
+    w2 = max(14, int(inner * _BASE_COL_W2 / total_ratio))
+    w3 = max(20, inner - w1 - w2)
+    return w1, w2, w3
+
 
 def canvas_geometry(cols: int, rows: int, target_cols: int, target_rows: int) -> dict[str, Any]:
-    is_too_small = cols < target_cols or rows < target_rows
+    is_too_small = cols < _HARD_MIN_COLS or rows < _HARD_MIN_ROWS
     origin_col = max(0, (cols - target_cols) // 2)
     origin_row = max(0, (rows - target_rows) // 2)
     return {
@@ -29,16 +70,18 @@ def canvas_geometry(cols: int, rows: int, target_cols: int, target_rows: int) ->
 
 
 def _guard_screen(cols: int, rows: int, target_cols: int, target_rows: int) -> Panel:
-    msg = f"Agrandis ton terminal à {target_cols}×{target_rows}\n(actuel : {cols}×{rows})"
+    msg = f"Agrandis ton terminal ({_HARD_MIN_COLS}×{_HARD_MIN_ROWS} min)\n(actuel : {cols}×{rows})"
     return Panel(Text(msg, style="bold yellow"), title="Fenêtre trop petite")
 
 
-_BORDER_TOP = "▛" + "▀" * 96 + "▜"
-_BORDER_BOT = "▙" + "▄" * 96 + "▟"
+# ── Bordures dynamiques ──
 
-_COL_W1 = 23
-_COL_W2 = 27
-_COL_W3 = 44
+def _border_top(width: int) -> str:
+    return "▛" + "▀" * (width - 2) + "▜"
+
+
+def _border_bot(width: int) -> str:
+    return "▙" + "▄" * (width - 2) + "▟"
 
 
 def _make_col_sep(w1: int, w2: int, w3: int, left: str, tee: str, right: str) -> str:
@@ -66,22 +109,30 @@ class Canvas:
         self._z2_builder: Any = None
         self._z4_builder: Any = None
         self._use_layout = False
+        # Dimensions effectives (calculées à open() et sur SIGWINCH)
+        self._cols: int = target_cols
+        self._rows: int = target_rows
+
+    def _refresh_dims(self) -> None:
+        """Recalcule les dimensions effectives d'après la taille du terminal."""
+        self._cols, self._rows = _effective_dims(self.target_cols, self.target_rows)
 
     @property
     def inner_cols(self) -> int:
-        return self.target_cols - 2
+        return self._cols - 2
 
     @property
     def inner_rows(self) -> int:
-        return self.target_rows - 2
+        return self._rows - 2
 
     @property
     def is_too_small(self) -> bool:
         cols, rows = shutil.get_terminal_size()
-        return cols < self.target_cols or rows < self.target_rows
+        return cols < _HARD_MIN_COLS or rows < _HARD_MIN_ROWS
 
     def _on_resize(self, signum: int, frame: object) -> None:
         self._resized = True
+        self._refresh_dims()
 
     def set_layout(self, z3_builder: Any, z1_builder: Any, z4_builder: Any, *, z2_builder: Any = None) -> None:
         self._z3_builder = z3_builder
@@ -93,6 +144,7 @@ class Canvas:
     def open(self) -> None:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise RuntimeError("Canvas requires a TTY")
+        self._refresh_dims()
         self._raw_fd = sys.stdin.fileno()
         self._old_termios = termios.tcgetattr(self._raw_fd)
         tty.setcbreak(self._raw_fd)
@@ -116,6 +168,9 @@ class Canvas:
         if self._live is None:
             return
         self._last_inner = inner
+        if self._resized:
+            self._refresh_dims()
+            self._resized = False
         cols, rows = shutil.get_terminal_size()
         if self.is_too_small:
             content = _guard_screen(cols, rows, self.target_cols, self.target_rows)
@@ -124,8 +179,8 @@ class Canvas:
         else:
             panel = Panel(
                 inner,
-                width=self.target_cols,
-                height=self.target_rows,
+                width=self._cols,
+                height=self._rows,
                 border_style="cyan",
                 padding=0,
             )
@@ -145,10 +200,10 @@ class Canvas:
         services = (self._z2_builder() if callable(self._z2_builder) else None) or Text("")
         logs = (self._z4_builder() if callable(self._z4_builder) else None) or Text("")
 
-        w1, w2, w3 = _COL_W1, _COL_W2, _COL_W3
+        w1, w2, w3 = _scaled_cols(self._cols)
 
-        top = Text(_BORDER_TOP + "\n", style="bold magenta")
-        bot = Text(_BORDER_BOT, style="bold magenta")
+        top = Text(_border_top(self._cols) + "\n", style="bold magenta")
+        bot = Text(_border_bot(self._cols), style="bold magenta")
         sep = Text("▌" + "─" * (self.inner_cols - 2) + "▐\n", style="bold bright_black")
 
         col_sep_top = Text(_make_col_sep(w1, w2, w3, "▌", "┬", "▐") + "\n", style="bold bright_black")
@@ -193,7 +248,7 @@ class Canvas:
             inner.append("\n")
         inner.append(bot)
 
-        panel = Panel(inner, width=self.target_cols, height=self.target_rows, border_style="cyan", padding=0)
+        panel = Panel(inner, width=self._cols, height=self._rows, border_style="cyan", padding=0)
         return Align.center(panel, vertical="middle")
 
     @contextlib.contextmanager
