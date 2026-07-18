@@ -55,8 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     debug_parser.add_argument("--status", action="store_true", help="Verifier la disponibilite")
 
     # ── Sous-commandes CLI (non-interactives) ──
-    work_parser = sub.add_parser("work", help="Mettre une app en atelier (dev)")
-    work_parser.add_argument("slug", help="Slug de l'app dans APPS/")
+    work_parser = sub.add_parser("work", help="Mettre une ou plusieurs apps en atelier (dev). Accepte slugs séparés par virgules : X,Y,Z.")
+    work_parser.add_argument("slug", help="Slug(s) de l'app dans APPS/ (séparés par virgules pour multi)")
 
     ship_parser = sub.add_parser("ship", help="Déployer l'atelier vers la prod (défaut: git pull code-only)")
     ship_parser.add_argument("slug", help="Slug base de l'app (sans suffixe -ws)")
