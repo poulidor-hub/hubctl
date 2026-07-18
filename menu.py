@@ -635,6 +635,10 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                         choices.append(f"  ⏸  {a.name}  (en atelier — prod stoppée)")
                     else:
                         choices.append(f"  [→] {a.name}  → mettre en atelier")
+                # Multi-sélection (si au moins une app prod n'est pas déjà en atelier)
+                multi_candidates = [a for a in apps_prod if a.name not in ws_bases]
+                if multi_candidates:
+                    choices.append("  [→→] Multi-sélection (mettre plusieurs apps en atelier)")
             if not apps_prod and not apps_ws:
                 choices.append("Aucune app trouvée.")
             choices.append("ℹ Copie DB (avancé) : hubctl ship <slug> --copy-db")
@@ -646,7 +650,44 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                     return
                 continue
 
-            if sel.startswith("  [→]"):
+            if sel.startswith("  [→→]"):
+                # Construire la liste des apps sélectionnables (slugs prod hors atelier)
+                multi_choices = [f"  {a.name}" for a in multi_candidates]
+                selected = widgets.multiselect(
+                    canvas,
+                    "Apps à mettre en atelier :",
+                    multi_choices,
+                )
+                if selected is widgets.ESC or selected is None or not selected:
+                    continue
+                # Extraire les slugs (retirer le préfixe "  ")
+                picked_slugs = [s.strip() for s in selected]
+                # Calculer le groupe cohérent (union des resolve_group)
+                graph = dependencies.build_graph()
+                full_group: set[str] = set()
+                for s in picked_slugs:
+                    full_group |= dependencies.resolve_group(s, graph)
+                # Filtrer aux apps prod existantes
+                prod_names = {a.name for a in apps_prod}
+                final_slugs = sorted(full_group & prod_names)
+                # S'il y a plus d'apps que prévu (deps transitives), informer
+                extra = sorted(set(final_slugs) - set(picked_slugs))
+                if extra:
+                    msg = (
+                        f"Groupe final ({len(final_slugs)} apps) : {', '.join(final_slugs)}\n"
+                        f"Inclus automatiquement (dépendances) : {', '.join(extra)}\n"
+                        f"Confirmer la mise en atelier ?"
+                    )
+                else:
+                    msg = f"Mettre « {', '.join(final_slugs)} » en atelier ?"
+                if widgets.confirm(canvas, msg, default=False) is True:
+                    for s in final_slugs:
+                        _run_action(
+                            canvas, f"Atelier → {s}",
+                            actions.action_workshop_create, _ACTION_CONSOLE, s, dry_run=dry_run,
+                        )
+                    return
+            elif sel.startswith("  [→]"):
                 app_name = sel.split()[1]
                 # Calculer le groupe cohérent (app + deps transitives)
                 graph = dependencies.build_graph()

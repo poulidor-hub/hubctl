@@ -389,3 +389,61 @@ def test_workshop_arrow_no_deps_no_suggestion(monkeypatch):
     assert created == ["alone"]
     # Un seul appel à select (pas de menu de suggestion)
     assert len(select_calls) == 1
+
+
+def test_workshop_multiselect_option_present(monkeypatch):
+    """Le menu workshop contient une entrée [→→] Multi-sélection."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        menu.hub_state, "get_apps",
+        lambda: [AppInfo("alpha", Path("."), "1", False, 0)],
+    )
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+
+    captured = []
+    def fake_select(c, m, choices, **kw):
+        captured.append(list(choices))
+        return menu.widgets.ESC
+    monkeypatch.setattr(menu.widgets, "select", fake_select)
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    flat = [c for choices in captured for c in choices]
+    assert any("[→→]" in c and "Multi-sélection" in c for c in flat)
+
+
+def test_workshop_multiselect_dispatches_to_multiselect_widget(monkeypatch):
+    """Choisir [→→] invoque widgets.multiselect, puis action_workshop_create pour chaque sélection."""
+    from hubctl_cli.hub_state import AppInfo
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        menu.hub_state, "get_apps",
+        lambda: [AppInfo("alpha", Path("."), "1", False, 0),
+                 AppInfo("beta", Path("."), "1", False, 0)],
+    )
+    monkeypatch.setattr(menu.hub_state, "get_workshop_apps", lambda: [])
+    monkeypatch.setattr(menu.dependencies, "build_graph",
+                        lambda: {"alpha": [], "beta": []})
+
+    # select initial → [→→] ; multiselect → ["alpha", "beta"] ; confirm → True
+    select_returns = iter(["  [→→] Multi-sélection (mettre plusieurs apps en atelier)"])
+    monkeypatch.setattr(menu.widgets, "select",
+                        lambda c, m, choices, **kw: next(select_returns))
+    monkeypatch.setattr(menu.widgets, "multiselect",
+                        lambda c, m, choices, **kw: ["  alpha", "  beta"])
+    monkeypatch.setattr(menu.widgets, "confirm", lambda c, m, **kw: True)
+    monkeypatch.setattr(menu, "pause", lambda c: None)
+
+    created = []
+    monkeypatch.setattr(
+        menu.actions,
+        "action_workshop_create",
+        lambda con, slug, *, dry_run=False: created.append(slug),
+    )
+
+    menu._workshop_menu(_fake_canvas(), dry_run=True)
+
+    assert sorted(created) == ["alpha", "beta"]
