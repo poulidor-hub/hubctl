@@ -786,12 +786,23 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                 else:
                     msg = f"Mettre « {', '.join(final_slugs)} » en atelier ?"
                 if widgets.confirm(canvas, msg, default=False) is True:
+                    ok = True
                     for s in final_slugs:
-                        _run_action(
+                        success = _run_action(
                             canvas, f"Atelier → {s}",
                             actions.action_workshop_create, _ACTION_CONSOLE, s, dry_run=dry_run,
                         )
-                    return
+                        if success:
+                            ws_dir = hub_state.WORKSHOP_DIR / f"{s}-ws"
+                            if not ws_dir.exists() and not dry_run:
+                                canvas.render(Text(
+                                    f"✗ L'atelier {s}-ws n'a pas été créé — vérifiez les erreurs.",
+                                    style="red",
+                                ))
+                                pause(canvas)
+                                ok = False
+                    if ok:
+                        return
             elif sel_plain.startswith("  [→+]"):
                 add_choices = [
                     Text.assemble(("  ", ""), (a.name, "bold cyan"))
@@ -807,11 +818,19 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                 app_name = picked.strip()
                 msg = f"Ajouter « {app_name} » à l'atelier (sans toucher à l'existant) ?"
                 if widgets.confirm(canvas, msg, default=False) is True:
-                    _run_action(
+                    success = _run_action(
                         canvas, f"Atelier + {app_name}",
                         actions.action_workshop_create, _ACTION_CONSOLE, app_name, dry_run=dry_run,
                     )
-                    return
+                    if success:
+                        ws_dir = hub_state.WORKSHOP_DIR / f"{app_name}-ws"
+                        if ws_dir.exists() or dry_run:
+                            return
+                        canvas.render(Text(
+                            f"✗ L'atelier {app_name}-ws n'a pas été créé — vérifiez les erreurs.",
+                            style="red",
+                        ))
+                        pause(canvas)
             elif sel_plain.startswith("  [→]"):
                 app_name = sel_plain.split()[1]
                 # Calculer le groupe cohérent (app + deps transitives)
@@ -861,12 +880,24 @@ def _workshop_menu(canvas: Canvas, dry_run: bool) -> None:
                         + msg
                     )
                 if widgets.confirm(canvas, msg, default=len(slugs) == 1) is True:
+                    ok = True
                     for s in slugs:
-                        _run_action(
+                        success = _run_action(
                             canvas, f"Atelier → {s}",
                             actions.action_workshop_create, _ACTION_CONSOLE, s, dry_run=dry_run,
                         )
-                    return
+                        if success:
+                            ws_dir = hub_state.WORKSHOP_DIR / f"{s}-ws"
+                            if not ws_dir.exists() and not dry_run:
+                                canvas.render(Text(
+                                    f"✗ L'atelier {s}-ws n'a pas été créé — vérifiez les erreurs ci-dessus.",
+                                    style="red",
+                                ))
+                                pause(canvas)
+                                ok = False
+                    if ok:
+                        return
+                    # Sinon, rester dans le menu pour corriger
             elif sel_plain.startswith("  [←]"):
                 ws_name = sel_plain.split()[1]
                 base = ws_name[:-3] if ws_name.endswith("-ws") else ws_name
