@@ -140,17 +140,34 @@ def _build_welcome(state: dict) -> Text:
                     elif 9 <= pos < 11:
                         chars[r][c] = " "
 
+    # Couleur du header selon le mode
+    is_dev = hub_state.get_mode() == "dev"
+    hub_color = "bold cyan" if is_dev else "bold magenta"
+
     text = Text()
     for row in chars:
         line = "".join(row)
         pad = (width - len(line)) // 2
-        text.append(" " * max(0, pad) + line + "\n", style="bold magenta")
+        text.append(" " * max(0, pad) + line + "\n", style=hub_color)
 
     version = state.get("hub_version", "v?.?")
     cpu = _cpu_pct()
     now = time.strftime("%H:%M UTC", time.gmtime())
-    header = f" HUB MASTER OS {version}  |  UPTIME: {_uptime()}  |  LOAD: {cpu:.2f}  |  {now}"
-    padded = header.ljust(96)
+    mode_badge = (
+        Text(" DEV ", style="reverse bold cyan")
+        if is_dev
+        else Text(" PROD ", style="bold magenta")
+    )
+    header = Text.assemble(
+        " HUB MASTER OS ", (version, ""), "  |  UPTIME: ", (_uptime(), ""),
+        "  |  LOAD: ", (f"{cpu:.2f}", ""), "  |  ", (now, ""),
+        "  ", mode_badge,
+    )
+    padded = Text.assemble(header)
+    # Remplir la fin de ligne jusqu'à 96 caractères
+    plain_len = len(padded.plain)
+    if plain_len < width:
+        padded.append(" " * (width - plain_len), style="bold white")
     text.append(padded, style="bold white")
     return text
 
