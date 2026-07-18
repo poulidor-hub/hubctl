@@ -1259,6 +1259,10 @@ def main_loop(canvas: Canvas, state: dict, vault_mgr, *, dry_run: bool) -> None:
             if selected >= len(item_keys):
                 selected = 0
 
+            # Sécurité : forcer le layout dashboard après retour d'un modal
+            if not canvas._use_layout:
+                canvas._use_layout = True
+
             canvas.render(_build_menu_static(selected))
 
             key = keys.read_key(fd, timeout=0.12)
