@@ -907,7 +907,18 @@ def _offer_init_fresh(canvas: Canvas, *, dry_run: bool) -> None:
 
 @contextlib.contextmanager
 def _modal(canvas: Canvas):
-    yield
+    """Passe le canvas en mode plein écran (layout dashboard désactivé).
+
+    Tous les menus modaux (workshop, select, confirm, etc.) prennent
+    ainsi la totalité de l'écran au lieu d'être coincés dans la
+    colonne de droite du dashboard. Le layout est restauré à la sortie.
+    """
+    old_layout = canvas._use_layout
+    canvas._use_layout = False
+    try:
+        yield
+    finally:
+        canvas._use_layout = old_layout
 
 
 # ── Unit action executors (reusable by dispatch + scenarios) ──
