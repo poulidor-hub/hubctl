@@ -649,6 +649,146 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout
     )
 
 
+def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> bool:
+    """Build + up + health check. Retourne True si l'app est saine.
+
+    Étapes :
+    1. make build (docker compose build, avec cache) — timeout 600s
+    2. make up (docker compose up -d) — timeout 120s
+    3. Health check — timeout 60s
+
+    On ne peut pas faire seulement 'make up' car certains Makefiles n'ont
+    pas --build dans la cible up (template canonique). On ne fait pas non
+    plus 'make up --build' car la cible up peut avoir des pré-traitements
+    (sync-env, SSL) qui ne s'appliquent pas au build.
+    """
+    con = console or _console
+    app_name = dest.name
+
+    if dry_run:
+        con.print(f"[dim](dry-run) make -C {dest} build + up[/dim]")
+        return True
+
+    con.print(f"[cyan]🔨 Build de {app_name}...[/cyan]")
+    rc = app_make(app_name, "build", dry_run=False, console=con, timeout=600)
+    if rc != 0:
+        con.print("[red]✗ Échec du build.[/red]")
+        return False
+
+    con.print(f"[cyan]🚀 Démarrage de {app_name}...[/cyan]")
+    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=120)
+    if rc != 0:
+        con.print("[red]✗ Échec du démarrage.[/red]")
+        return False
+
+    con.print("[cyan]💚 Health check...[/cyan]")
+    ok = _health_check(app_name, console=con, timeout=60)
+    if not ok:
+        con.print("[yellow]⚠ L'app n'a pas passé le health check.[/yellow]")
+        con.print("[dim]Logs récents :[/dim]")
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "logs", "api", "--tail", "20"],
+                capture_output=True, text=True, timeout=10, cwd=str(dest),
+            )
+            con.print(f"[dim]{result.stdout[-500:]}[/dim]")
+        except Exception:
+            pass
+        con.print(f"[yellow]L'app est clonée dans {dest} — corrige le .env et relance 'make up'.[/yellow]")
+        return False
+
+    return True
+
+
+def _get_vault():
+    """Récupère le coffre du parc (lazy import pour éviter les dépendances circulaires)."""
+    from hubctl_cli.coffre import Vault
+    vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
+    return Vault(vault_path)
+
+
+def _sync_app_coffre(console, name, *, dry_run: bool = False) -> None:
+    """Pousse le .env de l'app vers le coffre chiffré. Non-bloquant."""
+    con = console or _console
+    if dry_run:
+        con.print(f"[dim](dry-run) Sync coffre : {name}[/dim]")
+        return
+    try:
+        from hubctl_cli.vault_manager import VaultManager
+        vault = _get_vault()
+        # Le vault peut être verrouillé — on ne force pas le déverrouillage
+        if vault.is_locked:
+            con.print(f"[yellow]⚠ Coffre verrouillé — secrets de {name} non sauvegardés. Sync manuelle via le menu Coffre.[/yellow]")
+            return
+        mgr = VaultManager(vault)
+        mgr.backup_all()
+        con.print(f"[green]✓ Secrets de {name} sauvegardés dans le coffre[/green]")
+    except Exception as e:
+        con.print(f"[yellow]⚠ Sync coffre échoué ({e}) — l'app est démarrée, le coffre peut être sync plus tard.[/yellow]")
+
+
+def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tuple[bool, str]:
+    """Déploie ou met à jour UNE app. Retourne (ok, detail). Ne lève jamais.
+
+    CAS A : dossier absent → clone + detect + write_env + build_start + sync coffre
+    CAS B : dossier sans .env → pull + detect + write_env + build_start + sync coffre
+    CAS C : dossier avec .env → pull + build + up + health (.env PRÉSERVÉ)
+    """
+    con = console or _console
+    dest = hub_state.active_apps_dir() / slug
+
+    # Mode dry-run : simulation pure, aucune sous-fonction exécutée
+    if dry_run:
+        if not dest.exists():
+            con.print(f"[dim](dry-run) clone {url} → init → build → up[/dim]")
+            return (True, "(simulé) serait déployée")
+        if not (dest / ".env").exists():
+            con.print(f"[dim](dry-run) pull → init → build → up : {slug}[/dim]")
+            return (True, "(simulé) serait initialisée")
+        con.print(f"[dim](dry-run) pull → build → up : {slug} (.env préservé)[/dim]")
+        return (True, "(simulé) serait mise à jour")
+
+    has_env = (dest / ".env").exists()
+    try:
+        if not dest.exists():
+            # ── CAS A : nouvelle app ──
+            if not disk_guard(con):
+                return (False, "espace disque insuffisant")
+            if not _clone_app(con, url, dest, dry_run=False):
+                return (False, "clone failed")
+            if not _validate_app_structure(con, dest, dry_run=False):
+                return (False, "structure template invalide")
+            config = _detect_app_config(slug)
+            _write_app_env(con, dest, config, dry_run=False)
+            if not _build_and_start_app(con, dest, config, dry_run=False):
+                return (False, "build/start failed")
+            _sync_app_coffre(con, slug, dry_run=False)
+            return (True, f"déployée (ports {config['api_port']}/{config['frontend_port']})")
+
+        if not has_env:
+            # ── CAS B : clonée, jamais initialisée ──
+            utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
+            config = _detect_app_config(slug)
+            _write_app_env(con, dest, config, dry_run=False)
+            if not _build_and_start_app(con, dest, config, dry_run=False):
+                return (False, "build/start failed")
+            _sync_app_coffre(con, slug, dry_run=False)
+            return (True, f"initialisée (ports {config['api_port']}/{config['frontend_port']})")
+
+        # ── CAS C : déjà déployée (convergence) — .env PRÉSERVÉ ──
+        utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
+        if app_make(slug, "build", dry_run=False, console=con, timeout=600) != 0:
+            return (False, "build failed")
+        if app_make(slug, "up", dry_run=False, console=con, timeout=120) != 0:
+            return (False, "up failed")
+        if not _health_check(slug, console=con, timeout=60):
+            return (False, "health check failed")
+        return (True, "mise à jour")
+
+    except Exception as e:
+        return (False, f"erreur : {e}")
+
+
 def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
     secrets_dir = hub_state.HUB_DIR / "secrets"
     priv = secrets_dir / "jwt_private_key.pem"

@@ -44,6 +44,29 @@ def test_disk_guard_ok_when_plenty():
 
 
 
+def test_repo_name_from_url():
+    assert actions.repo_name_from_url("git@github.com:Poutchouli/exemple-app-2.git") == "exemple-app-2"
+    assert actions.repo_name_from_url("https://github.com/Poutchouli/exemple-app-2.git") == "exemple-app-2"
+    assert actions.repo_name_from_url("git@github.com:Org/my-app") == "my-app"
+    assert actions.repo_name_from_url("") is None
+    assert actions.repo_name_from_url("nom avec espaces/") is None
+
+
+def test_menu_tree_contains_all_actions(monkeypatch):
+    from hubctl_cli import menu, hub_state
+    monkeypatch.setattr(hub_state, "_mode", "dev")
+    all_labels = []
+    for ctx_name, ctx in menu.MENU_TREE.items():
+        for _digit, (label, _target) in ctx.items():
+            all_labels.append(label.lower())
+    for builder in (menu._build_main_menu, menu._build_config_menu):
+        for _digit, (label, _target) in builder().items():
+            all_labels.append(label.lower())
+    joined = " ".join(all_labels)
+    for kw in ["apps", "hub", "configuration", "quitter", "update", "ajouter", "supprimer",
+                "logs", "start", "stop", "coffre", "setup", "réseau", "admin", "workshop",
+                "scénarios", "passer en"]:
+        assert kw in joined
 
 
 def _menu_canvas():
@@ -932,3 +955,90 @@ def test_load_seed_file_invalid_url(tmp_path):
     p.write_text(_yaml.dump({"apps": ["pas-une-url"]}))
     with pytest.raises(ValueError, match="invalide"):
         actions._load_seed_file(Path(p))
+
+
+# ── _seed_one_app ──
+def test_seed_one_app_case_a_new(tmp_path, monkeypatch):
+    """CAS A : dossier absent → clone + init + build + sync."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    console = mock.Mock()
+    fake_config = {"api_port": 9100, "frontend_port": 4300}
+    with mock.patch.object(actions, "_clone_app", return_value=True) as cl, \
+         mock.patch.object(actions, "_validate_app_structure", return_value=True), \
+         mock.patch.object(actions, "_detect_app_config", return_value=fake_config), \
+         mock.patch.object(actions, "_write_app_env") as we, \
+         mock.patch.object(actions, "_build_and_start_app", return_value=True) as bs, \
+         mock.patch.object(actions, "_sync_app_coffre") as sc, \
+         mock.patch.object(actions, "disk_guard", return_value=True):
+        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
+    assert ok is True
+    cl.assert_called_once()
+    we.assert_called_once()    # .env généré
+    bs.assert_called_once()
+    sc.assert_called_once()    # coffre syncé
+
+
+def test_seed_one_app_case_b_cloned_no_env(tmp_path, monkeypatch):
+    """CAS B : dossier présent SANS .env → pull + init + build + sync."""
+    apps_dir = tmp_path / "APPS"
+    app = apps_dir / "bar"
+    app.mkdir(parents=True)
+    # pas de .env
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    console = mock.Mock()
+    fake_config = {"api_port": 9101, "frontend_port": 4301}
+    with mock.patch.object(actions.utils, "run_shell", return_value=0), \
+         mock.patch.object(actions, "_detect_app_config", return_value=fake_config), \
+         mock.patch.object(actions, "_write_app_env") as we, \
+         mock.patch.object(actions, "_build_and_start_app", return_value=True), \
+         mock.patch.object(actions, "_sync_app_coffre"):
+        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
+    assert ok is True
+    we.assert_called_once()    # .env généré (cas B)
+
+
+def test_seed_one_app_case_c_preserves_env(tmp_path, monkeypatch):
+    """CAS C : dossier présent AVEC .env → pull + build + up, .env NON régégénéré."""
+    apps_dir = tmp_path / "APPS"
+    app = apps_dir / "bar"
+    app.mkdir(parents=True)
+    (app / ".env").write_text("API_PORT=9999\n")  # .env présent
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs, \
+         mock.patch.object(actions, "_write_app_env") as we, \
+         mock.patch.object(actions, "app_make", return_value=0) as am, \
+         mock.patch.object(actions, "_health_check", return_value=True):
+        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
+    assert ok is True
+    we.assert_not_called()     # .env PRÉSERVÉ (point clé du CAS C)
+    assert am.call_count == 2  # build + up
+
+
+def test_seed_one_app_clone_failure(tmp_path, monkeypatch):
+    """Échec clone → (False, raison), pas d'exception."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    console = mock.Mock()
+    with mock.patch.object(actions, "_clone_app", return_value=False), \
+         mock.patch.object(actions, "disk_guard", return_value=True):
+        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
+    assert ok is False
+    assert "clone" in detail.lower()
+
+
+def test_seed_one_app_dry_run(tmp_path, monkeypatch):
+    """Dry-run : aucune sous-fonction exécutée, retour (True, simulé)."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    console = mock.Mock()
+    with mock.patch.object(actions, "_clone_app") as cl, \
+         mock.patch.object(actions, "_detect_app_config") as dc:
+        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar", dry_run=True)
+    assert ok is True
+    cl.assert_not_called()
+    dc.assert_not_called()
