@@ -9,7 +9,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all,
-    action_atelier, action_bootstrap, action_vpn,
+    action_atelier, action_bootstrap, action_vpn, action_seed,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -100,6 +100,15 @@ def build_parser() -> argparse.ArgumentParser:
     set_url = app_sub.add_parser("set-url", help="Modifier le git URL d'une app")
     set_url.add_argument("slug")
     set_url.add_argument("url")
+
+    # seed (déploiement batch déclaratif d'apps)
+    seed_parser = sub.add_parser("seed",
+                                 help="Déployer/converger des apps depuis un fichier seed YAML")
+    seed_parser.add_argument("fichier", help="Chemin vers le fichier seed (YAML)")
+    seed_parser.add_argument("--prune", action="store_true",
+                             help="Supprimer les apps présentes mais non listées (confirmation)")
+    seed_parser.add_argument("--dry-run", action="store_true",
+                             help="Simulation : afficher les actions sans les exécuter")
 
     return p
 
@@ -315,6 +324,18 @@ def _run(args) -> int:
 
         except Exception as e:
             print(f"❌ vault a echoue : {e}")
+            return 1
+
+    if args.command == "seed":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        _resolve_mode(args)
+        try:
+            return action_seed(console, args.fichier,
+                               prune=args.prune,
+                               dry_run=global_dry_run or args.dry_run)
+        except Exception as e:
+            print(f"❌ seed a échoué : {e}")
             return 1
 
     # ── TUI (pas de sous-commande ou flags seuls) ──
