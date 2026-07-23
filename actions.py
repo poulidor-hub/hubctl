@@ -611,6 +611,7 @@ def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
         "APP_PORT": api_port,
         "APP_PORT_API": api_port,
         "FRONTEND_PORT": frontend_port,
+        "FRONTEND_HTTPS_PORT": str(config["frontend_port"] + 1),
         # Host — toutes les variantes connues
         "APP_HOST": config["host_ip"],
         "SERVER_IP": config["host_ip"],
