@@ -823,6 +823,71 @@ def _seed_prune(console, listed_slugs: set[str], vault, *, dry_run: bool = False
     return count
 
 
+def _seed_report(console, results: list[tuple[str, bool, str]]) -> None:
+    """Affiche le tableau de synthèse final."""
+    con = console or _console
+    from rich.table import Table
+    t = Table(title="Résultat du seed")
+    t.add_column("App", style="bold")
+    t.add_column("Résultat", style="bold")
+    t.add_column("Détail")
+    for slug, ok, detail in results:
+        icon = "✓" if ok else "✗"
+        style = "green" if ok else "red"
+        t.add_row(slug, f"[{style}]{icon}[/{style}]", detail)
+    con.print()
+    con.print(t)
+    ok_count = sum(1 for _, ok, _ in results if ok)
+    con.print(f"[bold]{ok_count}/{len(results)} app(s) réussies[/bold]")
+
+
+def action_seed(console, seed_file: str, *, prune: bool = False, dry_run: bool = False) -> int:
+    """Déploie/converge les apps listées dans un fichier seed YAML.
+
+    Retourne 0 si toutes les apps ont réussi, 1 si au moins un échec.
+    """
+    con = console or _console
+
+    # 1. Précheck hub (skippé en dry-run)
+    if not dry_run:
+        con.print("[cyan]♢ Précheck : le hub doit être sain…[/cyan]")
+        if not _health_check("hub", console=con, timeout=30):
+            con.print("[red]✗ Hub non disponible. Lancez `hubctl start` d'abord.[/red]")
+            return 1
+
+    # 2. Lecture du fichier seed
+    from pathlib import Path
+    try:
+        entries = _load_seed_file(Path(seed_file))
+    except (FileNotFoundError, ValueError) as e:
+        con.print(f"[red]✗ {e}[/red]")
+        return 1
+    if not entries:
+        con.print("[dim]Aucune app à déployer.[/dim]")
+        return 0
+
+    con.print(f"[bold]Seed : {len(entries)} app(s) à traiter[/bold]")
+
+    # 3. Déploiement (best-effort)
+    results: list[tuple[str, bool, str]] = []
+    for url, slug in entries:
+        con.print()
+        con.print(f"[bold cyan]▸ {slug}[/bold cyan]")
+        ok, detail = _seed_one_app(con, url, slug, dry_run=dry_run)
+        results.append((slug, ok, detail))
+
+    # 4. Prune (optionnel)
+    if prune:
+        con.print()
+        listed = {slug for _, slug in entries}
+        vault = _get_vault()
+        _seed_prune(con, listed, vault, dry_run=dry_run)
+
+    # 5. Rapport final + code de sortie
+    _seed_report(con, results)
+    return 0 if all(ok for _, ok, _ in results) else 1
+
+
 def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
     secrets_dir = hub_state.HUB_DIR / "secrets"
     priv = secrets_dir / "jwt_private_key.pem"

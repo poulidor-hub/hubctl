@@ -1083,3 +1083,81 @@ def test_seed_prune_refused(monkeypatch):
         n = actions._seed_prune(console, {"exemple-app"}, vault=None, dry_run=True)
     assert n == 0
     rm.assert_not_called()
+
+
+# ── action_seed ──
+def _seed_yaml(tmp_path, apps_list):
+    from pathlib import Path
+    import yaml
+    p = tmp_path / "seed.yaml"
+    p.write_text(yaml.dump({"apps": apps_list}))
+    return p
+
+
+def test_action_seed_hub_down_aborts(tmp_path, monkeypatch):
+    """Précheck hub KO → abort immédiat, code 1, aucune app déployée."""
+    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/bar.git"])
+    console = mock.Mock()
+    with mock.patch.object(actions, "_health_check", return_value=False) as hc, \
+         mock.patch.object(actions, "_seed_one_app") as soa:
+        rc = actions.action_seed(console, str(seed), dry_run=False)
+    assert rc == 1
+    soa.assert_not_called()
+
+
+def test_action_seed_best_effort_continues(tmp_path, monkeypatch):
+    """Une app en échec ne stoppe pas les autres. Code de sortie = 1."""
+    seed = _seed_yaml(tmp_path, [
+        "git@github.com:Foo/ok.git",
+        "git@github.com:Foo/bad.git",
+        "git@github.com:Foo/ok2.git",
+    ])
+    console = mock.Mock()
+
+    def fake_one(c, url, slug, *, dry_run=False):
+        return (True, "ok") if "bad" not in slug else (False, "build failed")
+
+    with mock.patch.object(actions, "_health_check", return_value=True), \
+         mock.patch.object(actions, "_seed_one_app", side_effect=fake_one):
+        rc = actions.action_seed(console, str(seed), dry_run=False)
+    assert rc == 1  # au moins un échec
+
+
+def test_action_seed_all_ok_returns_zero(tmp_path, monkeypatch):
+    """Toutes les apps réussissent → code 0."""
+    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/a.git", "git@github.com:Foo/b.git"])
+    console = mock.Mock()
+    with mock.patch.object(actions, "_health_check", return_value=True), \
+         mock.patch.object(actions, "_seed_one_app", return_value=(True, "ok")):
+        rc = actions.action_seed(console, str(seed), dry_run=False)
+    assert rc == 0
+
+
+def test_action_seed_dry_run_skips_health(tmp_path, monkeypatch):
+    """Dry-run : pas de précheck hub réel."""
+    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/a.git"])
+    console = mock.Mock()
+    with mock.patch.object(actions, "_health_check") as hc, \
+         mock.patch.object(actions, "_seed_one_app", return_value=(True, "simulé")):
+        rc = actions.action_seed(console, str(seed), dry_run=True)
+    assert rc == 0
+    hc.assert_not_called()  # précheck skippé en dry-run
+
+
+def test_action_seed_prune_called(tmp_path, monkeypatch):
+    """Flag --prune → _seed_prune est appelé."""
+    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/a.git"])
+    console = mock.Mock()
+    with mock.patch.object(actions, "_health_check", return_value=True), \
+         mock.patch.object(actions, "_seed_one_app", return_value=(True, "ok")), \
+         mock.patch.object(actions, "_seed_prune", return_value=0) as sp, \
+         mock.patch.object(actions, "_get_vault", return_value=mock.Mock()):
+        actions.action_seed(console, str(seed), prune=True, dry_run=False)
+    sp.assert_called_once()
+
+
+def test_action_seed_missing_file(tmp_path):
+    """Fichier inexistant → code 1, message d'erreur."""
+    console = mock.Mock()
+    rc = actions.action_seed(console, str(tmp_path / "nexiste.yaml"), dry_run=False)
+    assert rc == 1
