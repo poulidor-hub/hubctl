@@ -929,11 +929,10 @@ def test_load_seed_file_no_apps_key(tmp_path):
 
 def test_load_seed_file_empty_apps(tmp_path):
     from pathlib import Path
-    import pytest
     p = tmp_path / "seed.yaml"
     p.write_text(_yaml.dump({"apps": []}))
-    with pytest.raises(ValueError, match="apps"):
-        actions._load_seed_file(Path(p))
+    result = actions._load_seed_file(Path(p))
+    assert result == []
 
 
 def test_load_seed_file_duplicate_slug(tmp_path):
@@ -1042,6 +1041,23 @@ def test_seed_one_app_dry_run(tmp_path, monkeypatch):
     assert ok is True
     cl.assert_not_called()
     dc.assert_not_called()
+
+
+def test_seed_one_app_git_pull_fails(tmp_path, monkeypatch):
+    """CAS C : git pull en échec (rc=1) → (False, 'git pull failed'), app_make NON appelé."""
+    apps_dir = tmp_path / "APPS"
+    app = apps_dir / "bar"
+    app.mkdir(parents=True)
+    (app / ".env").write_text("API_PORT=9999\n")  # CAS C (.env présent)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell", return_value=1), \
+         mock.patch.object(actions, "app_make") as am, \
+         mock.patch.object(actions, "_health_check"):
+        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
+    assert ok is False
+    assert detail == "git pull failed"
+    am.assert_not_called()
 
 
 # ── _seed_prune ──
@@ -1159,5 +1175,16 @@ def test_action_seed_prune_called(tmp_path, monkeypatch):
 def test_action_seed_missing_file(tmp_path):
     """Fichier inexistant → code 1, message d'erreur."""
     console = mock.Mock()
-    rc = actions.action_seed(console, str(tmp_path / "nexiste.yaml"), dry_run=False)
+    rc = actions.action_seed(console, str(tmp_path / "nexiste.yaml"), dry_run=True)
     assert rc == 1
+
+
+def test_action_seed_empty_apps_returns_zero(tmp_path, monkeypatch):
+    """apps: [] → 'Aucune app à déployer', code 0."""
+    seed = _seed_yaml(tmp_path, [])
+    console = mock.Mock()
+    with mock.patch.object(actions, "_health_check", return_value=True), \
+         mock.patch.object(actions, "_seed_one_app") as soa:
+        rc = actions.action_seed(console, str(seed), dry_run=False)
+    assert rc == 0
+    soa.assert_not_called()

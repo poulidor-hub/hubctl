@@ -392,9 +392,12 @@ def _load_seed_file(path) -> list[tuple[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"Fichier seed introuvable : {path}")
     data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        raise ValueError("Le fichier seed doit être un dictionnaire YAML avec une clé 'apps'.")
     apps = data.get("apps")
-    if not isinstance(apps, list) or not apps:
+    if not isinstance(apps, list):
         raise ValueError("Aucune entrée 'apps' (liste non vide) dans le fichier seed.")
+    # empty list is valid → return [] (nothing to deploy)
     result: list[tuple[str, str]] = []
     seen_slugs: set[str] = set()
     for entry in apps:
@@ -767,7 +770,9 @@ def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tup
 
         if not has_env:
             # ── CAS B : clonée, jamais initialisée ──
-            utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
+            rc = utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
+            if rc != 0:
+                return (False, "git pull failed")
             config = _detect_app_config(slug)
             _write_app_env(con, dest, config, dry_run=False)
             if not _build_and_start_app(con, dest, config, dry_run=False):
@@ -776,7 +781,9 @@ def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tup
             return (True, f"initialisée (ports {config['api_port']}/{config['frontend_port']})")
 
         # ── CAS C : déjà déployée (convergence) — .env PRÉSERVÉ ──
-        utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
+        rc = utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
+        if rc != 0:
+            return (False, "git pull failed")
         if app_make(slug, "build", dry_run=False, console=con, timeout=600) != 0:
             return (False, "build failed")
         if app_make(slug, "up", dry_run=False, console=con, timeout=120) != 0:
