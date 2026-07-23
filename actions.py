@@ -358,6 +358,282 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     return 0
 
 
+APP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_console = Console()
+
+
+def valid_app_name(name: str) -> bool:
+    return bool(APP_NAME_RE.match(name))
+
+
+def repo_name_from_url(url: str) -> str | None:
+    """Déduit le nom du dépôt depuis une URL git (ssh ou https)."""
+    u = (url or "").strip().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    if not u:
+        return None
+    name = re.split(r"[/:]", u)[-1]
+    if not name or name.startswith(".") or not _REPO_NAME_RE.match(name):
+        return None
+    return name
+
+
+def _load_seed_file(path) -> list[tuple[str, str]]:
+    """Parse un fichier seed YAML. Retourne [(url, slug), ...].
+
+    Lève FileNotFoundError si le fichier n'existe pas.
+    Lève ValueError si le contenu est invalide (pas de clé apps, URL invalide, slug dupliqué).
+    """
+    import yaml
+    from pathlib import Path
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Fichier seed introuvable : {path}")
+    data = yaml.safe_load(path.read_text()) or {}
+    apps = data.get("apps")
+    if not isinstance(apps, list) or not apps:
+        raise ValueError("Aucune entrée 'apps' (liste non vide) dans le fichier seed.")
+    result: list[tuple[str, str]] = []
+    seen_slugs: set[str] = set()
+    for entry in apps:
+        url = entry.strip() if isinstance(entry, str) else ""
+        if not url or ("/" not in url and ":" not in url):
+            raise ValueError(f"URL git invalide : {url}")
+        name = repo_name_from_url(url)
+        if not name:
+            raise ValueError(f"URL git invalide : {url}")
+        slug = name.lower().replace("_", "-")
+        if not valid_app_name(slug):
+            raise ValueError(f"Slug invalide dérivé de {url} : {slug}")
+        if slug in seen_slugs:
+            raise ValueError(f"Slug dupliqué : {slug} (deux URLs → même slug)")
+        seen_slugs.add(slug)
+        result.append((url, slug))
+    return result
+
+
+def _clone_app(console, url, dest, *, dry_run: bool = False) -> bool:
+    """Clone un dépôt git vers dest. Retourne True si succès."""
+    con = console or _console
+    if dest.exists():
+        con.print(f"[red]✗ L'app existe déjà : {dest}[/red]")
+        return False
+    con.print(f"[cyan]→ Clonage de {url}...[/cyan]")
+    rc = utils.run_shell(["git", "clone", url, str(dest)], dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print(f"[red]✗ Échec du clone : {url}[/red]")
+        return False
+    return True
+
+
+def _validate_app_structure(console, dest, *, dry_run: bool = False) -> bool:
+    """Vérifie la structure template POULIDOR. Supprime dest si invalide."""
+    con = console or _console
+    required = ["docker-compose.yml", "Makefile", ".env.example"]
+    missing = [f for f in required if not (dest / f).exists()]
+    if missing:
+        con.print(f"[red]✗ Cette app ne suit pas le template POULIDOR.[/red]")
+        con.print(f"[red]  Fichiers manquants : {', '.join(missing)}[/red]")
+        if not dry_run:
+            shutil.rmtree(dest, ignore_errors=True)
+            con.print("[dim]Dossier cloné supprimé.[/dim]")
+        return False
+    con.print("[green]✓ Structure template valide[/green]")
+    return True
+
+
+def _read_hub_env_value_at(env_path: Path, key: str, default: str = "") -> str:
+    """Lit une valeur KEY=VALUE depuis un fichier .env dont le chemin est explicite."""
+    try:
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return default
+
+
+def _find_free_port(start: int, end: int, used: set[int] | None = None) -> int | None:
+    """Trouve le premier port libre dans [start, end] via ss."""
+    used = used or set()
+    # Ports déjà occupés sur le système
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnH"], capture_output=True, text=True, timeout=5,
+        )
+        system_used: set[int] = set()
+        for line in result.stdout.splitlines():
+            # Format réel ss : LISTEN 0 128 *:9000 *:*
+            parts = line.split()
+            for p in parts:
+                if p.startswith("*:") or p.startswith("0.0.0.0:") or p.startswith("127.0.0.1:") or p.startswith("[::]:"):
+                    try:
+                        port = int(p.rsplit(":", 1)[1])
+                        system_used.add(port)
+                    except (ValueError, IndexError):
+                        pass
+            # Format simplifié (mocks / sortie brute) : une ligne = un port
+            stripped = line.strip()
+            if stripped.isdigit():
+                try:
+                    port = int(stripped)
+                    if 1 <= port <= 65535:
+                        system_used.add(port)
+                except ValueError:
+                    pass
+        used |= system_used
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    for port in range(start, end + 1):
+        if port not in used:
+            return port
+    return None
+
+
+def _detect_app_config(name: str) -> dict:
+    """Auto-détecte slug, ports libres, secrets, Hub URL."""
+    import secrets as _secrets
+    import string as _string
+    from cryptography.fernet import Fernet as _Fernet
+
+    # Slug : minuscules + underscores convertis en tirets.
+    # Le Hub exige ^[a-z0-9-]+$ (pas d'underscores), mais les noms de repos
+    # peuvent en contenir (ex: exemple-app-2 → exemple-app).
+    slug = name.lower().replace("_", "-")
+    if not valid_app_name(slug):
+        raise ValueError(f"Nom d'app invalide (doit matcher ^[a-z][a-z0-9_-]*$) : {slug}")
+
+    # Lire les plages de ports depuis HUB_base/.env
+    api_start = int(_read_hub_env_value("APP_PORT_API_START", "9000"))
+    api_end = int(_read_hub_env_value("APP_PORT_API_END", "9499"))
+    fe_start = int(_read_hub_env_value("APP_PORT_FRONTEND_START", "4200"))
+    fe_end = int(_read_hub_env_value("APP_PORT_FRONTEND_END", "4699"))
+
+    # Ports déjà utilisés par les apps existantes
+    used_ports: set[int] = set()
+    try:
+        for app in hub_state.get_active_apps():
+            app_env = hub_state.active_apps_dir() / app.name / ".env"
+            if app_env.exists():
+                for key in ("APP_PORT", "APP_PORT_API", "FRONTEND_PORT", "API_PORT"):
+                    val = _read_hub_env_value_at(app_env, key)
+                    if val:
+                        try:
+                            used_ports.add(int(val))
+                        except ValueError:
+                            pass
+    except Exception:
+        pass
+
+    api_port = _find_free_port(api_start, api_end, used_ports)
+    if api_port is None:
+        raise RuntimeError(f"Aucun port API libre dans la plage {api_start}-{api_end}")
+    used_ports.add(api_port)
+
+    frontend_port = _find_free_port(fe_start, fe_end, used_ports)
+    if frontend_port is None:
+        raise RuntimeError(f"Aucun port frontend libre dans la plage {fe_start}-{fe_end}")
+
+    # Secrets
+    alphabet = _string.ascii_letters + _string.digits
+    pg_password = "".join(_secrets.choice(alphabet) for _ in range(16))
+    fernet_key = _Fernet.generate_key().decode()
+
+    # Hub
+    hub_host = _read_hub_env_value("HUB_HOST", "localhost")
+    hub_api_port = _read_hub_env_value("HUB_API_PORT", "8000")
+    host_ip = _detect_host_ip()
+
+    return {
+        "slug": slug,
+        "api_port": api_port,
+        "frontend_port": frontend_port,
+        "postgres_password": pg_password,
+        "fernet_key": fernet_key,
+        "hub_host": hub_host,
+        "hub_url": f"http://{hub_host}:{hub_api_port}",
+        "host_ip": host_ip,
+    }
+
+
+def _show_and_confirm_config(console, config, dest) -> bool:
+    """Affiche un tableau Rich et demande validation."""
+    con = console or _console
+    t = Table(title="Nouvelle application détectée")
+    t.add_column("Paramètre", style="bold cyan")
+    t.add_column("Valeur")
+    t.add_row("Slug", config["slug"])
+    t.add_row("Destination", str(dest))
+    t.add_row("Port API", str(config["api_port"]))
+    t.add_row("Port Frontend", str(config["frontend_port"]))
+    t.add_row("Hub", config["hub_url"])
+    con.print(t)
+    con.print("[dim]Secrets générés : mot de passe DB + clé Fernet (stockés dans .env + coffre)[/dim]")
+    con.print()
+    try:
+        answer = input("  Valider et démarrer ? [O/n] : ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("", "o", "oui", "y", "yes")
+
+
+def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
+    """Génère dest/.env depuis .env.example avec les valeurs détectées."""
+    con = console or _console
+    example = dest / ".env.example"
+    if not example.exists():
+        con.print("[yellow]⚠ .env.example introuvable — .env non généré[/yellow]")
+        return
+    content = example.read_text()
+
+    host_uid = str(os.getuid())
+    api_port = str(config["api_port"])
+    frontend_port = str(config["frontend_port"])
+
+    # Map de substitution : chaque clé = nom de variable dans .env.example.
+    # On couvre toutes les variantes utilisées par les apps réelles du parc :
+    #   - API_PORT (template canonique, exemple-app-2, exemple-app)
+    #   - APP_PORT / APP_PORT_API (variants historiques)
+    #   - APP_HOST (template canonique, exemple-app)
+    #   - SERVER_IP (exemple-app-2)
+    #   - HOST_IP (variant)
+    replacements = {
+        "APP_SLUG": config["slug"],
+        "APP_NAME": config["slug"],
+        # Ports — toutes les variantes connues
+        "API_PORT": api_port,
+        "APP_PORT": api_port,
+        "APP_PORT_API": api_port,
+        "FRONTEND_PORT": frontend_port,
+        # Host — toutes les variantes connues
+        "APP_HOST": config["host_ip"],
+        "SERVER_IP": config["host_ip"],
+        "HOST_IP": config["host_ip"],
+        # Secrets
+        "POSTGRES_PASSWORD": config["postgres_password"],
+        "SECRETS_ENCRYPTION_KEY": config["fernet_key"],
+        # Hub
+        "HUB_URL": config["hub_url"],
+        "HUB_HOST": config["hub_host"],
+        "HOST_UID": host_uid,
+    }
+
+    # Construire DATABASE_URL si présent dans le template
+    db_url = f"postgresql+asyncpg://app_user:{config['postgres_password']}@db:5432/app_db"
+    replacements["DATABASE_URL"] = db_url
+
+    for key, val in replacements.items():
+        content = re.sub(rf"^{key}=.*$", f"{key}={val}", content, flags=re.MULTILINE)
+
+    env_path = dest / ".env"
+    env_path.write_text(content)
+    os.chmod(env_path, 0o600)
+    con.print("[green]✓ .env généré[/green]")
+
+
 def hub_make(target: str, *, dry_run: bool, console=None) -> int:
     return utils.run_shell(
         ["make", "-C", str(hub_state.HUB_DIR), target],

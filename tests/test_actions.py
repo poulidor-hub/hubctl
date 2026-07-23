@@ -861,3 +861,74 @@ def test_sync_db_password_dry_run_no_docker(monkeypatch, tmp_path):
 
 
     # Ne doit pas lever d'exception
+
+
+# ── _load_seed_file ──
+import yaml as _yaml
+
+
+def test_load_seed_file_valid_apps(tmp_path):
+    from pathlib import Path
+    p = tmp_path / "seed.yaml"
+    p.write_text(_yaml.dump({"apps": [
+        "git@github.com:Poutchouli/exemple-app-2.git",
+        "git@github.com:POULIDOR-Audit-Developpement/exemple-app.git",
+    ]}))
+    result = actions._load_seed_file(Path(p))
+    assert result == [
+        ("git@github.com:Poutchouli/exemple-app-2.git", "exemple-app"),
+        ("git@github.com:POULIDOR-Audit-Developpement/exemple-app.git", "exemple-app"),
+    ]
+
+
+def test_load_seed_file_slug_normalization(tmp_path):
+    from pathlib import Path
+    p = tmp_path / "seed.yaml"
+    p.write_text(_yaml.dump({"apps": ["git@github.com:Poutchouli/exemple-app-2.git"]}))
+    result = actions._load_seed_file(Path(p))
+    assert result[0][1] == "exemple-app"  # underscore → tiret, minuscules
+
+
+def test_load_seed_file_missing_file(tmp_path):
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        actions._load_seed_file(tmp_path / "nexiste.yaml")
+
+
+def test_load_seed_file_no_apps_key(tmp_path):
+    from pathlib import Path
+    import pytest
+    p = tmp_path / "seed.yaml"
+    p.write_text(_yaml.dump({"autre": []}))
+    with pytest.raises(ValueError, match="apps"):
+        actions._load_seed_file(Path(p))
+
+
+def test_load_seed_file_empty_apps(tmp_path):
+    from pathlib import Path
+    import pytest
+    p = tmp_path / "seed.yaml"
+    p.write_text(_yaml.dump({"apps": []}))
+    with pytest.raises(ValueError, match="apps"):
+        actions._load_seed_file(Path(p))
+
+
+def test_load_seed_file_duplicate_slug(tmp_path):
+    from pathlib import Path
+    import pytest
+    p = tmp_path / "seed.yaml"
+    p.write_text(_yaml.dump({"apps": [
+        "git@github.com:Poutchouli/exemple-app-2.git",
+        "git@github.com:Someone/exemple-app.git",
+    ]}))
+    with pytest.raises(ValueError, match="dupliqué"):
+        actions._load_seed_file(Path(p))
+
+
+def test_load_seed_file_invalid_url(tmp_path):
+    from pathlib import Path
+    import pytest
+    p = tmp_path / "seed.yaml"
+    p.write_text(_yaml.dump({"apps": ["pas-une-url"]}))
+    with pytest.raises(ValueError, match="invalide"):
+        actions._load_seed_file(Path(p))
