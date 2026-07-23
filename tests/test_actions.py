@@ -1042,3 +1042,44 @@ def test_seed_one_app_dry_run(tmp_path, monkeypatch):
     assert ok is True
     cl.assert_not_called()
     dc.assert_not_called()
+
+
+# ── _seed_prune ──
+def _make_app_info(name):
+    info = mock.Mock()
+    info.name = name
+    return info
+
+
+def test_seed_prune_nothing_to_remove(monkeypatch):
+    """Aucune app non-listée → 0 suppression, pas de prompt."""
+    monkeypatch.setattr(actions.hub_state, "get_active_apps",
+                        lambda: [_make_app_info("exemple-app"), _make_app_info("canari")])
+    console = mock.Mock()
+    n = actions._seed_prune(console, {"exemple-app", "canari"}, vault=None, dry_run=True)
+    assert n == 0
+
+
+def test_seed_prune_confirmed(monkeypatch):
+    """Apps non-listées + confirmation Oui → suppression via action_remove_app."""
+    monkeypatch.setattr(actions.hub_state, "get_active_apps",
+                        lambda: [_make_app_info("exemple-app"), _make_app_info("vikunja"), _make_app_info("old")])
+    monkeypatch.setattr("builtins.input", lambda *a: "o")
+    console = mock.Mock()
+    with mock.patch.object(actions, "action_remove_app") as rm:
+        n = actions._seed_prune(console, {"exemple-app"}, vault=None, dry_run=True)
+    assert n == 2
+    removed = {c.args[1] for c in rm.call_args_list}
+    assert removed == {"vikunja", "old"}
+
+
+def test_seed_prune_refused(monkeypatch):
+    """Confirmation Non → 0 suppression."""
+    monkeypatch.setattr(actions.hub_state, "get_active_apps",
+                        lambda: [_make_app_info("exemple-app"), _make_app_info("vikunja")])
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    console = mock.Mock()
+    with mock.patch.object(actions, "action_remove_app") as rm:
+        n = actions._seed_prune(console, {"exemple-app"}, vault=None, dry_run=True)
+    assert n == 0
+    rm.assert_not_called()

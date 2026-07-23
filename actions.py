@@ -789,6 +789,40 @@ def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tup
         return (False, f"erreur : {e}")
 
 
+def _seed_prune(console, listed_slugs: set[str], vault, *, dry_run: bool = False) -> int:
+    """Supprime les apps présentes dans le dossier actif mais non listées dans le seed.
+
+    Affiche la liste et demande une confirmation globale Oui/Non.
+    Retourne le nombre d'apps supprimées.
+    """
+    con = console or _console
+    present: set[str] = set()
+    try:
+        for app in hub_state.get_active_apps():
+            present.add(app.name)
+    except Exception:
+        pass
+    to_remove = sorted(present - listed_slugs)
+    if not to_remove:
+        con.print("[dim]Rien à supprimer (--prune).[/dim]")
+        return 0
+    con.print("[yellow]Apps à supprimer (non listées dans le seed) :[/yellow]")
+    for name in to_remove:
+        con.print(f"  • {name}")
+    try:
+        answer = input("  Supprimer ces apps ? [o/N] : ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+    if answer not in ("o", "oui", "y", "yes"):
+        con.print("[dim]Prune annulé.[/dim]")
+        return 0
+    count = 0
+    for name in to_remove:
+        action_remove_app(con, name, vault, dry_run=dry_run)
+        count += 1
+    return count
+
+
 def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
     secrets_dir = hub_state.HUB_DIR / "secrets"
     priv = secrets_dir / "jwt_private_key.pem"
