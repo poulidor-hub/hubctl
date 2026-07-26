@@ -8,7 +8,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all,
-    action_atelier, action_bootstrap,
+    action_atelier, action_bootstrap, action_vpn,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -62,7 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("--passphrase-stdin", action="store_true",
                                 help="Lire la passphrase d'archive depuis stdin (CI/DR)")
 
-    # debug
+    # VPN
+    vpn_parser = sub.add_parser("vpn", help="Gestion WireGuard (sync, status, on, off)")
+    vpn_parser.add_argument("action", choices=["sync", "status", "on", "off"], help="Action VPN")
     debug_parser = sub.add_parser("debug", help="Agent de debug Granite/Ollama")
     debug_parser.add_argument("app", nargs="?", default=None, help="Application cible")
     debug_parser.add_argument("--rw", action="store_true", help="Mode semi-auto")
@@ -196,6 +198,16 @@ def _run(args) -> int:
             return 0
         except Exception as e:
             print(f"❌ atelier a echoue : {e}")
+            return 1
+
+    if args.command == "vpn":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        try:
+            action_vpn(console=console, subcmd=args.action, dry_run=global_dry_run)
+            return 0
+        except Exception as e:
+            print(f"❌ vpn a echoue : {e}")
             return 1
 
     # ── TUI (pas de sous-commande ou flags seuls) ──
