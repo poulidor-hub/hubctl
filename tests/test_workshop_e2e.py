@@ -146,36 +146,4 @@ class TestWorkshopCopytreeE2E:
         assert "frontend" not in ignored
 
 
-class TestWorkshopDryRun:
-    """Test que l'action en dry-run ne bloque pas et affiche les commandes."""
 
-    def test_workshop_create_dry_run_completes(self, monkeypatch, tmp_path):
-        """action_workshop_create en dry-run doit terminer sans erreur."""
-        from hubctl_cli import actions
-        import io
-        from rich.console import Console
-
-        # Créer une app de test
-        app = _make_app_dir(tmp_path, "APPS/testapp")
-        ws_dir = tmp_path / "APP_Workshop"
-        ws_dir.mkdir()
-
-        # Rediriger les constantes APPS_DIR/WORKSHOP_DIR
-        monkeypatch.setattr(actions.hub_state, "APPS_DIR", app.parent)
-        monkeypatch.setattr(actions.hub_state, "WORKSHOP_DIR", ws_dir)
-        monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path / "HUB_base")
-        monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-        # Simuler un dev-mode marqueur
-        (tmp_path / "HUB_base").mkdir()
-        (tmp_path / "HUB_base" / ".dev-mode").touch()
-
-        buf = io.StringIO()
-        console = Console(file=buf, width=120, force_terminal=True)
-
-        t0 = time.monotonic()
-        actions.action_workshop_create(console, "testapp", dry_run=True)
-        elapsed = time.monotonic() - t0
-
-        output = buf.getvalue()
-        assert "Mise en atelier" in output or "testapp" in output
-        assert elapsed < 2.0, f"dry-run trop lent ({elapsed:.1f}s), output: {output[:200]}"

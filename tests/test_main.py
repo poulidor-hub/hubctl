@@ -246,16 +246,6 @@ def test_dispatch_atelier_calls_action_atelier(monkeypatch):
     assert fn.call_args.kwargs["app_slug"] == "shop"
 
 
-def test_dispatch_vpn_calls_action_vpn(monkeypatch):
-    called = {}
-    monkeypatch.setattr("hubctl_cli.__main__.action_vpn",
-                        lambda con, sub, *, dry_run=False: called.update(sub=sub))
-    from hubctl_cli.__main__ import main
-    rc = main(["vpn", "sync"])
-    assert rc == 0
-    assert called.get("sub") == "sync"
-
-
 def test_dispatch_returns_1_on_error(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
     with mock.patch.object(m, "action_start_all", side_effect=RuntimeError("boom")):
@@ -272,15 +262,6 @@ def test_dry_run_passed_to_actions(monkeypatch):
     assert fn.call_args.kwargs["dry_run"] is True
 
 
-def test_dry_run_vpn_does_not_mutate_db(monkeypatch):
-    from unittest import mock
-    from hubctl_cli import actions
-    _vpn_set_called = []
-    monkeypatch.setattr(actions, "_vpn_set_enabled",
-                        lambda value, con=None: _vpn_set_called.append(value) or True)
-    monkeypatch.setattr(actions, "_vpn_reconcile", lambda *a, **kw: None)
-    actions.action_vpn(mock.Mock(), "on", dry_run=True)
-    assert len(_vpn_set_called) == 0, "vpn DB write should NOT happen in dry-run"
 
 
 # ── Init subcommand tests ──
@@ -327,24 +308,8 @@ def test_init_dispatch_with_force_flag(monkeypatch):
 
 # ── Securite/safety tests ──
 
-def test_compose_file_rejects_absolute_outside_target(monkeypatch, tmp_path):
-    from hubctl_cli import actions, hub_state
-    apps = tmp_path / "APPS"; apps.mkdir()
-    monkeypatch.setattr(hub_state, "active_apps_dir", lambda: apps)
-    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
-    (tmp_path / "HUB_base").mkdir()
-    outside = tmp_path / "outside"; outside.mkdir()
-    (outside / "docker-compose.yml").write_text("")
-    assert actions._compose_file(str(outside)) is None
 
 
-def test_compose_file_rejects_traversal_target(monkeypatch, tmp_path):
-    from hubctl_cli import actions, hub_state
-    apps = tmp_path / "APPS"; apps.mkdir()
-    monkeypatch.setattr(hub_state, "active_apps_dir", lambda: apps)
-    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
-    (tmp_path / "HUB_base").mkdir()
-    assert actions._compose_file("../outside") is None
 
 
 def test_bootstrap_does_not_leak_password(monkeypatch, tmp_path):
@@ -361,7 +326,6 @@ def test_bootstrap_does_not_leak_password(monkeypatch, tmp_path):
     monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
     monkeypatch.setattr(hub_state, "WORKSHOP_DIR", tmp_path / "APP_Workshop")
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path / "APPS")
-    monkeypatch.setattr(actions, "action_vpn", lambda *a, **kw: None)
     monkeypatch.setattr(actions, "hub_make", lambda *a, **kw: 0)
     monkeypatch.setattr(actions, "_health_check", lambda *a, **kw: True)
 

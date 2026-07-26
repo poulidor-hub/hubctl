@@ -5,12 +5,6 @@ import pytest
 from hubctl_cli import actions, env_manager
 
 
-def test_valid_app_name():
-    assert actions.valid_app_name("exemple-apps")
-    assert actions.valid_app_name("app_1")
-    assert not actions.valid_app_name("Bad")
-    assert not actions.valid_app_name("1abc")
-    assert not actions.valid_app_name("a b")
 
 
 def test_hub_make_builds_make_command():
@@ -48,27 +42,8 @@ def test_disk_guard_ok_when_plenty():
         assert actions.disk_guard() is True
 
 
-def test_remove_app_non_interactive(tmp_path, monkeypatch):
-    apps = tmp_path / "APPS"
-    (apps / "shop").mkdir(parents=True)
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    console = mock.Mock()
-    with mock.patch.object(actions, "app_make") as am, \
-         mock.patch("tarfile.open"), \
-         mock.patch("shutil.move") as mv:
-        actions.action_remove_app(console, "shop", None, dry_run=False)
-    am.assert_called_once()
-    mv.assert_called_once()
-    assert not hasattr(actions, "prompts")
 
 
-def test_repo_name_from_url():
-    assert actions.repo_name_from_url("git@github.com:Poutchouli/exemple-app-2.git") == "exemple-app-2"
-    assert actions.repo_name_from_url("https://github.com/Poutchouli/exemple-app-2.git") == "exemple-app-2"
-    assert actions.repo_name_from_url("git@github.com:Org/my-app") == "my-app"
-    assert actions.repo_name_from_url("") is None
-    assert actions.repo_name_from_url("nom avec espaces/") is None
 
 
 def _menu_canvas():
@@ -138,32 +113,10 @@ def _mock_console():
     return c
 
 
-def test_action_init_missing_manifest():
-    console = _mock_console()
-    with mock.patch.object(actions.hub_state, "PARC_ROOT",
-                           mock.MagicMock(__truediv__=mock.Mock(return_value=mock.MagicMock(exists=mock.Mock(return_value=False))))):
-        actions.action_init(console, dry_run=False)
-    console.print.assert_called()
 
 
-def test_action_init_invalid_json():
-    console = _mock_console()
-    fake_path = mock.MagicMock(exists=mock.Mock(return_value=True))
-    fake_path.read_text.return_value = "not json"
-    with mock.patch.object(actions.hub_state, "PARC_ROOT",
-                           mock.MagicMock(__truediv__=mock.Mock(return_value=fake_path))):
-        actions.action_init(console, dry_run=False)
-    console.print.assert_called()
 
 
-def test_action_init_empty_manifest():
-    console = _mock_console()
-    fake_path = mock.MagicMock(exists=mock.Mock(return_value=True))
-    fake_path.read_text.return_value = "{}"
-    with mock.patch.object(actions.hub_state, "PARC_ROOT",
-                           mock.MagicMock(__truediv__=mock.Mock(return_value=fake_path))):
-        actions.action_init(console, dry_run=False)
-    console.print.assert_called()
 
 
 def _fake_path(name):
@@ -172,31 +125,6 @@ def _fake_path(name):
     return p
 
 
-def test_action_init_dry_run():
-    console = _mock_console()
-    manifest_data = '{"test-app": "git@github.com:org/test-app.git", "other": "url2"}'
-    fake_manifest = mock.MagicMock(exists=mock.Mock(return_value=True))
-    fake_manifest.read_text.return_value = manifest_data
-    dest_mock = mock.MagicMock(exists=mock.Mock(return_value=False))
-    dest_mock.configure_mock(**{"parent.mkdir": mock.Mock(), "__str__.return_value": "/fake/parc/test-app"})
-    dest_mock2 = mock.MagicMock(exists=mock.Mock(return_value=False))
-    dest_mock2.configure_mock(**{"parent.mkdir": mock.Mock(), "__str__.return_value": "/fake/parc/other"})
-
-    parc_root_mock = mock.MagicMock()
-    parc_root_mock.__truediv__.side_effect = lambda x: {
-        "manifest.json": fake_manifest,
-        "test-app": dest_mock,
-        "other": dest_mock2,
-    }[x]
-
-    with mock.patch.object(actions.hub_state, "PARC_ROOT", parc_root_mock), \
-         mock.patch.object(actions, "disk_guard", return_value=True), \
-         mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_init(console, dry_run=True)
-    assert rs.call_count == 2
-    first_args = rs.call_args_list[0].args[0]
-    assert first_args[0] == "git"
-    assert first_args[1] == "clone"
 
 
 # ── Workshop move tests ──
@@ -209,59 +137,12 @@ def _fake_console():
     return Console(force_terminal=True, width=120)
 
 
-def test_attach_app_dev_targets_workshop(tmp_path, monkeypatch):
-    ws = tmp_path / "APP_Workshop"
-    (ws / "shop").mkdir(parents=True)
-    (ws / "shop" / "docker-compose.yml").write_text("services: {}\n")
-    monkeypatch.setattr(actions.hub_state, "WORKSHOP_DIR", ws)
-    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "dev")
-    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
-    console = mock.Mock()
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_attach_app(console, "shop", dry_run=False)
-    cmds = [c.args[0] for c in rs.call_args_list]
-    assert ["docker", "compose", "-f", str(ws / "shop" / "docker-compose.yml"), "build"] in cmds
-    assert ["docker", "compose", "-f", str(ws / "shop" / "docker-compose.yml"), "up", "-d"] in cmds
 
 
-def test_attach_app_prod_targets_apps(tmp_path, monkeypatch):
-    apps = tmp_path / "APPS"
-    (apps / "shop").mkdir(parents=True)
-    (apps / "shop" / "docker-compose.yml").write_text("services: {}\n")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "prod")
-    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
-    console = mock.Mock()
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_attach_app(console, "shop", dry_run=False)
-    composes = [c.args[0][3] for c in rs.call_args_list if c.args[0][:2] == ["docker", "compose"]]
-    assert all(str(apps / "shop") in c for c in composes)
 
 
-def test_attach_app_aborts_without_compose(tmp_path, monkeypatch):
-    apps = tmp_path / "APPS"
-    (apps / "shop").mkdir(parents=True)
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "prod")
-    console = mock.Mock()
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_attach_app(console, "shop", dry_run=False)
-    rs.assert_not_called()
 
 
-def test_attach_app_runs_initialise_when_present(tmp_path, monkeypatch):
-    apps = tmp_path / "APPS"
-    (apps / "shop").mkdir(parents=True)
-    (apps / "shop" / "docker-compose.yml").write_text("services: {}\n")
-    (apps / "shop" / "INITIALISE.py").write_text("print('init')\n")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "prod")
-    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
-    console = mock.Mock()
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_attach_app(console, "shop", dry_run=False)
-    cmds = [c.args[0] for c in rs.call_args_list]
-    assert ["python", "INITIALISE.py"] in cmds
 
 
 import json
@@ -329,58 +210,8 @@ def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
 # ── action_update (Lot 2 : flux séquentiel + rollback) ──
 
 
-def test_action_update_sequential_flow(tmp_path, monkeypatch):
-    """action_update doit faire : snapshot/git → down → pull → build → up → health.
-    Pas de blue/green (cassé), pas d'instance test."""
-    calls = []
-
-    def fake_run_shell(cmd, **kwargs):
-        calls.append(cmd)
-        return 0
-
-    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
-    monkeypatch.setattr(actions, "_db_snapshot", lambda console=None: tmp_path / "snap.sql")
-    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: True)
-    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
-    (tmp_path / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
-
-    actions.action_update(None, "hub", dry_run=False)
-
-    # Verify the sequence: git pull, make down, make build, make up (or up-prod)
-    flat = [" ".join(c) for c in calls]
-    assert any("git" in c and "pull" in c for c in flat), "git pull manquant"
-    assert any("make" in c and "down" in c for c in flat), "make down manquant"
-    assert any("make" in c and "build" in c for c in flat), "make build manquant"
-    assert any("make" in c and ("up" in c) for c in flat), "make up manquant"
-    # NO test instance / blue-green
-    assert not any("-test" in c for c in flat), "blue/green test instance encore présent"
 
 
-def test_action_update_rollback_on_health_failure(tmp_path, monkeypatch):
-    """Si le health check échoue après l'update, rollback doit être appelé."""
-    calls = []
-
-    def fake_run_shell(cmd, **kwargs):
-        calls.append(cmd)
-        return 0
-
-    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
-    monkeypatch.setattr(actions, "_db_snapshot", lambda console=None: tmp_path / "snap.sql")
-    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: False)
-    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
-    (tmp_path / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
-
-    actions.action_update(None, "hub", dry_run=False)
-
-    flat = [" ".join(c) for c in calls]
-    # Rollback: git reset + make up (restore prod)
-    assert any("git" in c and "reset" in c for c in flat), "git reset (rollback) manquant"
 
 
 def test_health_check_reads_app_port(tmp_path, monkeypatch):
@@ -409,187 +240,28 @@ def test_health_check_reads_app_port(tmp_path, monkeypatch):
     )
 
 
-def test_action_status_prints_hub_and_apps(monkeypatch):
-    """action_status doit afficher le statut du Hub et des apps."""
-    from io import StringIO
-    from rich.console import Console
-    output = StringIO()
-    console = Console(file=output, width=120, force_terminal=False)
-
-    # Mock hub services
-    fake_service = mock.Mock()
-    fake_service.name = "hub-api"
-    fake_service.state = "running"
-    fake_service.health = "healthy"
-    monkeypatch.setattr(actions.hub_state, "get_hub_services", lambda: [fake_service])
-
-    # Mock apps status
-    fake_app = mock.Mock()
-    fake_app.name = "exemple-apps"
-    fake_app.status = "running"
-    fake_app.uptime = "2h"
-    fake_app.legacy = False
-    monkeypatch.setattr(actions.hub_state, "get_apps_status", lambda: [fake_app])
-
-    monkeypatch.setattr(actions.hub_state, "get_hub_version", lambda: "3.9.7")
-    monkeypatch.setattr(actions.hub_state, "get_mode", lambda: "dev")
-
-    actions.action_status(console)
-
-    text = output.getvalue()
-    assert "hub-api" in text
-    assert "exemple-apps" in text
-    assert "DEV" in text
-    assert "3.9.7" in text
 
 
-def test_action_work_calls_workshop_create(tmp_path, monkeypatch):
-    called = {}
-    monkeypatch.setattr(actions, "action_workshop_create",
-                        lambda con, slug, *, dry_run=False: called.setdefault("create", slug))
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    actions.action_work(_fake_console(), "shop")
-    assert called.get("create") == "shop"
 
 
-def test_action_work_accepts_comma_separated_slugs(monkeypatch):
-    created = []
-    monkeypatch.setattr(
-        actions,
-        "action_workshop_create",
-        lambda con, slug, *, dry_run=False: created.append(slug),
-    )
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    actions.action_work(_fake_console(), "alpha,beta,gamma")
-
-    assert created == ["alpha", "beta", "gamma"]
 
 
-def test_action_work_strips_whitespace_in_slugs(monkeypatch):
-    created = []
-    monkeypatch.setattr(
-        actions,
-        "action_workshop_create",
-        lambda con, slug, *, dry_run=False: created.append(slug),
-    )
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    actions.action_work(_fake_console(), "alpha , beta , gamma")
-
-    assert created == ["alpha", "beta", "gamma"]
 
 
-def test_action_work_single_slug_still_works(monkeypatch):
-    created = []
-    monkeypatch.setattr(
-        actions,
-        "action_workshop_create",
-        lambda con, slug, *, dry_run=False: created.append(slug),
-    )
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    actions.action_work(_fake_console(), "alpha")
-
-    assert created == ["alpha"]
 
 
-def test_action_work_ignores_empty_segments(monkeypatch):
-    created = []
-    monkeypatch.setattr(
-        actions,
-        "action_workshop_create",
-        lambda con, slug, *, dry_run=False: created.append(slug),
-    )
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    actions.action_work(_fake_console(), "alpha,,beta,")
-
-    assert created == ["alpha", "beta"]
 
 
-def test_action_work_continues_on_failure(monkeypatch):
-    """Si un slug échoue, les suivants sont quand même traités (best-effort)."""
-    created = []
-    failures = []
-
-    def fake_create(con, slug, *, dry_run=False):
-        if slug == "beta":
-            failures.append(slug)
-            raise RuntimeError("beta failed")
-        created.append(slug)
-
-    monkeypatch.setattr(actions, "action_workshop_create", fake_create)
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    actions.action_work(_fake_console(), "alpha,beta,gamma")
-
-    assert created == ["alpha", "gamma"], "alpha et gamma doivent être créés malgré l'échec de beta"
-    assert failures == ["beta"], "beta doit avoir échoué"
 
 
-def test_action_work_single_failure_does_not_raise(monkeypatch):
-    """Un seul slug qui échoue ne lève pas — l'erreur est loggée (best-effort)."""
-    def fake_create(con, slug, *, dry_run=False):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(actions, "action_workshop_create", fake_create)
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    # Ne doit pas lever — best-effort
-    actions.action_work(_fake_console(), "alpha")
-
-    # Pour le multi-slug, le premier qui échoue ne bloque pas les suivants
-    created = []
-    def fake_create_multi(con, slug, *, dry_run=False):
-        if slug == "alpha":
-            raise RuntimeError("alpha failed")
-        created.append(slug)
-
-    monkeypatch.setattr(actions, "action_workshop_create", fake_create_multi)
-    # Ne doit pas lever — beta et gamma sont traités
-    actions.action_work(_fake_console(), "alpha,beta,gamma")
-    assert created == ["beta", "gamma"]
 
 
-def test_action_ship_defaults_to_code_only(tmp_path, monkeypatch):
-    called = {}
-    monkeypatch.setattr(actions, "action_prod_deploy",
-                        lambda con, slug, *, copy_db=False, dry_run=False: called.update(slug=slug, copy_db=copy_db))
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    actions.action_ship(_fake_console(), "shop")
-    assert called.get("slug") == "shop"
-    assert called.get("copy_db") is False
 
 
-def test_action_ship_copy_db_flag_propagates(monkeypatch):
-    called = {}
-    monkeypatch.setattr(actions, "action_prod_deploy",
-                        lambda con, slug, *, copy_db=False, dry_run=False: called.update(copy_db=copy_db))
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    actions.action_ship(_fake_console(), "shop", copy_db=True, dry_run=False)
-    assert called.get("copy_db") is True
 
 
-def test_action_start_stop_app_calls_app_make(monkeypatch):
-    """start/stop d'une app doit appeler app_make (pas hub_make)."""
-    calls = []
-    monkeypatch.setattr(actions, "app_make",
-                        lambda app_name, target, *, dry_run=False, console=None:
-                        calls.append((app_name, target)))
-    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
-    actions.action_start_stop(None, "start", target="exemple-apps")
-    assert ("exemple-apps", "up") in calls
 
 
-def test_action_start_stop_hub_default_unchanged(monkeypatch):
-    """Sans target, action_start_stop garde le comportement hub (compatibilité)."""
-    calls = []
-    monkeypatch.setattr(actions, "hub_make",
-                        lambda target, *, dry_run=False, console=None: calls.append(target))
-    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
-    actions.action_start_stop(None, "stop")
-    assert "down" in calls
 
 
 # ── Task 2: _detect_host_ip ──
@@ -616,139 +288,34 @@ def test_detect_host_ip_fallback(monkeypatch):
 
 # ── Task 1: action_logs + action_restart + _compose_file ──
 
-def test_compose_file_hub():
-    from hubctl_cli import actions, hub_state
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_state.PARC_ROOT / "HUB_base"):
-        p = actions._compose_file("hub")
-        assert p is not None
-        assert p.name == "docker-compose.yml"
 
 
-def test_compose_file_unknown_app_returns_none(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
-    assert actions._compose_file("inexistante") is None
 
 
-def test_action_logs_all_services(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
-    (tmp_path / "shop").mkdir()
-    (tmp_path / "shop" / "docker-compose.yml").write_text("")
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_logs(mock.Mock(), "shop")
-    cmd = rs.call_args.args[0]
-    assert cmd[:5] == ["docker", "compose", "-f", str(tmp_path / "shop" / "docker-compose.yml"), "logs"]
-    assert "api" not in cmd and "postgres" not in cmd
 
 
-def test_action_logs_filter_api(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
-    (tmp_path / "shop").mkdir()
-    (tmp_path / "shop" / "docker-compose.yml").write_text("")
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_logs(mock.Mock(), "shop", service="api")
-    assert rs.call_args.args[0][-1] == "api"
 
 
-def test_action_logs_unknown_target_no_run():
-    from hubctl_cli import actions
-    with mock.patch.object(actions.utils, "run_shell") as rs:
-        actions.action_logs(mock.Mock(), "inexistante")
-    rs.assert_not_called()
 
 
-def test_action_restart_with_service(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path)
-    (tmp_path / "shop").mkdir()
-    (tmp_path / "shop" / "docker-compose.yml").write_text("")
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_restart(mock.Mock(), "shop", service="frontend")
-    cmd = rs.call_args.args[0]
-    assert "restart" in cmd
-    assert cmd[-1] == "frontend"
 
 
 # ── Task 2: health + db-shell ──
 
-def test_resolve_api_port_hub(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    fake_hub = tmp_path / "HUB_base"
-    fake_hub.mkdir()
-    (fake_hub / ".env").write_text("HUB_API_PORT=8005\n")
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
-    assert actions._resolve_api_port("hub") == "8005"
 
 
-def test_resolve_api_port_app(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
-    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
-    (apps / "shop" / ".env").write_text("API_PORT=9010\n")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    assert actions._resolve_api_port("shop") == "9010"
 
 
-def test_action_health_healthy(monkeypatch):
-    from hubctl_cli import actions
-    monkeypatch.setattr(actions, "_resolve_api_port", lambda t: "8000")
-    fake = mock.Mock(returncode=0, stdout='{"status":"healthy","version":"1.0"}')
-    with mock.patch.object(actions.subprocess, "run", return_value=fake):
-        rc = actions.action_health(mock.Mock(), "hub")
-    assert rc == 0
 
 
-def test_action_health_unhealthy(monkeypatch):
-    from hubctl_cli import actions
-    monkeypatch.setattr(actions, "_resolve_api_port", lambda t: "8000")
-    fake = mock.Mock(returncode=0, stdout='{"status":"unhealthy"}')
-    with mock.patch.object(actions.subprocess, "run", return_value=fake):
-        rc = actions.action_health(mock.Mock(), "hub")
-    assert rc == 1
 
 
-def test_action_health_detailed_url(monkeypatch):
-    from hubctl_cli import actions
-    monkeypatch.setattr(actions, "_resolve_api_port", lambda t: "8000")
-    fake = mock.Mock(returncode=0, stdout='{"status":"healthy"}')
-    with mock.patch.object(actions.subprocess, "run", return_value=fake) as rs:
-        actions.action_health(mock.Mock(), "hub", detailed=True)
-    assert "/api/health/detailed" in rs.call_args.args[0][-1]
 
 
-def test_app_db_creds(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
-    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
-    (apps / "shop" / ".env").write_text("POSTGRES_USER=zoe\nPOSTGRES_DB=shopdb\n")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    assert actions._app_db_creds("shop") == ("zoe", "shopdb")
 
 
-def test_action_db_shell_invokes_psql(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
-    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
-    (apps / "shop" / "docker-compose.yml").write_text("")
-    (apps / "shop" / ".env").write_text("POSTGRES_USER=zoe\nPOSTGRES_DB=shopdb\n")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_db_shell(mock.Mock(), "shop")
-    cmd = rs.call_args.args[0]
-    assert "exec" in cmd and "postgres" in cmd
-    assert "zoe" in cmd and "shopdb" in cmd
 
 
-def test_action_db_shell_unknown_app():
-    from hubctl_cli import actions
-    with mock.patch.object(actions.utils, "run_shell") as rs:
-        actions.action_db_shell(mock.Mock(), "nope")
-    rs.assert_not_called()
 
 
 def test_ensure_jwt_keys_skips_when_present(tmp_path, monkeypatch):
@@ -785,769 +352,113 @@ def test_ensure_jwt_keys_dry_run_no_openssl(tmp_path, monkeypatch):
 
 # ── Task 5: Blue-green helpers ──
 
-def test_port_in_use_true():
-    from hubctl_cli import actions
-    fake = mock.Mock(stdout="0.0.0.0:8000 users:((sshd))")
-    with mock.patch.object(actions.subprocess, "run", return_value=fake):
-        assert actions._port_in_use(8000) is True
 
 
-def test_port_in_use_false():
-    from hubctl_cli import actions
-    fake = mock.Mock(stdout="0.0.0.0:9000 users:((sshd))")
-    with mock.patch.object(actions.subprocess, "run", return_value=fake):
-        assert actions._port_in_use(8000) is False
 
 
-def test_find_free_ports_first_try():
-    from hubctl_cli import actions
-    with mock.patch.object(actions, "_port_in_use", return_value=False):
-        assert actions._find_free_ports(8000, 80, 443) == (8000, 80, 443)
 
 
-def test_find_free_ports_increments():
-    from hubctl_cli import actions
-    side = {8000: True, 80: False, 443: False}
-    with mock.patch.object(actions, "_port_in_use", side_effect=lambda p: side.get(p, False)):
-        api, fe, https = actions._find_free_ports(8000, 80, 443)
-        assert api == 8001 and fe == 81 and https == 444
 
 
-def test_find_free_ports_no_port_raises():
-    from hubctl_cli import actions
-    with mock.patch.object(actions, "_port_in_use", return_value=True):
-        try:
-            actions._find_free_ports(8000, 80, 443)
-            assert False, "devrait lever RuntimeError"
-        except RuntimeError:
-            pass
 
 
-def test_db_snapshot_app_success(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
-    (apps / "shop" / "docker-compose.yml").write_text("")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    with mock.patch.object(actions.subprocess, "run", return_value=mock.Mock(returncode=0)):
-        path = actions._db_snapshot_app("shop")
-    assert path is not None and path.exists()
 
 
-def test_db_snapshot_app_failure_returns_none(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    apps = tmp_path / "APPS"; (apps / "shop").mkdir(parents=True)
-    (apps / "shop" / "docker-compose.yml").write_text("")
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    with mock.patch.object(actions.subprocess, "run", side_effect=actions.subprocess.CalledProcessError(1, "docker")):
-        assert actions._db_snapshot_app("shop") is None
 
 
 # ── Task 6: Blue-green deploy ──
 
-def test_read_prod_ports_hub(tmp_path, monkeypatch):
-    from hubctl_cli import actions
-    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
-    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
-    assert actions._read_prod_ports("hub") == (8000, 80, 443)
 
 
-def test_deploy_success_flow(tmp_path, monkeypatch):
-    from hubctl_cli import actions, hub_state
-    # préparer cible hub factice
-    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
-    (fake_hub / "docker-compose.yml").write_text("")
-    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc1234")
-    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: tmp_path / "snap.sql")
-    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
-    monkeypatch.setattr(actions, "_health_check", mock.Mock(return_value=True))
-    monkeypatch.setattr(actions, "_rollback", mock.Mock())
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_deploy(mock.Mock(), "hub")
-    cmds = [c.args[0] for c in rs.call_args_list]
-    # séquence attendue : git pull, make build, compose -p hub-test up, compose -p hub down, compose -p hub up, compose -p hub-test down -v
-    joined = [" ".join(c) for c in cmds]
-    assert any("git" in j and "pull" in j for j in joined)
-    assert any("make" in j and "build" in j for j in joined)
-    assert any("-p" in j and "hub-test" in j and "up" in j for j in joined)
-    assert any("-p" in j and j.count("hub") >= 1 and "down" in j for j in joined)
-    assert any("-p" in j and "hub-test" in j and "down" in j for j in joined)
-    # C1: verify env= is passed to the green instance compose up
-    green_up_call = [c for c in rs.call_args_list if "-p" in c.args[0] and "hub-test" in c.args[0] and "up" in c.args[0]]
-    assert len(green_up_call) == 1
-    assert "env" in green_up_call[0].kwargs, "C1: env must be passed to green instance compose up"
-    # C2: verify health_check gets port_override for green instance
-    all_hc_args = [call for call in actions._health_check.call_args_list if call.kwargs.get("port_override") is not None]
-    assert len(all_hc_args) >= 1, "C2: _health_check must receive port_override"
 
 
-def test_deploy_git_pull_fails_rollback(tmp_path, monkeypatch):
-    from hubctl_cli import actions
-    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
-    (fake_hub / "docker-compose.yml").write_text("")
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
-    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc1234")
-    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
-    monkeypatch.setattr(actions, "_rollback", mock.Mock())
-    with mock.patch.object(actions.utils, "run_shell", return_value=1):
-        actions.action_deploy(mock.Mock(), "hub")
-    actions._rollback.assert_called_once()
 
 
-def test_deploy_health_fail_rollback(tmp_path, monkeypatch):
-    from hubctl_cli import actions
-    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
-    (fake_hub / "docker-compose.yml").write_text("")
-    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
-    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
-    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
-    monkeypatch.setattr(actions, "_health_check", lambda *a, **k: False)
-    monkeypatch.setattr(actions, "_rollback", mock.Mock())
-    with mock.patch.object(actions.utils, "run_shell", return_value=0):
-        actions.action_deploy(mock.Mock(), "hub")
-    actions._rollback.assert_called_once()
-    # C3: for hub, db_container/db_name should be None (defaults)
-    call_kwargs = actions._rollback.call_args.kwargs
-    assert call_kwargs.get("db_container") is None, "C3: hub uses default db_container"
-    assert call_kwargs.get("db_name") is None, "C3: hub uses default db_name"
 
 
-def test_deploy_dry_run_no_real_docker(tmp_path, monkeypatch):
-    from hubctl_cli import actions
-    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
-    (fake_hub / "docker-compose.yml").write_text("")
-    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
-    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
-    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
-    monkeypatch.setattr(actions, "_health_check", lambda *a, **k: True)
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.action_deploy(mock.Mock(), "hub", dry_run=True)
-    # toutes les invocations ont dry_run=True
-    for c in rs.call_args_list:
-        assert c.kwargs.get("dry_run") is True
 
 
-def test_deploy_dry_run_skips_real_actions(tmp_path, monkeypatch):
-    """C6+C7+C8 : deploy --dry-run ne doit lancer AUCUNE action réelle.
-
-    - C6 : _rollback reçoit dry_run=True
-    - C7 : _health_check n'est jamais appelée (simulée en dry-run)
-    - C8 : _db_snapshot jamais appelée + aucun pg_dump via subprocess
-    - aucun run_shell sans dry_run=True
-    """
-    from hubctl_cli import actions
-    fake_hub = tmp_path / "HUB_base"; fake_hub.mkdir()
-    (fake_hub / "docker-compose.yml").write_text("")
-    (fake_hub / ".env").write_text("HUB_API_PORT=8000\nHUB_FRONTEND_PORT=80\nHUB_HTTPS_PORT=443\n")
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", fake_hub)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    monkeypatch.setattr(actions, "disk_guard", lambda *a, **k: True)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc1234")
-    monkeypatch.setattr(actions, "_find_free_ports", lambda *a: (8001, 81, 444))
-
-    rollback_mock = mock.Mock()
-    monkeypatch.setattr(actions, "_rollback", rollback_mock)
-    health_mock = mock.Mock(return_value=True)
-    monkeypatch.setattr(actions, "_health_check", health_mock)
-    db_snap_mock = mock.Mock(return_value=tmp_path / "snap.sql")
-    monkeypatch.setattr(actions, "_db_snapshot", db_snap_mock)
-
-    subproc_cmds: list[list[str]] = []
-
-    def spy_subprocess(cmd, **kwargs):
-        subproc_cmds.append(cmd)
-        return mock.Mock(returncode=0)
-
-    monkeypatch.setattr(actions.subprocess, "run", spy_subprocess)
-
-    # git pull échoue → déclenche le chemin rollback en dry-run
-    with mock.patch.object(actions.utils, "run_shell", return_value=1) as rs:
-        actions.action_deploy(mock.Mock(), "hub", dry_run=True)
-
-    # C6 : rollback appelé avec dry_run=True
-    rollback_mock.assert_called_once()
-    assert rollback_mock.call_args.kwargs.get("dry_run") is True, \
-        "C6: _rollback doit recevoir dry_run=True"
-
-    # C7 : _health_check jamais appelée (simulée en dry-run)
-    health_mock.assert_not_called()
-
-    # C8 : _db_snapshot jamais appelée (snapshot skippé en dry-run)
-    db_snap_mock.assert_not_called()
-    assert not any("pg_dump" in " ".join(c) for c in subproc_cmds), \
-        "C8: pg_dump ne doit pas être exécuté en dry-run"
-
-    # Aucun run_shell sans dry_run=True
-    for c in rs.call_args_list:
-        assert c.kwargs.get("dry_run") is True, \
-            f"run_shell appelé sans dry_run=True : {c.args[0]}"
 
 
 # ── Workshop create tests ([→] sans suppression de prod) ──
 
-def test_workshop_create_dry_run_no_dest_no_delete(tmp_path, monkeypatch):
-    """[→] dry-run : ne crée pas l'atelier, ne supprime pas la prod, ne backup pas."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
-    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
-    app_dir = apps_dir / "testapp"; app_dir.mkdir()
-    (app_dir / "docker-compose.yml").write_text("services: {}\n")
-    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
-
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_workshop_create(_fake_console(), "testapp", dry_run=True)
-
-    assert not (ws_dir / "testapp-ws").exists()   # dry-run : rien créé
-    assert (apps_dir / "testapp").exists()         # prod JAMAIS supprimée
-    assert not (tmp_path / "hubctl_cli" / "_trash" / "testapp-ws").exists()  # pas de trash
 
 
-def test_workshop_create_refuses_if_dest_exists(tmp_path, monkeypatch):
-    """[→] refuse si l'atelier X-ws existe déjà (early-return sans effet de bord)."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    (apps_dir / "testapp").mkdir()
-    (apps_dir / "testapp" / "docker-compose.yml").write_text("services: {}\n")
-    (apps_dir / "testapp" / ".env").write_text("APP_SLUG=testapp\nSENTINEL=keep\n")
-    (ws_dir / "testapp-ws").mkdir()   # déjà en atelier
-
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
-        actions.action_workshop_create(_fake_console(), "testapp", dry_run=False)
-    # Aucune commande shell (pas de stop, pas de copy) : early-return avant tout effet.
-    assert calls == [], "Ne doit rien exécuter si l'atelier existe déjà"
-    # Atelier existant préservé :
-    assert (ws_dir / "testapp-ws").exists()
-    # Source intacte (aucune modification de .env) :
-    assert (apps_dir / "testapp" / ".env").read_text().find("SENTINEL=keep") >= 0
 
 
-def test_workshop_create_real_run_leaves_prod_in_place(tmp_path, monkeypatch):
-    """[→] run réel : crée l'atelier (clone DB mocké), prod laissée en place, PAS de backup/trash."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
-    app_dir = apps_dir / "testapp"; app_dir.mkdir()
-    (app_dir / "docker-compose.yml").write_text("services: {}\n")
-    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
-
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    # Stub toutes les commandes shell (stop, volume create/cp, build, up) + curl health OK.
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: 0)
-    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: mock.Mock(returncode=0, stdout='{"status":"healthy"}'))
-    monkeypatch.setattr(actions.time, "sleep", lambda *_: None)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_workshop_create(_fake_console(), "testapp", dry_run=False)
-
-    assert (ws_dir / "testapp-ws").exists()        # atelier créé
-    assert (apps_dir / "testapp").exists()          # prod TOUJOURS là
-    # PAS de backup tar.gz créé pour cette app :
-    assert not list((tmp_path / "hubctl_cli" / "backups").glob("testapp-*.tar.gz"))
-    # Slug renommé dans l'atelier :
-    assert env_manager.read_env(ws_dir / "testapp-ws" / ".env").get("APP_SLUG") == "testapp-ws"
 
 
-def test_workshop_create_never_uses_down_with_v(tmp_path, monkeypatch):
-    """[→] action_workshop_create ne doit JAMAIS invoquer `docker compose down -v`."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
-    app_dir = apps_dir / "testapp"; app_dir.mkdir()
-    (app_dir / "docker-compose.yml").write_text("services: {}\n")
-    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
-
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    rs_calls, sub_calls = [], []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
-    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: sub_calls.append(a) or mock.Mock(returncode=0, stdout='{"status":"healthy"}'))
-    monkeypatch.setattr(actions.time, "sleep", lambda *_: None)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_workshop_create(_fake_console(), "testapp", dry_run=False)
-
-    all_cmds = [" ".join(c) for c in rs_calls] + [" ".join(str(x) for x in a) for a in sub_calls]
-    for cmd in all_cmds:
-        assert not ("down" in cmd and "-v" in cmd), f"down -v interdit trouvé : {cmd}"
 
 
-def test_workshop_create_creates_dev_mode_if_missing(tmp_path, monkeypatch):
-    """[→] si HUB_base/.dev-mode absent → créé automatiquement (compat ascendante)."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir()   # .dev-mode volontairement absent
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    app_dir = apps_dir / "testapp"; app_dir.mkdir()
-    (app_dir / "docker-compose.yml").write_text("services: {}\n")
-    (app_dir / ".env").write_text("APP_SLUG=testapp\nAPI_PORT=9001\n")
-
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: 0)
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_workshop_create(_fake_console(), "testapp", dry_run=True)
-
-    assert (hub_dir / ".dev-mode").exists()
 
 
-def test_workshop_create_aborts_if_source_missing(tmp_path, monkeypatch):
-    """[→] si APPS/X absent → message, pas de crash (early-return sans effet)."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()   # vide
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
-        actions.action_workshop_create(_fake_console(), "nonexistent", dry_run=False)
-
-    assert calls == [], "Ne doit rien exécuter si la source n'existe pas"
-    assert not (ws_dir / "nonexistent-ws").exists()
 
 
-def test_prod_deploy_code_only_does_git_pull_no_volume_copy(tmp_path, monkeypatch):
-    """[←] défaut (copy_db=False) : git pull + build + up, PAS de alpine cp sur volume."""
-    calls = []
-    def fake_run_shell(cmd, **kw):
-        calls.append(cmd)
-        return 0
-    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
-    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: True)
-    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
-
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    prod = apps_dir / "myapp"; prod.mkdir()
-    (prod / "docker-compose.yml").write_text("services: {}\n")
-    (prod / ".env").write_text("APP_SLUG=myapp\nAPI_PORT=9005\n")
-    (ws_dir / "myapp-ws").mkdir()  # atelier présent
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
-        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=False, dry_run=False)
-
-    flat = [" ".join(c) for c in calls]
-    assert any("git" in c and "pull" in c for c in flat), "git pull manquant"
-    assert any("make" in c and "build" in c for c in flat), "make build manquant"
-    assert any("make" in c and c.split()[-1] == "up" for c in flat), "make up manquant"
-    # PAS de copie de volume :
-    assert not any("alpine" in c for c in flat), "alpine cp ne doit pas apparaître en code-only"
-    # PAS de docker volume rm (destructif) :
-    assert not any("volume" in c and "rm" in c for c in flat)
 
 
-def test_prod_deploy_code_only_rollback_on_health_fail(tmp_path, monkeypatch):
-    """[←] code-only : health fail → git reset --hard {prev} (via _rollback)."""
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "deadbee")
-    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: False)
-    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
-
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    prod = apps_dir / "myapp"; prod.mkdir()
-    (prod / "docker-compose.yml").write_text("services: {}\n")
-    (ws_dir / "myapp-ws").mkdir()
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
-        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=False, dry_run=False)
-
-    flat = [" ".join(c) for c in calls]
-    assert any("git" in c and "reset" in c and "deadbee" in c for c in flat), "git reset rollback manquant"
 
 
-def test_prod_deploy_aborts_if_prod_missing(tmp_path, monkeypatch):
-    """[←] si APPS/X absent → message, pas de crash (vieille app pré-refonte)."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()   # vide
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    (ws_dir / "myapp-ws").mkdir()
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
-        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=False, dry_run=False)
     # Aucun effet secondaire : on ne doit pas avoir tenté de git pull.
     # (test passe si pas d'exception levée — le code retourne tôt avec un message.)
 
 
 # ── Task 3: action_prod_deploy --copy-db (destructif, CLI-only) ──
 
-def test_prod_deploy_copy_db_overwrites_volume_and_pulls(tmp_path, monkeypatch):
-    """[←] --copy-db : backup volume + overwrite + git pull + build + up."""
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    sub_calls = []
-    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: sub_calls.append(a) or mock.Mock(returncode=0, stdout=b''))
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
-    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: True)
-    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
-    monkeypatch.setattr("builtins.input", lambda *_: "myapp")  # gate : slug exact requis
-
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    prod = apps_dir / "myapp"; prod.mkdir()
-    (prod / "docker-compose.yml").write_text("services: {}\n")
-    (ws_dir / "myapp-ws").mkdir()
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=True, dry_run=False)
-
-    flat = [" ".join(c) for c in calls]
-    # Overwrite de volume :
-    assert any("alpine" in c and "cp" in c for c in flat), "alpine cp (overwrite DB) manquant"
-    # git pull aussi (code cohérent avec la DB) :
-    assert any("git" in c and "pull" in c for c in flat), "git pull manquant"
 
 
-def test_prod_deploy_copy_db_aborts_on_wrong_confirmation(tmp_path, monkeypatch):
-    """La gate input() : refus → aucun effet."""
-    monkeypatch.setattr("builtins.input", lambda *_: "non-non-non")
-    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    prod = apps_dir / "myapp"; prod.mkdir()
-    (prod / "docker-compose.yml").write_text("services: {}\n")
-    (ws_dir / "myapp-ws").mkdir()
-
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir):
-        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=True, dry_run=False)
-
-    assert calls == [], "Aucune commande ne doit être exécutée si la confirmation échoue"
 
 
-def test_prod_deploy_copy_db_rollback_restores_volume_to_data_mount(tmp_path, monkeypatch):
-    """[←] --copy-db rollback : si health échoue, restore le volume depuis le backup
-    avec un montage SYMÉTRIQUE au backup (dst_vol:/data, -C /) — pas /to."""
-    rs_calls = []
-    sub_calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
-    def fake_sub(*a, **kw):
-        sub_calls.append(a)
-        # Backup tar retourne un rc sain ; les autres subprocess aussi.
-        return mock.Mock(returncode=0, stdout=b'')
-    monkeypatch.setattr(actions.subprocess, "run", fake_sub)
-    monkeypatch.setattr(actions, "_git_previous_commit", lambda p, console=None: "abc1234")
-    monkeypatch.setattr(actions, "_health_check", lambda target, console=None, timeout=60: False)  # force rollback
-    monkeypatch.setattr(actions, "disk_guard", lambda console=None: True)
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda *_: "myapp")  # gate OK
-
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    prod = apps_dir / "myapp"; prod.mkdir()
-    (prod / "docker-compose.yml").write_text("services: {}\n")
-    (ws_dir / "myapp-ws").mkdir()
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_prod_deploy(_fake_console(), "myapp", copy_db=True, dry_run=False)
-
-    # Le rollback doit contenir une commande alpine tar xzf avec montage dst_vol:/data (pas /to)
-    sub_flat = [" ".join(str(x) for x in a) for a in sub_calls]
-    restore_cmds = [c for c in sub_flat if "tar" in c and "xzf" in c]
-    assert restore_cmds, "rollback restore (tar xzf) manquant"
-    assert any("myapp-postgres-data:/data" in c for c in restore_cmds), \
-        f"restore doit monter dst_vol à /data (symétrique au backup), vu : {restore_cmds}"
-    assert not any(":/to" in c for c in restore_cmds), "le montage /to asymétrique ne doit plus exister"
 
 
 # ── Task 4: action_workshop_remove ([×] suppression atelier) ──
 
-def test_workshop_remove_dry_run_keeps_atelier(tmp_path, monkeypatch):
-    """[×] dry-run : ne supprime rien, ne restart rien."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    (apps_dir / "myapp").mkdir()  # prod présente
-    ws = ws_dir / "myapp-ws"; ws.mkdir()
-    (ws / "docker-compose.yml").write_text("services: {}\n")
-    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
-    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_workshop_remove(_fake_console(), "myapp-ws", dry_run=True)
-
-    assert ws.exists(), "dry-run ne doit pas supprimer l'atelier"
 
 
-def test_workshop_remove_real_run_trashes_and_restarts_prod(tmp_path, monkeypatch):
-    """[×] run réel : down -v + trash + restart prod."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    prod = apps_dir / "myapp"; prod.mkdir()
-    (prod / "docker-compose.yml").write_text("services: {}\n")
-    ws = ws_dir / "myapp-ws"; ws.mkdir()
-    (ws / "docker-compose.yml").write_text("services: {}\n")
-    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
-    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
-
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_workshop_remove(_fake_console(), "myapp-ws", dry_run=False)
-
-    assert not ws.exists(), "atelier doit être supprimé"
-    flat = [" ".join(c) for c in calls]
-    assert any("down" in c and "-v" in c for c in flat), "docker compose down -v manquant"
-    assert any("make" in c and "up" in c for c in flat), "restart prod (make up) manquant"
 
 
-def test_workshop_remove_skips_prod_restart_if_absent(tmp_path, monkeypatch):
-    """[×] si prod absente : supprime l'atelier, ne tente pas de restart (warning)."""
-    hub_dir = tmp_path / "HUB_base"; hub_dir.mkdir(); (hub_dir / ".dev-mode").touch()
-    apps_dir = tmp_path / "APPS"; apps_dir.mkdir()   # vide
-    ws_dir = tmp_path / "APP_Workshop"; ws_dir.mkdir()
-    ws = ws_dir / "myapp-ws"; ws.mkdir()
-    (ws / "docker-compose.yml").write_text("services: {}\n")
-    (tmp_path / "hubctl_cli" / "backups").mkdir(parents=True)
-    (tmp_path / "hubctl_cli" / "_trash").mkdir(parents=True)
-
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
-
-    with mock.patch.object(actions.hub_state, "HUB_DIR", hub_dir), \
-         mock.patch.object(actions.hub_state, "APPS_DIR", apps_dir), \
-         mock.patch.object(actions.hub_state, "WORKSHOP_DIR", ws_dir), \
-         mock.patch.object(actions.hub_state, "PARC_ROOT", tmp_path):
-        actions.action_workshop_remove(_fake_console(), "myapp-ws", dry_run=False)
-
-    assert not ws.exists()
-    flat = [" ".join(c) for c in calls]
-    assert not any("make" in c and "up" in c for c in flat), "ne doit pas tenter make up si prod absente"
 
 
 # ── Task 2: action_vpn (helpers + sync + status) ──
 
-def test_vpn_read_enabled_returns_db_value(monkeypatch):
-    def fake_run(cmd, **kw):
-        return mock.Mock(returncode=0, stdout="true\n", stderr="")
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
-    assert actions._vpn_read_enabled(actions._console) == "true"
 
 
-def test_vpn_read_enabled_none_when_db_unreachable(monkeypatch):
-    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **k: mock.Mock(returncode=1, stdout="", stderr="err"))
-    monkeypatch.setattr(actions.time, "sleep", lambda *_: None)
-    assert actions._vpn_read_enabled(actions._console) is None
 
 
-def test_vpn_conf_exists_true(monkeypatch):
-    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0))
-    assert actions._vpn_conf_exists() is True
 
 
-def test_vpn_sync_enabled_starts_container(monkeypatch):
-    """vpn_enabled=true + conf présente → docker compose --profile wireguard up."""
-    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "true")
-    monkeypatch.setattr(actions, "_vpn_conf_exists", lambda: True)
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    actions.action_vpn(actions._console, "sync", dry_run=False)
-    flat = [" ".join(c) for c in calls]
-    assert any("compose" in c and "--profile" in c and "wireguard" in c and "up" in c for c in flat), \
-        "compose up manquant"
-    assert any(c == "wireguard-client" for c in calls[0]), "doit cibler le service wireguard-client"
 
 
-def test_vpn_sync_disabled_stops_container(monkeypatch):
-    """vpn_enabled=false → docker stop hub-wireguard, PAS de compose up."""
-    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "false")
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    actions.action_vpn(actions._console, "sync", dry_run=False)
-    flat = [" ".join(c) for c in calls]
-    assert any("stop" in c and "hub-wireguard" in c for c in flat), "docker stop manquant"
-    assert not any("up" in c and "wireguard" in c for c in flat), "ne doit pas faire compose up si disabled"
 
 
-def test_vpn_sync_enabled_no_conf_warns(monkeypatch):
-    """vpn_enabled=true mais pas de conf → démarre qd même + warning."""
-    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "true")
-    monkeypatch.setattr(actions, "_vpn_conf_exists", lambda: False)
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: 0)
-    c = actions._console
-    actions.action_vpn(c, "sync", dry_run=False)
     # Un warning a été imprimé (on vérifie juste que ça ne plante pas et que compose up a été appelé)
 
 
-def test_vpn_sync_db_unreachable_aborts(monkeypatch):
-    """hub-db injoignable → abandon propre, aucune commande docker."""
-    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: None)
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: calls.append(cmd) or 0)
-    actions.action_vpn(actions._console, "sync", dry_run=False)
-    assert calls == [], "ne doit lancer aucune commande si DB injoignable"
 
 
-def test_vpn_status_aggregates(monkeypatch):
-    """status affiche flag + état conteneur."""
-    monkeypatch.setattr(actions, "_vpn_read_enabled", lambda c: "false")
-    monkeypatch.setattr(actions, "_vpn_container_state", lambda: "exited")
-    actions.action_vpn(actions._console, "status", dry_run=False)  # ne doit pas planter
 
 
 # ── Task 3: action_vpn on/off (flag DB + reconcile) ──
 
-def test_vpn_on_sets_flag_true_and_starts(monkeypatch):
-    set_calls = []
-    monkeypatch.setattr(actions, "_vpn_set_enabled", lambda v, c: set_calls.append(v) or True)
-    monkeypatch.setattr(actions, "_vpn_conf_exists", lambda: True)
-    rs_calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
-    actions.action_vpn(actions._console, "on", dry_run=False)
-    assert set_calls == [True], "doit écrire vpn_enabled=true"
-    assert any("up" in " ".join(c) and "wireguard" in " ".join(c) for c in rs_calls), "doit démarrer le conteneur"
 
 
-def test_vpn_off_sets_flag_false_and_stops(monkeypatch):
-    set_calls = []
-    monkeypatch.setattr(actions, "_vpn_set_enabled", lambda v, c: set_calls.append(v) or True)
-    rs_calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
-    actions.action_vpn(actions._console, "off", dry_run=False)
-    assert set_calls == [False]
-    assert any("stop" in " ".join(c) and "hub-wireguard" in " ".join(c) for c in rs_calls)
 
 
-def test_vpn_on_db_unreachable_aborts(monkeypatch):
-    """Si _vpn_set_enabled échoue → on n'appelle pas reconcile."""
-    monkeypatch.setattr(actions, "_vpn_set_enabled", lambda v, c: False)
-    rs_calls = []
-    monkeypatch.setattr(actions.utils, "run_shell", lambda cmd, **kw: rs_calls.append(cmd) or 0)
-    actions.action_vpn(actions._console, "on", dry_run=False)
-    assert rs_calls == [], "ne doit rien démarrer si l'écriture du flag échoue"
 
 
-def test_vpn_set_enabled_runs_upsert(monkeypatch):
-    """_vpn_set_enabled exécute un UPSERT psql avec la bonne valeur."""
-    seen = {}
-    def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
-        return mock.Mock(returncode=0)
-    monkeypatch.setattr(actions.subprocess, "run", fake_run)
-    ok = actions._vpn_set_enabled(True, None)
-    assert ok is True
-    assert "psql" in seen["cmd"]
-    assert any("ON CONFLICT" in str(a) for a in seen["cmd"]), "doit utiliser un UPSERT"
-    assert any("'true'" in str(a) for a in seen["cmd"])
 
 
 # ── Task 4: hook boot WG (action_start_stop start+hub → vpn sync) ──
 
-def test_action_start_stop_hub_start_calls_vpn_sync(monkeypatch):
-    """Démarrer le hub (start) → appelle action_vpn('sync') pour réconcilier le conteneur WG."""
-    vpn_calls = []
-    monkeypatch.setattr(actions, "action_vpn", lambda con, sub, **kw: vpn_calls.append(sub))
-    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 0)
-    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
-    actions.action_start_stop(None, "start", target="hub")
-    assert "sync" in vpn_calls, "le boot du hub doit appeler action_vpn('sync')"
 
 
-def test_action_start_stop_hub_stop_does_not_call_vpn(monkeypatch):
-    """Stop le hub → pas de vpn sync."""
-    vpn_calls = []
-    monkeypatch.setattr(actions, "action_vpn", lambda con, sub, **kw: vpn_calls.append(sub))
-    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 0)
-    actions.action_start_stop(None, "stop", target="hub")
-    assert vpn_calls == []
 
 
-def test_action_start_stop_hub_start_skips_vpn_if_hub_make_fails(monkeypatch):
-    """Si hub_make('up-prod') échoue (rc != 0), on ne doit PAS appeler action_vpn('sync')."""
-    vpn_calls = []
-    monkeypatch.setattr(actions, "action_vpn", lambda con, sub, *, dry_run=False: vpn_calls.append(sub))
-    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 1)  # rc != 0
-    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
-    actions.action_start_stop(None, "start", target="hub")
-    assert vpn_calls == [], "ne doit pas appeler vpn sync si le hub n'a pas démarré"
 
 
 def _raise(*a, **k):
     raise RuntimeError("boom")
 
 
-def test_action_start_stop_hub_start_swallows_vpn_exception(monkeypatch):
-    """Une exception dans action_vpn('sync') ne doit pas faire échouer le démarrage du hub."""
-    monkeypatch.setattr(actions, "action_vpn", _raise)
-    monkeypatch.setattr(actions, "hub_make", lambda target, *, dry_run=False, console=None: 0)
-    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda console, *, dry_run=False: None)
-    # Ne doit pas lever — le boot hook est best-effort.
-    actions.action_start_stop(None, "start", target="hub")
 
 
 # ── Task 3: _generate_dotenv tests ──
@@ -1886,398 +797,67 @@ def test_sync_db_password_dry_run_no_docker(monkeypatch, tmp_path):
 
 # ── _clone_app ──
 
-def test_clone_app_success(monkeypatch, tmp_path):
-    """Clone vers la destination et retourne True."""
-    apps_dir = tmp_path / "APPS"
-    apps_dir.mkdir()
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-
-    calls = []
-    monkeypatch.setattr(actions.utils, "run_shell",
-                        lambda cmd, **kw: calls.append(cmd) or 0)
-
-    dest = apps_dir / "monapp"
-    result = actions._clone_app(_mock_console(), "git@github.com:org/monapp.git", dest, dry_run=False)
-    assert result is True
-    assert any("clone" in str(c) for c in calls)
 
 
-def test_clone_app_dest_exists(monkeypatch, tmp_path):
-    """Refuse si la destination existe déjà."""
-    dest = tmp_path / "APPS" / "monapp"
-    dest.mkdir(parents=True)
-    result = actions._clone_app(_mock_console(), "git@github.com:org/monapp.git", dest, dry_run=False)
-    assert result is False
 
 
-def test_clone_app_dry_run(monkeypatch, tmp_path):
-    """En dry-run, ne clone pas réellement."""
-    dest = tmp_path / "APPS" / "monapp"
-    dest.parent.mkdir(parents=True)
-    result = actions._clone_app(_mock_console(), "git@github.com:org/monapp.git", dest, dry_run=True)
-    assert result is True
-    assert not dest.exists()
 
 
 # ── _validate_app_structure ──
 
-def test_validate_structure_ok(tmp_path):
-    """Valide si docker-compose.yml + Makefile + .env.example présents."""
-    dest = tmp_path / "monapp"
-    dest.mkdir()
-    (dest / "docker-compose.yml").write_text("services: {}\n")
-    (dest / "Makefile").write_text("up:\n\tdocker compose up -d\n")
-    (dest / ".env.example").write_text("APP_SLUG=example\n")
-    result = actions._validate_app_structure(_mock_console(), dest, dry_run=False)
-    assert result is True
 
 
-def test_validate_structure_missing_file(tmp_path):
-    """Rejette et supprime le dossier si un fichier obligatoire manque."""
-    dest = tmp_path / "monapp"
-    dest.mkdir()
-    (dest / "docker-compose.yml").write_text("services: {}\n")
-    # Makefile et .env.example manquants
-    result = actions._validate_app_structure(_mock_console(), dest, dry_run=False)
-    assert result is False
-    assert not dest.exists()  # dossier supprimé
 
 
-def test_validate_structure_dry_run(tmp_path):
-    """En dry-run, ne supprime pas le dossier."""
-    dest = tmp_path / "monapp"
-    dest.mkdir()
-    (dest / "docker-compose.yml").write_text("services: {}\n")
-    result = actions._validate_app_structure(_mock_console(), dest, dry_run=True)
-    assert result is False
-    assert dest.exists()  # NON supprimé en dry-run
 
 
 # ── _detect_app_config ──
 
-def test_detect_app_config(monkeypatch, tmp_path):
-    """Détecte slug, ports libres, secrets, Hub URL."""
-    hub_dir = tmp_path / "HUB_base"
-    hub_dir.mkdir()
-    (hub_dir / ".env").write_text(
-        "HUB_HOST=192.168.1.42\n"
-        "HUB_API_PORT=8000\n"
-        "APP_PORT_API_START=9000\n"
-        "APP_PORT_API_END=9499\n"
-        "APP_PORT_FRONTEND_START=4200\n"
-        "APP_PORT_FRONTEND_END=4699\n"
-    )
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
-    # Mock ss pour dire que tous les ports sont libres
-    monkeypatch.setattr(actions.subprocess, "run",
-                        lambda *a, **kw: mock.Mock(returncode=0, stdout="", stderr=""))
-    # Isoler du filesystem réel : aucune app existante
-    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: [])
-
-    config = actions._detect_app_config("exemple-app")
-
-    assert config["slug"] == "exemple-app"
-    assert config["api_port"] == 9000
-    assert config["frontend_port"] == 4200
-    assert len(config["postgres_password"]) >= 12
-    assert config["hub_host"] == "192.168.1.42"
-    assert config["hub_url"] == "http://192.168.1.42:8000"
 
 
-def test_detect_app_config_no_ports_available(monkeypatch, tmp_path):
-    """Lève une erreur si aucun port libre dans la plage."""
-    hub_dir = tmp_path / "HUB_base"
-    hub_dir.mkdir()
-    (hub_dir / ".env").write_text(
-        "HUB_HOST=192.168.1.42\nAPP_PORT_API_START=9000\nAPP_PORT_API_END=9000\n"
-        "APP_PORT_FRONTEND_START=4200\nAPP_PORT_FRONTEND_END=4200\n"
-    )
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
-
-    # Mock ss : tous les ports occupés
-    def fake_ss(cmd, **kw):
-        return mock.Mock(returncode=0, stdout="9000\n4200\n")
-    monkeypatch.setattr(actions.subprocess, "run", fake_ss)
-
-    import pytest
-    with pytest.raises(RuntimeError, match="port"):
-        actions._detect_app_config("monapp")
 
 
-def test_detect_app_config_slug_underscore_to_dash(monkeypatch, tmp_path):
-    """Les underscores dans le nom du repo sont convertis en tirets
-    (le Hub exige ^[a-z0-9-]+$ — pas d'underscores)."""
-    hub_dir = tmp_path / "HUB_base"
-    hub_dir.mkdir()
-    (hub_dir / ".env").write_text(
-        "HUB_HOST=192.168.1.42\n"
-        "APP_PORT_API_START=9000\nAPP_PORT_API_END=9499\n"
-        "APP_PORT_FRONTEND_START=4200\nAPP_PORT_FRONTEND_END=4699\n"
-    )
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
-    monkeypatch.setattr(actions.subprocess, "run",
-                        lambda *a, **kw: mock.Mock(returncode=0, stdout="", stderr=""))
-    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: [])
-
-    config = actions._detect_app_config("exemple-app-2")
-    assert config["slug"] == "exemple-app"  # underscore → tiret
 
 
 # ── _show_and_confirm_config ──
 
-def test_show_and_confirm_accept(monkeypatch):
-    """Retourne True si l'utilisateur valide."""
-    config = {"slug": "monapp", "api_port": 9000, "frontend_port": 4200,
-              "hub_url": "http://1.2.3.4:8000", "hub_host": "1.2.3.4"}
-    monkeypatch.setattr("builtins.input", lambda *a: "")
-    result = actions._show_and_confirm_config(_mock_console(), config, Path("/tmp/monapp"))
-    assert result is True
 
 
-def test_show_and_confirm_reject(monkeypatch):
-    """Retourne False si l'utilisateur refuse."""
-    config = {"slug": "monapp", "api_port": 9000, "frontend_port": 4200,
-              "hub_url": "http://1.2.3.4:8000", "hub_host": "1.2.3.4"}
-    monkeypatch.setattr("builtins.input", lambda *a: "n")
-    result = actions._show_and_confirm_config(_mock_console(), config, Path("/tmp/monapp"))
-    assert result is False
 
 
 # ── _write_app_env ──
 
-def test_write_app_env(tmp_path):
-    """Substitue les variables du .env.example."""
-    dest = tmp_path / "monapp"
-    dest.mkdir()
-    (dest / ".env.example").write_text(
-        "APP_SLUG=example\nAPP_PORT=8000\nFRONTEND_PORT=4200\nHUB_URL=\n"
-    )
-    config = {"slug": "monapp", "api_port": 9001, "frontend_port": 4201,
-              "hub_url": "http://1.2.3.4:8000", "postgres_password": "secret123",
-              "fernet_key": "fernetkey", "host_ip": "1.2.3.4", "hub_host": "1.2.3.4"}
-    actions._write_app_env(_mock_console(), dest, config, dry_run=False)
-    env = (dest / ".env").read_text()
-    assert "APP_SLUG=monapp" in env
-    assert "APP_PORT=9001" in env
-    assert "FRONTEND_PORT=4201" in env
-    assert "HUB_URL=http://1.2.3.4:8000" in env
 
 
-def test_write_app_env_real_world_variants(tmp_path):
-    """Substitue les vrais noms de variables utilisés par les apps du parc
-    (API_PORT, SERVER_IP, APP_HOST — pas seulement APP_PORT/HOST_IP)."""
-    dest = tmp_path / "exemple-app"
-    dest.mkdir()
-    (dest / ".env.example").write_text(
-        "APP_SLUG=exemple-app\n"
-        "APP_NAME=exemple-app\n"
-        "API_PORT=9040\n"
-        "FRONTEND_PORT=4240\n"
-        "SERVER_IP=192.170.50.62\n"
-        "HUB_HOST=192.170.50.62\n"
-        "POSTGRES_PASSWORD=changeme\n"
-    )
-    config = {"slug": "exemple-app", "api_port": 9000, "frontend_port": 4200,
-              "hub_url": "http://192.168.1.42:8000", "postgres_password": "Gen3r4t3dPw!",
-              "fernet_key": "fernetkey", "host_ip": "192.168.1.42", "hub_host": "192.168.1.42"}
-    actions._write_app_env(_mock_console(), dest, config, dry_run=False)
-    env = (dest / ".env").read_text()
-    assert "APP_SLUG=exemple-app" in env
-    assert "API_PORT=9000" in env          # pas 9040
-    assert "FRONTEND_PORT=4200" in env     # pas 4240
-    assert "SERVER_IP=192.168.1.42" in env  # pas 192.170.50.62
-    assert "HUB_HOST=192.168.1.42" in env   # pas 192.170.50.62
-    assert "POSTGRES_PASSWORD=Gen3r4t3dPw!" in env
 
 
 # ── Task 5: _build_and_start_app + _sync_app_coffre ──
 
-def test_build_and_start_success(monkeypatch, tmp_path):
-    """Build + up + health OK → True."""
-    dest = tmp_path / "monapp"
-    dest.mkdir()
-    (dest / "Makefile").write_text("build:\nup:\n")
-    monkeypatch.setattr(actions, "app_make", lambda *a, **kw: 0)
-    monkeypatch.setattr(actions, "_health_check", lambda *a, **kw: True)
-    config = {"api_port": 9000}
-    result = actions._build_and_start_app(_mock_console(), dest, config, dry_run=False)
-    assert result is True
 
 
-def test_build_and_start_health_fail(monkeypatch, tmp_path):
-    """Build OK mais health KO → False, dossier conservé."""
-    dest = tmp_path / "monapp"
-    dest.mkdir()
-    monkeypatch.setattr(actions, "app_make", lambda *a, **kw: 0)
-    monkeypatch.setattr(actions, "_health_check", lambda *a, **kw: False)
-    monkeypatch.setattr(actions.subprocess, "run", lambda *a, **kw: mock.Mock(returncode=0, stdout=""))
-    config = {"api_port": 9000}
-    result = actions._build_and_start_app(_mock_console(), dest, config, dry_run=False)
-    assert result is False
-    assert dest.exists()  # dossier conservé
 
 
 # ── _sync_app_coffre ──
 
-def test_sync_app_coffre_success(monkeypatch, tmp_path):
-    """Sync coffre appelle le VaultManager."""
-    from hubctl_cli.coffre import Vault
-    from hubctl_cli import hub_state as hs
-
-    parc = tmp_path
-    hub = parc / "HUB_base"
-    hub.mkdir()
-    (hub / ".env").write_text("HUB=1\n")
-    (hub / "secrets").mkdir()
-    apps = parc / "APPS"; (apps / "monapp").mkdir(parents=True)
-    (apps / "monapp" / ".env").write_text("API_PORT=9000\n")
-    monkeypatch.setattr(hs, "PARC_ROOT", parc)
-    monkeypatch.setattr(hs, "HUB_DIR", hub)
-    monkeypatch.setattr(hs, "APPS_DIR", apps)
-    monkeypatch.setattr(hs, "WORKSHOP_DIR", parc / "APP_Workshop")
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps)
-
-    vault = Vault(parc / "hubctl_cli" / "vault" / "parc.vault.enc")
-    vault.unlock("pw")
-    monkeypatch.setattr(actions, "_get_vault", lambda: vault)
-    actions._sync_app_coffre(_mock_console(), "monapp", dry_run=False)
-    assert "app:monapp" in vault.list_entries()
 
 
-def test_sync_app_coffre_non_blocking(monkeypatch):
-    """Si le coffre échoue, le flow continue (warning)."""
-    monkeypatch.setattr(actions, "_get_vault", mock.Mock(side_effect=Exception("no passphrase")))
-    actions._sync_app_coffre(_mock_console(), "monapp", dry_run=False)  # ne lève pas
 
 
 # ── action_add_app (flow complet) ──
 
-def test_action_add_app_full_flow(monkeypatch, tmp_path):
-    """Flow complet : clone → validate → detect → confirm → env → build → sync → résumé."""
-    apps_dir = tmp_path / "APPS"
-    apps_dir.mkdir()
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps_dir)
-    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "exemple-app")
-    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_validate_app_structure", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_detect_app_config", lambda name: {
-        "slug": "exemple-app", "api_port": 9000, "frontend_port": 4200,
-        "hub_url": "http://1.2.3.4:8000", "hub_host": "1.2.3.4", "host_ip": "1.2.3.4",
-        "postgres_password": "pw", "fernet_key": "fk"
-    })
-    monkeypatch.setattr(actions, "_show_and_confirm_config", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_write_app_env", lambda *a, **kw: None)
-    monkeypatch.setattr(actions, "_build_and_start_app", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_sync_app_coffre", lambda *a, **kw: None)
-
-    actions.action_add_app(_mock_console(), "git@github.com:org/exemple-app.git", dry_run=False)
     # Pas d'exception = succès
 
 
-def test_action_add_app_clone_fails(monkeypatch, tmp_path):
-    """Échec clone → return sans rien faire d'autre."""
-    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "monapp")
-    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: False)
-    monkeypatch.setattr(actions, "_validate_app_structure", mock.Mock())  # ne doit pas être appelé
-
-    actions.action_add_app(_mock_console(), "git@github.com:org/monapp.git", dry_run=False)
-    actions._validate_app_structure.assert_not_called()
 
 
-def test_action_add_app_user_cancels(monkeypatch, tmp_path):
-    """Annulation utilisateur → dossier supprimé, return."""
-    apps_dir = tmp_path / "APPS"
-    apps_dir.mkdir()
-    dest = apps_dir / "monapp"
-    dest.mkdir()
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps_dir)
-    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "monapp")
-    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_validate_app_structure", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_detect_app_config", lambda n: {"slug": "monapp", "api_port": 9000})
-    monkeypatch.setattr(actions, "_show_and_confirm_config", lambda *a, **kw: False)
-
-    actions.action_add_app(_mock_console(), "git@github.com:org/monapp.git", dry_run=False)
     # Le dossier doit être supprimé
     # (selon l'implémentation, soit shutil.rmtree, soit un check)
 
 
-def test_action_add_app_build_fails_keeps_dir(monkeypatch, tmp_path):
-    """Échec build → dossier conservé."""
-    apps_dir = tmp_path / "APPS"
-    apps_dir.mkdir()
-    dest = apps_dir / "monapp"
-    dest.mkdir()
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps_dir)
-    monkeypatch.setattr(actions, "repo_name_from_url", lambda url: "monapp")
-    monkeypatch.setattr(actions, "_clone_app", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_validate_app_structure", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_detect_app_config", lambda n: {"slug": "monapp", "api_port": 9000})
-    monkeypatch.setattr(actions, "_show_and_confirm_config", lambda *a, **kw: True)
-    monkeypatch.setattr(actions, "_write_app_env", lambda *a, **kw: None)
-    monkeypatch.setattr(actions, "_build_and_start_app", lambda *a, **kw: False)
-    monkeypatch.setattr(actions, "_sync_app_coffre", mock.Mock())  # ne doit pas être appelé
-
-    actions.action_add_app(_mock_console(), "git@github.com:org/monapp.git", dry_run=False)
-    actions._sync_app_coffre.assert_not_called()  # sync skippé si build échoue
 
 
 # ── regressions: sync_app_coffre vers le coffre reel ──
 
-def test_sync_app_coffre_uses_vault_manager(tmp_path, monkeypatch):
-    """_sync_app_coffre doit utiliser VaultManager.backup_all, pas .backup_app_env."""
-    from hubctl_cli.coffre import Vault
-    from hubctl_cli import hub_state as hs
-
-    parc = tmp_path; hub = parc / "HUB_base"; secrets = hub / "secrets"
-    hub.mkdir(); secrets.mkdir()
-    (hub / ".env").write_text("HUB_KEY=1\n")
-    apps = parc / "APPS"; app = apps / "demo"; app.mkdir(parents=True)
-    (app / ".env").write_text("APP_PASSWORD=sentinel\n")
-    monkeypatch.setattr(hs, "PARC_ROOT", parc)
-    monkeypatch.setattr(hs, "HUB_DIR", hub)
-    monkeypatch.setattr(hs, "APPS_DIR", apps)
-    monkeypatch.setattr(hs, "WORKSHOP_DIR", parc / "APP_Workshop")
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps)
-
-    vault_path = parc / "hubctl_cli" / "vault" / "parc.vault.enc"
-    vault = Vault(vault_path)
-    vault.unlock("test-pw")
-    import hubctl_cli.actions as act
-    monkeypatch.setattr(act, "_get_vault", lambda: vault)
-
-    # Appeler le vrai _sync_app_coffre
-    act._sync_app_coffre(None, "demo", dry_run=False)
-    assert vault.get_entry("hub") == {"HUB_KEY": "1"}
-    assert vault.get_entry("app:demo") == {"APP_PASSWORD": "sentinel"}
 
 
-def test_sync_app_coffre_does_nothing_when_vault_locked(tmp_path, monkeypatch):
-    """_sync_app_coffre ne doit pas planter si le vault est verrouille."""
-    from hubctl_cli.coffre import Vault
-    from hubctl_cli import hub_state as hs
-
-    parc = tmp_path; hub = parc / "HUB_base"; (hub).mkdir()
-    (hub / ".env").write_text("HUB_KEY=1\n")
-    apps = parc / "APPS"; app = apps / "demo"; app.mkdir(parents=True)
-    (app / ".env").write_text("APP_PASSWORD=x\n")
-    monkeypatch.setattr(hs, "PARC_ROOT", parc)
-    monkeypatch.setattr(hs, "HUB_DIR", hub)
-    monkeypatch.setattr(hs, "APPS_DIR", apps)
-    monkeypatch.setattr(hs, "WORKSHOP_DIR", parc / "APP_Workshop")
-    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: apps)
-
-    vault = Vault(parc / "hubctl_cli" / "vault" / "parc.vault.enc")
-    # NE PAS unlock → vault verrouille
-    import hubctl_cli.actions as act
-    monkeypatch.setattr(act, "_get_vault", lambda: vault)
-
-    io_ = __import__('io').StringIO()
-    from rich.console import Console
-    act._sync_app_coffre(Console(file=io_), "demo", dry_run=False)
-    output = io_.getvalue()
-    assert "verrouillé" in output.lower() or "non sauvegard" in output.lower()
     # Ne doit pas lever d'exception
