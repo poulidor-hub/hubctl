@@ -9,7 +9,7 @@ from rich.text import Text
 
 from hubctl_cli import actions, hub_state, keys, utils, widgets
 from hubctl_cli.canvas import Canvas
-from hubctl_cli.vault_manager import VaultManager
+from hubctl_cli.vault_manager import VaultManager, restore_all
 
 _ACTION_CONSOLE = Console(file=utils.StreamWriter(), force_terminal=False, width=88)
 _vault_mgr: VaultManager | None = None
@@ -327,19 +327,34 @@ def _build_logs() -> Text:
 
 
 def _build_key_hints() -> Text:
+    is_dev = hub_state.get_mode() == "dev"
     text = Text()
     text.append("[ COMMANDES ]\n", style="bold blue")
     text.append("\n")
-    text.append(" 1  ", style="bold green")
-    text.append("Démarrer tout\n", style="white")
-    text.append(" 2  ", style="bold red")
-    text.append("Arrêter tout\n", style="white")
-    text.append(" 3  ", style="bold blue")
-    text.append("Mise à jour tout\n", style="white")
-    text.append(" 4  ", style="bold magenta")
-    text.append("Sauvegarder coffre\n", style="white")
-    text.append(" 5  ", style="bold yellow")
-    text.append("Atelier (workshop)\n", style="white")
+
+    if is_dev:
+        text.append(" 1  ", style="bold green")
+        text.append("Démarrer prod\n", style="white")
+        text.append(" 2  ", style="bold red")
+        text.append("Arrêter prod\n", style="white")
+        text.append(" 3  ", style="bold cyan")
+        text.append("Démarrer dev\n", style="white")
+        text.append(" 4  ", style="bold yellow")
+        text.append("Arrêter dev\n", style="white")
+        text.append(" 5  ", style="bold blue")
+        text.append("Mettre à jour\n", style="white")
+        text.append(" 6  ", style="bold magenta")
+        text.append("Coffre\n", style="white")
+    else:
+        text.append(" 1  ", style="bold green")
+        text.append("Démarrer tout\n", style="white")
+        text.append(" 2  ", style="bold red")
+        text.append("Arrêter tout\n", style="white")
+        text.append(" 3  ", style="bold blue")
+        text.append("Mettre à jour\n", style="white")
+        text.append(" 4  ", style="bold magenta")
+        text.append("Coffre\n", style="white")
+
     text.append("\n")
     text.append(" 0  ", style="dim")
     text.append("Quitter\n", style="dim")
@@ -553,11 +568,41 @@ def _modal(canvas: Canvas):
     yield
 
 
+# ── Coffre submenu ──
+
+def _coffre_submenu(canvas: Canvas, vault_mgr: VaultManager) -> None:
+    with _modal(canvas):
+        choice = widgets.select(canvas, "Coffre :", [
+            "Sauvegarder (backup)",
+            "Restaurer (restore)",
+            "Statut (status)",
+            "← Retour",
+        ])
+    if choice is widgets.ESC or choice is None or choice == "← Retour":
+        return
+
+    if "Sauvegarder" in choice:
+        _run_action(canvas, "Sauvegarde du coffre", lambda: vault_mgr.backup_all())
+    elif "Restaurer" in choice:
+        _run_action(canvas, "Restauration depuis le coffre", lambda: restore_all(vault_mgr.vault))
+    elif "Statut" in choice:
+        divs = vault_mgr.check_divergence()
+        if divs:
+            lines = ["Divergences coffre/disque :"]
+            for k, v in divs.items():
+                lines.append(f"  {k}: {v}")
+            canvas.render(Text("\n".join(lines), style="yellow"))
+        else:
+            canvas.render(Text("✓ Coffre à jour.", style="green"))
+        pause(canvas)
+
+
 # ── Main loop ──
 
 def main_loop(canvas: Canvas, vault: VaultManager) -> None:
     global _vault_mgr
     _vault_mgr = vault
+    is_dev = hub_state.get_mode() == "dev"
 
     install_layout(canvas)
 
@@ -571,23 +616,42 @@ def main_loop(canvas: Canvas, vault: VaultManager) -> None:
             continue
         if isinstance(key, keys.KeyCtrlC):
             raise KeyboardInterrupt()
-        if isinstance(key, keys.KeyChar) and key.char == '1':
-            _run_action(canvas, "Démarrage de toutes les apps", actions.action_start_all)
-        elif isinstance(key, keys.KeyChar) and key.char == '2':
-            _run_action(canvas, "Arrêt de toutes les apps", actions.action_stop_all)
-        elif isinstance(key, keys.KeyChar) and key.char == '3':
-            _run_action(canvas, "Mise à jour complète", actions.action_update_all)
-        elif isinstance(key, keys.KeyChar) and key.char == '4':
-            _run_action(canvas, "Sauvegarde du coffre", lambda: vault.backup_all())
-        elif isinstance(key, keys.KeyChar) and key.char == '5':
-            app = choose_app(canvas, "Choisir une app pour l'atelier")
-            if app:
-                _run_action(canvas, f"Atelier {app}", lambda a=app: actions.action_atelier(None, a))
-        elif isinstance(key, keys.KeyChar) and key.char == '0':
+        if isinstance(key, keys.KeyEsc):
             confirm = widgets.confirm(canvas, "Quitter hubctl ?")
             if confirm:
                 break
-        elif isinstance(key, keys.KeyEsc):
-            confirm = widgets.confirm(canvas, "Quitter hubctl ?")
-            if confirm:
-                break
+        if not isinstance(key, keys.KeyChar):
+            continue
+
+        c = key.char
+
+        if is_dev:
+            if c == '1':
+                _run_action(canvas, "Démarrage prod", actions.action_start_all, target="prod")
+            elif c == '2':
+                _run_action(canvas, "Arrêt prod", actions.action_stop_all, target="prod")
+            elif c == '3':
+                _run_action(canvas, "Démarrage dev", actions.action_start_all, target="dev")
+            elif c == '4':
+                _run_action(canvas, "Arrêt dev", actions.action_stop_all, target="dev")
+            elif c == '5':
+                _run_action(canvas, "Mise à jour complète", actions.action_update_all)
+            elif c == '6':
+                _coffre_submenu(canvas, vault)
+            elif c == '0':
+                confirm = widgets.confirm(canvas, "Quitter hubctl ?")
+                if confirm:
+                    break
+        else:
+            if c == '1':
+                _run_action(canvas, "Démarrage de toutes les apps", actions.action_start_all, target="all")
+            elif c == '2':
+                _run_action(canvas, "Arrêt de toutes les apps", actions.action_stop_all, target="all")
+            elif c == '3':
+                _run_action(canvas, "Mise à jour complète", actions.action_update_all)
+            elif c == '4':
+                _coffre_submenu(canvas, vault)
+            elif c == '0':
+                confirm = widgets.confirm(canvas, "Quitter hubctl ?")
+                if confirm:
+                    break

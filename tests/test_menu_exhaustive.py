@@ -108,13 +108,23 @@ def test_build_services_scrolls_window():
 # ── Key hints ──
 
 
-def test_build_key_hints():
+def test_build_key_hints(monkeypatch):
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
     text = menu._build_key_hints().plain
     assert "Démarrer tout" in text
     assert "Arrêter tout" in text
-    assert "Mise à jour tout" in text
-    assert "Sauvegarder coffre" in text
-    assert "Atelier" in text
+    assert "Mettre à jour" in text
+    assert "Coffre" in text
+    assert "Quitter" in text
+
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "dev")
+    text = menu._build_key_hints().plain
+    assert "Démarrer prod" in text
+    assert "Arrêter prod" in text
+    assert "Démarrer dev" in text
+    assert "Arrêter dev" in text
+    assert "Mettre à jour" in text
+    assert "Coffre" in text
     assert "Quitter" in text
 
 
