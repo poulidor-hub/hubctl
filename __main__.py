@@ -8,7 +8,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all,
-    action_atelier, action_bootstrap,
+    action_atelier, action_bootstrap, action_vpn,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -70,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
     debug_parser.add_argument("--model", choices=["8b", "2b"], default=None, help="Forcer le modele")
     debug_parser.add_argument("--off", action="store_true", help="Desactiver l'agent")
     debug_parser.add_argument("--status", action="store_true", help="Verifier la disponibilite")
+
+    # vpn
+    vpn_parser = sub.add_parser("vpn", help="Gestion WireGuard (sync, status, on, off)")
+    vpn_parser.add_argument("action", choices=["sync", "status", "on", "off"], help="Action VPN")
 
     return p
 
@@ -196,6 +200,16 @@ def _run(args) -> int:
             return 0
         except Exception as e:
             print(f"❌ atelier a echoue : {e}")
+            return 1
+
+    if args.command == "vpn":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        try:
+            action_vpn(console=console, subcmd=args.action, dry_run=global_dry_run)
+            return 0
+        except Exception as e:
+            print(f"❌ vpn a echoue : {e}")
             return 1
 
     # ── TUI (pas de sous-commande ou flags seuls) ──
