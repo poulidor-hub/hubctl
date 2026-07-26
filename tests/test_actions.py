@@ -1,4 +1,7 @@
 from unittest import mock
+
+import pytest
+
 from hubctl_cli import actions, env_manager
 
 
@@ -68,23 +71,6 @@ def test_repo_name_from_url():
     assert actions.repo_name_from_url("nom avec espaces/") is None
 
 
-def test_menu_tree_contains_all_actions():
-    from hubctl_cli import menu, hub_state
-    hub_state.set_mode("dev")
-    all_labels = []
-    for ctx_name, ctx in menu.MENU_TREE.items():
-        for _digit, (label, _target) in ctx.items():
-            all_labels.append(label.lower())
-    for builder in (menu._build_main_menu, menu._build_config_menu):
-        for _digit, (label, _target) in builder().items():
-            all_labels.append(label.lower())
-    joined = " ".join(all_labels)
-    for kw in ["apps", "hub", "configuration", "quitter", "update", "ajouter", "supprimer",
-                "logs", "start", "stop", "coffre", "setup", "réseau", "admin", "workshop",
-                "scénarios", "passer en"]:
-        assert kw in joined
-
-
 def _menu_canvas():
     c = mock.MagicMock()
     c.inner_cols = 98
@@ -97,6 +83,7 @@ def _mock_vault_mgr():
     mgr = mock.MagicMock()
     mgr.vault = mock.MagicMock()
     mgr.vault.is_locked = True
+    mgr.backup_all = mock.MagicMock(return_value={"env": 1, "files": 1})
     return mgr
 
 
@@ -111,65 +98,37 @@ def test_pause_waits_for_enter():
 
 def test_main_loop_quits_on_zero_key():
     from hubctl_cli import menu
-    menu._nav_stack = ["main"]
     canvas = _menu_canvas()
     vault_mgr = _mock_vault_mgr()
     with mock.patch("sys.stdin.fileno", return_value=0), \
          mock.patch.object(menu.keys, "read_key",
-                           side_effect=[menu.keys.KeyChar("0"),
-                                        menu.keys.KeyEnter()]):
-        menu.main_loop(canvas, {"docker": False, "services": [], "hub_version": "v0.1", "apps": []},
-                       vault_mgr, dry_run=True)
+                           side_effect=[menu.keys.KeyChar("0")]), \
+         mock.patch.object(menu.widgets, "confirm", return_value=True):
+        menu.main_loop(canvas, vault_mgr)
     canvas.render.assert_called()
 
 
 def test_main_loop_escape_confirms_then_quits():
     from hubctl_cli import menu
-    menu._nav_stack = ["main"]
     canvas = _menu_canvas()
     vault_mgr = _mock_vault_mgr()
     with mock.patch("sys.stdin.fileno", return_value=0), \
          mock.patch.object(menu.keys, "read_key",
                            side_effect=[menu.keys.KeyEsc()]), \
          mock.patch.object(menu.widgets, "confirm", return_value=True):
-        menu.main_loop(canvas, {"docker": False, "services": [], "apps": []},
-                       vault_mgr, dry_run=True)
+        menu.main_loop(canvas, vault_mgr)
     canvas.render.assert_called()
 
 
 def test_main_loop_ctrlc_at_menu_exits():
     from hubctl_cli import menu
-    menu._nav_stack = ["main"]
     canvas = _menu_canvas()
     vault_mgr = _mock_vault_mgr()
-    import pytest
     with mock.patch("sys.stdin.fileno", return_value=0), \
          mock.patch.object(menu.keys, "read_key",
                            side_effect=[menu.keys.KeyCtrlC()]):
         with pytest.raises(KeyboardInterrupt):
-            menu.main_loop(canvas, {"docker": False, "services": [], "apps": []},
-                           vault_mgr, dry_run=True)
-
-
-def test_main_loop_action_returns_to_menu_after_action():
-    from hubctl_cli import menu
-    menu._nav_stack = ["main"]
-    canvas = _menu_canvas()
-    vault_mgr = _mock_vault_mgr()
-
-    with mock.patch("sys.stdin.fileno", return_value=0), \
-         mock.patch.object(menu.keys, "read_key",
-                           side_effect=[menu.keys.KeyChar("3"),
-                                        menu.keys.KeyEnter(),
-                                        menu.keys.KeyChar("0"),
-                                        menu.keys.KeyEnter()]), \
-         mock.patch.object(menu, "_dispatch",
-                           side_effect=[False, True]) as dispatch_mock:
-        menu.main_loop(canvas, {"docker": False, "services": [], "apps": []},
-                       vault_mgr, dry_run=True)
-    assert dispatch_mock.call_count == 2
-    assert dispatch_mock.call_args_list[0].args[0] == "3"
-    assert dispatch_mock.call_args_list[1].args[0] == "0"
+            menu.main_loop(canvas, vault_mgr)
 
 
 # ── action_init tests ──

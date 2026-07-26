@@ -37,10 +37,11 @@ def test_init_calls_action_init_and_exits():
     ai.assert_called_once()
 
 
-def test_non_interactive_exits_cleanly_without_menu():
+def test_non_interactive_exits_cleanly_without_menu(monkeypatch):
+    monkeypatch.setattr(m.hub_state, "check_docker", lambda: False)
+    monkeypatch.setattr(m.hub_state, "get_hub_services", lambda: [])
     with mock.patch.object(m, "_interactive", return_value=False), \
-         mock.patch.object(m.animation, "preload_with_bar",
-                           return_value={"docker": False, "services": []}), \
+         mock.patch.object(m.animation, "preload_with_bar"), \
          mock.patch.object(m.menu, "main_loop") as ml:
         rc = m.main([])
     assert rc == 0
@@ -59,7 +60,6 @@ def test_keyboard_interrupt_during_intro_goes_to_menu():
          mock.patch.object(m, "VaultManager"), \
          mock.patch.object(m, "_resolve_mode", return_value="prod"), \
          mock.patch.object(m.menu, "_require_vault"), \
-         mock.patch.object(m.menu, "_offer_snapshot"), \
          mock.patch.object(m.menu, "main_loop") as ml:
         rc = m.main([])
     assert rc == 0
@@ -81,7 +81,6 @@ def test_layout_installed_before_choose_mode():
           mock.patch.object(m, "_resolve_mode",
                             side_effect=lambda *a, **k: order.append("mode") or "prod"), \
           mock.patch.object(m.menu, "_require_vault"), \
-          mock.patch.object(m.menu, "_offer_snapshot"), \
           mock.patch.object(m.menu, "main_loop"):
         rc = m.main(["--no-anim"])
     assert rc == 0

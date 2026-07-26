@@ -293,8 +293,8 @@ def _run(args) -> int:
 
     if not interactive:
         console = Console()
-        state = animation.preload_with_bar(console, animate=False)
-        console.print(menu._status_banner(state))
+        animation.preload_with_bar(console, animate=False)
+        console.print(menu._status_banner())
         console.print("[yellow]Mode non interactif : menu indisponible (un terminal TTY est requis).[/yellow]")
         return 0
 
@@ -340,9 +340,7 @@ def _run(args) -> int:
         vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
         vault = Vault(vault_path)
         vault_mgr = VaultManager(vault)
-        if not hub_state.HUB_DIR.exists():
-            menu._offer_init_fresh(canvas, dry_run=global_dry_run)
-        menu.install_layout(canvas, state)
+        menu.install_layout(canvas)
         mode = _resolve_mode(args)
         from rich.console import Console as RichConsole
         if mode == "dev":
@@ -350,9 +348,7 @@ def _run(args) -> int:
         else:
             RichConsole().print("[dim]Mode auto-détecté : PROD (APPS/)[/dim]")
         menu._require_vault(canvas, vault_mgr)
-        if mode == "dev" and hub_state.APPS_DIR.exists():
-            menu._offer_snapshot(canvas, vault_mgr, dry_run=global_dry_run)
-        menu.main_loop(canvas, state, vault_mgr, dry_run=global_dry_run)
+        menu.main_loop(canvas, vault_mgr)
         return 0
 
     except (KeyboardInterrupt, EOFError):
