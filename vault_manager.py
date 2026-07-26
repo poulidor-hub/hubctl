@@ -5,7 +5,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from hubctl_cli import hub_state, env_manager
+from hubctl_cli import __version__, hub_state, env_manager
 from hubctl_cli.coffre import Vault
 
 
@@ -115,3 +115,31 @@ class VaultManager:
                 if d.is_dir() and not d.is_symlink() and not d.name.startswith(".") and (d / ".env").exists():
                     targets.append(f"ws:{d.name}")
         return targets
+
+
+def restore_all(vault, *, dry_run: bool = False, force: bool = False) -> list[str]:
+    """Restaure tous les .env et secrets depuis le coffre."""
+    return vault.restore(dry_run=dry_run, force=force)
+
+
+def export_vault(vault, dest: Path) -> Path:
+    """Exporte le coffre vers un fichier (sync + copie)."""
+    vault.sync()
+    vault.save()
+    import shutil, json, datetime
+    shutil.copy2(vault.path, dest)
+    manifest = dest.with_suffix(".manifest.json")
+    manifest.write_text(json.dumps({
+        "apps": vault._data.get("__apps__", []),
+        "version": __version__,
+        "exported_at": datetime.datetime.utcnow().isoformat()
+    }, indent=2))
+    return dest
+
+
+def import_vault(vault, src: Path) -> bool:
+    """Importe un coffre depuis un fichier externe."""
+    if not src.exists():
+        return False
+    vault.path.write_bytes(src.read_bytes())
+    return True
