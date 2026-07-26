@@ -2058,11 +2058,7 @@ def action_start_all(console=None, *, dry_run: bool = False) -> None:
     con = console or _console
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    active_dir = hub_state.active_apps_dir()
-    apps: list[str] = []
-    if active_dir.exists():
-        apps = [d.name for d in sorted(active_dir.iterdir())
-                if d.is_dir() and not d.name.startswith(".") and (d / "docker-compose.yml").exists()]
+    apps = [a.name for a in hub_state.get_active_apps()]
 
     if not apps:
         con.print("[dim]Aucune app active à démarrer.[/dim]")
@@ -2102,11 +2098,7 @@ def action_stop_all(console=None, *, dry_run: bool = False) -> None:
     con = console or _console
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    active_dir = hub_state.active_apps_dir()
-    apps: list[str] = []
-    if active_dir.exists():
-        apps = [d.name for d in sorted(active_dir.iterdir())
-                if d.is_dir() and not d.name.startswith(".") and (d / "docker-compose.yml").exists()]
+    apps = [a.name for a in hub_state.get_active_apps()]
 
     tasks: dict = {}
     with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
@@ -2198,11 +2190,7 @@ def action_update_all(console=None, *, dry_run: bool = False) -> None:
 
     _ensure_jwt_keys(console, dry_run=dry_run)
 
-    active_dir = hub_state.active_apps_dir()
-    apps: list[str] = []
-    if active_dir.exists():
-        apps = [d.name for d in sorted(active_dir.iterdir())
-                if d.is_dir() and not d.name.startswith(".") and (d / "docker-compose.yml").exists()]
+    apps = [a.name for a in hub_state.get_active_apps()]
 
     if not apps:
         con.print("[dim]Aucune app active à mettre à jour.[/dim]")
@@ -2299,16 +2287,16 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
         if not dry_run and rc != 0:
             con.print(f"[red]✗ Build échoué. ROLLBACK : suppression atelier + restart prod.[/red]")
             shutil.rmtree(str(dest_dir))
-            subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                           cwd=str(source_dir), capture_output=True, timeout=60)
+            utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                            cwd=str(source_dir), dry_run=False, console=con, timeout=60)
             return
         rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "up", "-d"],
                              cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
         if not dry_run and rc != 0:
             con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
             shutil.rmtree(str(dest_dir))
-            subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                           cwd=str(source_dir), capture_output=True, timeout=60)
+            utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                            cwd=str(source_dir), dry_run=False, console=con, timeout=60)
             return
 
         # 6. Health check
@@ -2322,11 +2310,11 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
         if not healthy:
             con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + restart prod.[/red]")
             if not dry_run:
-                subprocess.run(["docker", "compose", "-f", str(dest_compose), "down"],
-                               cwd=str(dest_dir), capture_output=True, timeout=30)
+                utils.run_shell(["docker", "compose", "-f", str(dest_compose), "down"],
+                                cwd=str(dest_dir), dry_run=False, console=con, timeout=30)
                 shutil.rmtree(str(dest_dir))
-                subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                               cwd=str(source_dir), capture_output=True, timeout=60)
+                utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                                cwd=str(source_dir), dry_run=False, console=con, timeout=60)
             return
 
         con.print(f"[green]✓ Atelier « {dest_slug} » créé. Prod {source_slug} stoppée (en place).[/green]")
@@ -2354,14 +2342,29 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
         con.print(f"[bold]→ Déployer « {dest_slug} » vers la prod (code-only)…[/bold]")
         prev_commit = _git_previous_commit(source_dir, con)
         con.print("[bold]→ git pull prod…[/bold]")
-        utils.run_shell(["git", "-C", str(source_dir), "pull", "--recurse-submodules"],
-                        dry_run=dry_run, console=con)
+        rc = utils.run_shell(["git", "-C", str(source_dir), "pull", "--recurse-submodules"],
+                             dry_run=dry_run, console=con)
+        if rc != 0:
+            rc = utils.run_shell(["git", "-C", str(source_dir), "pull"],
+                                 dry_run=dry_run, console=con)
+        if rc != 0:
+            con.print(f"[red]✗ git pull échoué pour {source_slug} — rollback.[/red]")
+            _rollback(source_slug, source_dir, prev_commit, None, con)
+            return
         con.print(f"[bold]→ Build « {source_slug} »…[/bold]")
-        utils.run_shell(["make", "-C", str(source_dir), "build"],
-                        dry_run=dry_run, console=con, timeout=600)
+        rc = utils.run_shell(["make", "-C", str(source_dir), "build"],
+                             dry_run=dry_run, console=con, timeout=600)
+        if rc != 0:
+            con.print(f"[red]✗ Build échoué pour {source_slug} — rollback.[/red]")
+            _rollback(source_slug, source_dir, prev_commit, None, con)
+            return
         con.print(f"[bold]→ Démarrage « {source_slug} »…[/bold]")
-        utils.run_shell(["make", "-C", str(source_dir), "up"],
-                        dry_run=dry_run, console=con, timeout=60)
+        rc = utils.run_shell(["make", "-C", str(source_dir), "up"],
+                             dry_run=dry_run, console=con, timeout=60)
+        if rc != 0:
+            con.print(f"[red]✗ Démarrage échoué pour {source_slug} — rollback.[/red]")
+            _rollback(source_slug, source_dir, prev_commit, None, con)
+            return
         if not _health_check(source_slug, con, timeout=60):
             con.print(f"[red]✗ Health échoué — rollback.[/red]")
             _rollback(source_slug, source_dir, prev_commit, snapshot=None, console=con, dry_run=dry_run)
