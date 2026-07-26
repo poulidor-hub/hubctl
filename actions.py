@@ -365,9 +365,10 @@ def hub_make(target: str, *, dry_run: bool, console=None) -> int:
     )
 
 
-def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout: int = 120) -> int:
+def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout: int = 120, apps_dir: str | None = None) -> int:
+    base = Path(apps_dir) if apps_dir else hub_state.active_apps_dir()
     return utils.run_shell(
-        ["make", "-C", str(hub_state.active_apps_dir() / app_name), target],
+        ["make", "-C", str(base / app_name), target],
         dry_run=dry_run, console=console, timeout=timeout,
     )
 
@@ -590,31 +591,45 @@ def _start_hub(console, *, dry_run: bool) -> bool:
     return rc == 0
 
 
-def _start_app(console, app_name: str, *, dry_run: bool) -> bool:
-    rc = app_make(app_name, "up", dry_run=dry_run, console=console)
+def _start_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = None) -> bool:
+    rc = app_make(app_name, "up", dry_run=dry_run, console=console, apps_dir=apps_dir)
     if rc == 0:
         _health_check(app_name, console=console, timeout=30)
     return rc == 0
 
 
-def action_start_all(console=None, *, dry_run: bool = False) -> None:
-    """Démarre le Hub et toutes les apps actives en parallèle."""
+def action_start_all(console=None, *, target: str = "all", dry_run: bool = False) -> None:
+    """Démarre le Hub et toutes les apps actives en parallèle.
+
+    Args:
+        target: ``\"all\"`` ou ``\"prod\"`` → apps de APPS_DIR + Hub.
+                ``\"dev\"`` → apps de WORKSHOP_DIR, **sans** le Hub.
+    """
+    if target not in ("all", "prod", "dev"):
+        raise ValueError(f"target doit être 'all', 'prod' ou 'dev' (reçu : {target!r})")
+
     con = console or _console
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    apps = [a.name for a in hub_state.get_active_apps()]
+    if target == "dev":
+        apps = [a.name for a in hub_state.get_workshop_apps()]
+        apps_dir = str(hub_state.WORKSHOP_DIR)
+    else:
+        apps = [a.name for a in hub_state.get_apps()]
+        apps_dir = str(hub_state.APPS_DIR)
 
     if not apps:
         con.print("[dim]Aucune app active à démarrer.[/dim]")
 
     tasks: dict = {}
     with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
-        con.print("[bold]→ Démarrage du Hub…[/bold]")
-        tasks[pool.submit(_start_hub, con, dry_run=dry_run)] = "hub"
+        if target in ("all", "prod"):
+            con.print("[bold]→ Démarrage du Hub…[/bold]")
+            tasks[pool.submit(_start_hub, con, dry_run=dry_run)] = "hub"
 
         for app_name in apps:
             con.print(f"[bold]→ Démarrage de « {app_name} »…[/bold]")
-            tasks[pool.submit(_start_app, con, app_name, dry_run=dry_run)] = app_name
+            tasks[pool.submit(_start_app, con, app_name, dry_run=dry_run, apps_dir=apps_dir)] = app_name
 
         ok, fail = 0, 0
         for future in as_completed(tasks):
@@ -632,27 +647,41 @@ def action_start_all(console=None, *, dry_run: bool = False) -> None:
         con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
 
 
-def _stop_app(console, app_name: str, *, dry_run: bool) -> bool:
-    rc = app_make(app_name, "down", dry_run=dry_run, console=console)
+def _stop_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = None) -> bool:
+    rc = app_make(app_name, "down", dry_run=dry_run, console=console, apps_dir=apps_dir)
     return rc == 0
 
 
-def action_stop_all(console=None, *, dry_run: bool = False) -> None:
-    """Arrête toutes les apps actives puis le Hub en parallèle."""
+def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False) -> None:
+    """Arrête toutes les apps actives puis le Hub en parallèle.
+
+    Args:
+        target: ``\"all\"`` ou ``\"prod\"`` → apps de APPS_DIR puis Hub.
+                ``\"dev\"`` → apps de WORKSHOP_DIR, **sans** le Hub.
+    """
+    if target not in ("all", "prod", "dev"):
+        raise ValueError(f"target doit être 'all', 'prod' ou 'dev' (reçu : {target!r})")
+
     con = console or _console
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    apps = [a.name for a in hub_state.get_active_apps()]
+    if target == "dev":
+        apps = [a.name for a in hub_state.get_workshop_apps()]
+        apps_dir = str(hub_state.WORKSHOP_DIR)
+    else:
+        apps = [a.name for a in hub_state.get_apps()]
+        apps_dir = str(hub_state.APPS_DIR)
 
     tasks: dict = {}
     with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
         for app_name in apps:
             con.print(f"[bold]→ Arrêt de « {app_name} »…[/bold]")
-            tasks[pool.submit(_stop_app, con, app_name, dry_run=dry_run)] = app_name
+            tasks[pool.submit(_stop_app, con, app_name, dry_run=dry_run, apps_dir=apps_dir)] = app_name
 
-        con.print("[bold]→ Arrêt du Hub…[/bold]")
-        f_hub = pool.submit(hub_make, "down", dry_run=dry_run, console=con)
-        tasks[f_hub] = "hub"
+        if target in ("all", "prod"):
+            con.print("[bold]→ Arrêt du Hub…[/bold]")
+            f_hub = pool.submit(hub_make, "down", dry_run=dry_run, console=con)
+            tasks[f_hub] = "hub"
 
         ok, fail = 0, 0
         for future in as_completed(tasks):
