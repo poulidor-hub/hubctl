@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.text import Text
@@ -12,7 +13,9 @@ from hubctl_cli.actions import (
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
-from hubctl_cli.vault_manager import VaultManager
+from hubctl_cli.vault_manager import (
+    VaultManager, restore_all, export_vault, import_vault,
+)
 from hubctl_cli import hub_state, keys
 from hubctl_cli.park_export import export_park
 from hubctl_cli.park_restore import restore_park
@@ -31,10 +34,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", help="Commandes")
 
     # start — demarrer tout
-    sub.add_parser("start", help="Demarrer le Hub et toutes les apps")
+    start_parser = sub.add_parser("start", help="Demarrer le Hub et/ou les apps")
+    start_parser.add_argument("target", nargs="?", default="all",
+                              choices=["all", "prod", "dev"])
 
     # stop — arreter tout
-    sub.add_parser("stop", help="Arreter toutes les apps et le Hub")
+    stop_parser = sub.add_parser("stop", help="Arreter toutes les apps et le Hub")
+    stop_parser.add_argument("target", nargs="?", default="all",
+                             choices=["all", "prod", "dev"])
 
     # update — mettre a jour tout
     sub.add_parser("update", help="Mise a jour du Hub et de toutes les apps (git pull + rebuild)")
@@ -74,6 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
     # vpn
     vpn_parser = sub.add_parser("vpn", help="Gestion WireGuard (sync, status, on, off)")
     vpn_parser.add_argument("action", choices=["sync", "status", "on", "off"], help="Action VPN")
+
+    # vault
+    vault_parser = sub.add_parser("vault", help="Gestion du coffre chiffre")
+    vault_sub = vault_parser.add_subparsers(dest="vault_action")
+    vault_sub.add_parser("backup", help="Synchroniser et sauvegarder le coffre")
+    vault_sub.add_parser("restore", help="Restaurer les .env depuis le coffre")
+    vault_sub.add_parser("status", help="Verifier les divergences")
+    vault_export_parser = vault_sub.add_parser("export", help="Exporter le coffre")
+    vault_export_parser.add_argument("dest", help="Chemin de destination")
+    vault_import_parser = vault_sub.add_parser("import", help="Importer un coffre")
+    vault_import_parser.add_argument("src", help="Chemin source")
 
     return p
 
@@ -163,7 +181,7 @@ def _run(args) -> int:
         console = RichConsole()
         _resolve_mode(args)
         try:
-            action_start_all(console=console, dry_run=global_dry_run)
+            action_start_all(console=console, target=args.target, dry_run=global_dry_run)
             return 0
         except Exception as e:
             print(f"❌ start a echoue : {e}")
@@ -174,7 +192,7 @@ def _run(args) -> int:
         console = RichConsole()
         _resolve_mode(args)
         try:
-            action_stop_all(console=console, dry_run=global_dry_run)
+            action_stop_all(console=console, target=args.target, dry_run=global_dry_run)
             return 0
         except Exception as e:
             print(f"❌ stop a echoue : {e}")
@@ -210,6 +228,61 @@ def _run(args) -> int:
             return 0
         except Exception as e:
             print(f"❌ vpn a echoue : {e}")
+            return 1
+
+    if args.command == "vault":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        try:
+            vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
+            vault = Vault(vault_path)
+            vault_mgr = VaultManager(vault)
+
+            if args.vault_action == "backup":
+                summary = vault_mgr.backup_all(on_log=lambda msg: console.print(msg))
+                console.print(f"[green]Coffre sauvegarde : {summary['env']} .env, {summary['files']} fichiers[/green]")
+                return 0
+
+            elif args.vault_action == "restore":
+                restored = restore_all(vault, dry_run=global_dry_run)
+                if restored:
+                    for r in restored:
+                        console.print(f"[green]Restaure : {r}[/green]")
+                else:
+                    console.print("[dim]Aucune divergence a restaurer.[/dim]")
+                return 0
+
+            elif args.vault_action == "status":
+                diverged = vault_mgr.check_divergence()
+                if diverged:
+                    console.print("[yellow]Divergences detectees :[/yellow]")
+                    for target in diverged:
+                        console.print(f"  • {target}")
+                else:
+                    console.print("[green]Aucune divergence.[/green]")
+                return 0
+
+            elif args.vault_action == "export":
+                dest = export_vault(vault, Path(args.dest))
+                console.print(f"[green]Coffre exporte vers {dest}[/green]")
+                return 0
+
+            elif args.vault_action == "import":
+                src = Path(args.src)
+                ok = import_vault(vault, src)
+                if ok:
+                    console.print(f"[green]Coffre importe depuis {src}[/green]")
+                    return 0
+                else:
+                    console.print(f"[red]Fichier source introuvable : {src}[/red]")
+                    return 1
+
+            else:
+                console.print("[red]Action coffre inconnue.[/red]")
+                return 1
+
+        except Exception as e:
+            print(f"❌ vault a echoue : {e}")
             return 1
 
     # ── TUI (pas de sous-commande ou flags seuls) ──
