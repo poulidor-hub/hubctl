@@ -17,24 +17,6 @@ def test_parser_defaults():
     assert args.no_anim is False
     assert args.global_dry_run is False
     assert args.anim is None
-    assert args.init is False
-
-
-def test_parser_init_flag():
-    p = build_parser()
-    args = p.parse_args(["--init"])
-    assert args.init is True
-
-
-def test_init_calls_action_init_and_exits():
-    fake_canvas = mock.Mock()
-    fake_canvas.is_too_small = False
-    with mock.patch.object(m, "_interactive", return_value=False), \
-         mock.patch.object(m.actions, "action_init") as ai, \
-         mock.patch.object(m, "Canvas", return_value=fake_canvas):
-        rc = m.main(["--init"])
-    assert rc == 0
-    ai.assert_called_once()
 
 
 def test_non_interactive_exits_cleanly_without_menu(monkeypatch):
@@ -119,7 +101,6 @@ def test_require_vault_creates_when_absent(monkeypatch):
 
 
 def test_require_vault_create_confirms_and_rejects_mismatch(monkeypatch):
-    """À la création, pw1 != pw2 doit redemander sans unlock."""
     from unittest import mock
     from hubctl_cli import menu
     canvas = mock.Mock()
@@ -127,18 +108,15 @@ def test_require_vault_create_confirms_and_rejects_mismatch(monkeypatch):
     vault.path.exists.return_value = False
     vault_mgr = mock.Mock(vault=vault)
     vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
-    # séquence : pw1="aaa", pw2="bbb" (mismatch) → retry pw1="good", pw2="good" (match)
     monkeypatch.setattr(menu.widgets, "password",
                         mock.Mock(side_effect=["aaa", "bbb", "good", "good"]))
     monkeypatch.setattr(menu, "pause", lambda c: None)
     menu._require_vault(canvas, vault_mgr)
-    # unlock doit recevoir la passphrase confirmée ("good"), pas "aaa"
     vault.unlock.assert_called_once_with("good")
     vault_mgr.backup_all.assert_called_once()
 
 
 def test_require_vault_create_empty_then_valid(monkeypatch):
-    """Passphrase vide puis valide : redemande, puis crée."""
     from unittest import mock
     from hubctl_cli import menu
     canvas = mock.Mock()
@@ -146,7 +124,6 @@ def test_require_vault_create_empty_then_valid(monkeypatch):
     vault.path.exists.return_value = False
     vault_mgr = mock.Mock(vault=vault)
     vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
-    # vide (pw1) → retry ; "x" (pw1), "x" (pw2) → match
     monkeypatch.setattr(menu.widgets, "password",
                         mock.Mock(side_effect=["", "x", "x"]))
     monkeypatch.setattr(menu, "pause", lambda c: None)
@@ -154,138 +131,125 @@ def test_require_vault_create_empty_then_valid(monkeypatch):
     vault.unlock.assert_called_once_with("x")
 
 
-def test_parser_subcommands_slug_and_target():
+# ── Parser: new simplified subcommands ──
+
+def test_parser_start():
     p = build_parser()
-    assert p.parse_args(["work", "shop"]).slug == "shop"
-    assert p.parse_args(["ship", "shop"]).slug == "shop"
-    assert p.parse_args(["update", "hub"]).target == "hub"
-    assert p.parse_args(["start", "hub"]).target == "hub"
-    assert p.parse_args(["stop", "shop"]).target == "shop"
-    assert p.parse_args(["status"]).command == "status"
+    args = p.parse_args(["start"])
+    assert args.command == "start"
+
+
+def test_parser_stop():
+    p = build_parser()
+    args = p.parse_args(["stop"])
+    assert args.command == "stop"
+
+
+def test_parser_update():
+    p = build_parser()
+    args = p.parse_args(["update"])
+    assert args.command == "update"
+
+
+def test_parser_atelier():
+    p = build_parser()
+    args = p.parse_args(["atelier", "shop"])
+    assert args.command == "atelier"
+    assert args.app == "shop"
+
+
+def test_parser_export_flags():
+    p = build_parser()
+    a = p.parse_args(["export"])
+    assert a.command == "export"
+    assert a.app is None
+    assert a.no_encrypt is False
+    b = p.parse_args(["export", "--app", "shop", "--no-encrypt", "--passphrase-stdin"])
+    assert b.app == "shop"
+    assert b.no_encrypt is True
+    assert b.passphrase_stdin is True
+
+
+def test_parser_restore():
+    p = build_parser()
+    a = p.parse_args(["restore", "archive.tar.gz"])
+    assert a.command == "restore"
+    assert a.archive == "archive.tar.gz"
+    assert a.passphrase_stdin is False
+
+
+def test_parser_vpn_rejects_unknown_subcmd(capsys):
+    import pytest as _pytest
+    p = build_parser()
+    with _pytest.raises(SystemExit):
+        p.parse_args(["vpn", "bogus"])
 
 
 def test_parser_mode_flags():
     p = build_parser()
-    assert p.parse_args(["--dev", "status"]).dev is True
-    assert p.parse_args(["--prod", "status"]).prod is True
-    args = p.parse_args(["status"])
+    assert p.parse_args(["--dev", "start"]).dev is True
+    assert p.parse_args(["--prod", "start"]).prod is True
+    args = p.parse_args(["start"])
     assert args.dev is False
     assert args.prod is False
+
+
+def test_parser_dev_prod_mutually_exclusive():
+    import pytest as _pytest
+    p = build_parser()
+    with _pytest.raises(SystemExit):
+        p.parse_args(["--dev", "--prod", "start"])
 
 
 def test_resolve_mode_precedence(monkeypatch):
     p = build_parser()
     monkeypatch.setattr(m.hub_state, "auto_detect_mode", lambda: "prod")
     monkeypatch.delenv("HUBCTL_MODE", raising=False)
-    assert m._resolve_mode(p.parse_args(["--dev", "status"])) == "dev"
-    assert m._resolve_mode(p.parse_args(["--prod", "status"])) == "prod"
+    assert m._resolve_mode(p.parse_args(["--dev", "start"])) == "dev"
+    assert m._resolve_mode(p.parse_args(["--prod", "start"])) == "prod"
     monkeypatch.setenv("HUBCTL_MODE", "dev")
-    assert m._resolve_mode(p.parse_args(["status"])) == "dev"
+    assert m._resolve_mode(p.parse_args(["start"])) == "dev"
     monkeypatch.delenv("HUBCTL_MODE", raising=False)
     monkeypatch.setattr(m.hub_state, "auto_detect_mode", lambda: "dev")
-    assert m._resolve_mode(p.parse_args(["status"])) == "dev"
+    assert m._resolve_mode(p.parse_args(["start"])) == "dev"
 
 
-def test_dispatch_status_calls_action_status(monkeypatch):
+# ── Dispatch tests ──
+
+def test_dispatch_start_calls_action_start_all(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
-    with mock.patch.object(m, "action_status") as st:
-        rc = m.main(["status"])
+    with mock.patch.object(m, "action_start_all") as fn:
+        rc = m.main(["start"])
     assert rc == 0
-    st.assert_called_once()
+    fn.assert_called_once()
 
 
-def test_dispatch_work_calls_action_work(monkeypatch):
+def test_dispatch_stop_calls_action_stop_all(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_stop_all") as fn:
+        rc = m.main(["stop"])
+    assert rc == 0
+    fn.assert_called_once()
+
+
+def test_dispatch_update_calls_action_update_all(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_update_all") as fn:
+        rc = m.main(["update"])
+    assert rc == 0
+    fn.assert_called_once()
+
+
+def test_dispatch_atelier_calls_action_atelier(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
-    with mock.patch.object(m, "action_work") as w:
-        rc = m.main(["work", "shop"])
+    with mock.patch.object(m, "action_atelier") as fn:
+        rc = m.main(["atelier", "shop"])
     assert rc == 0
-    w.assert_called_once()
-    assert w.call_args.args[1] == "shop"
+    fn.assert_called_once()
+    assert fn.call_args.kwargs["app_slug"] == "shop"
 
-
-def test_dispatch_returns_1_on_error(monkeypatch):
-    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
-    with mock.patch.object(m, "action_ship", side_effect=RuntimeError("boom")):
-        rc = m.main(["ship", "shop"])
-    assert rc == 1
-
-
-# ── Task 5: ship --copy-db flag + dry_run threading ──
-
-def test_parser_ship_copy_db_flag():
-    p = build_parser()
-    assert p.parse_args(["ship", "shop"]).copy_db is False
-    assert p.parse_args(["ship", "shop", "--copy-db"]).copy_db is True
-
-
-def test_dispatch_work_threads_dry_run(monkeypatch):
-    monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
-    with mock.patch.object(m, "action_work") as w:
-        rc = m.main(["--dry-run", "work", "shop"])
-    assert rc == 0
-    w.assert_called_once()
-    assert w.call_args.args[1] == "shop"
-    assert w.call_args.kwargs["dry_run"] is True
-
-
-def test_dispatch_ship_threads_copy_db_and_dry_run(monkeypatch):
-    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
-    with mock.patch.object(m, "action_ship") as s:
-        rc = m.main(["--dry-run", "ship", "shop", "--copy-db"])
-    assert rc == 0
-    s.assert_called_once()
-    assert s.call_args.args[1] == "shop"
-    assert s.call_args.kwargs["copy_db"] is True
-    assert s.call_args.kwargs["dry_run"] is True
-
-
-# ── Task 1: logs + restart parser tests ──
-
-def test_parser_logs_mutually_exclusive():
-    from hubctl_cli.__main__ import build_parser
-    p = build_parser()
-    a = p.parse_args(["logs", "hub", "--api"])
-    assert a.target == "hub" and a.api is True and a.db is False
-    try:
-        p.parse_args(["logs", "hub", "--api", "--db"])
-        assert False, "devrait échouer"
-    except SystemExit:
-        pass
-
-
-def test_parser_restart_optional_service():
-    from hubctl_cli.__main__ import build_parser
-    p = build_parser()
-    assert p.parse_args(["restart", "hub"]).service is None
-    assert p.parse_args(["restart", "hub", "api"]).service == "api"
-
-
-# ── Task 2: health + db-shell parser tests ──
-
-def test_parser_health_detailed():
-    from hubctl_cli.__main__ import build_parser
-    p = build_parser()
-    a = p.parse_args(["health", "hub", "--detailed"])
-    assert a.detailed is True
-
-
-def test_parser_db_shell_app():
-    from hubctl_cli.__main__ import build_parser
-    p = build_parser()
-    assert p.parse_args(["db-shell", "shop"]).app == "shop"
-
-
-def test_parser_deploy_flags():
-    from hubctl_cli.__main__ import build_parser
-    p = build_parser()
-    a = p.parse_args(["deploy", "hub", "--validate", "--dry-run"])
-    assert a.target == "hub" and a.validate is True and a.dry_run is True
-
-
-# ── Task 4: vpn subcommand dispatch + argparse choices ──
 
 def test_dispatch_vpn_calls_action_vpn(monkeypatch):
-    """hubctl vpn sync → action_vpn(console, 'sync')."""
     called = {}
     monkeypatch.setattr("hubctl_cli.__main__.action_vpn",
                         lambda con, sub, *, dry_run=False: called.update(sub=sub))
@@ -295,15 +259,34 @@ def test_dispatch_vpn_calls_action_vpn(monkeypatch):
     assert called.get("sub") == "sync"
 
 
-def test_parser_vpn_rejects_unknown_subcmd(capsys):
-    from hubctl_cli.__main__ import build_parser
-    import pytest as _pytest
-    p = build_parser()
-    with _pytest.raises(SystemExit):
-        p.parse_args(["vpn", "bogus"])   # choices=['sync','status','on','off'] → rejette
+def test_dispatch_returns_1_on_error(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_start_all", side_effect=RuntimeError("boom")):
+        rc = m.main(["start"])
+    assert rc == 1
 
 
-# ── Task 5: init subcommand parser + dispatch tests ──
+def test_dry_run_passed_to_actions(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_start_all") as fn:
+        rc = m.main(["--dry-run", "start"])
+    assert rc == 0
+    fn.assert_called_once()
+    assert fn.call_args.kwargs["dry_run"] is True
+
+
+def test_dry_run_vpn_does_not_mutate_db(monkeypatch):
+    from unittest import mock
+    from hubctl_cli import actions
+    _vpn_set_called = []
+    monkeypatch.setattr(actions, "_vpn_set_enabled",
+                        lambda value, con=None: _vpn_set_called.append(value) or True)
+    monkeypatch.setattr(actions, "_vpn_reconcile", lambda *a, **kw: None)
+    actions.action_vpn(mock.Mock(), "on", dry_run=True)
+    assert len(_vpn_set_called) == 0, "vpn DB write should NOT happen in dry-run"
+
+
+# ── Init subcommand tests ──
 
 def test_parser_parses_init_subcommand():
     parser = build_parser()
@@ -330,7 +313,7 @@ def test_init_dispatches_to_action_bootstrap(monkeypatch):
     result = _run(args)
     assert result == 0
     assert len(called) == 1
-    assert called[0][1] == False  # force=False par défaut
+    assert called[0][1] == False
 
 
 def test_init_dispatch_with_force_flag(monkeypatch):
@@ -342,56 +325,12 @@ def test_init_dispatch_with_force_flag(monkeypatch):
     monkeypatch.setattr("hubctl_cli.__main__.action_bootstrap", fake_bootstrap)
     args = build_parser().parse_args(["init", "--force"])
     _run(args)
-    assert called[0][1] == True  # force=True
+    assert called[0][1] == True
 
 
-# ── regressions securite: dry-run, --dev --prod, cibles ──
-
-def test_dry_run_update_passes_true(monkeypatch):
-    """--dry-run update hub doit passer dry_run=True a action_update."""
-    from hubctl_cli.__main__ import _run, build_parser
-    called = {}
-    monkeypatch.setattr("hubctl_cli.__main__.action_update",
-                        lambda con, target, *, dry_run=False: called.update(dry_run=dry_run))
-    args = build_parser().parse_args(["--dry-run", "update", "hub"])
-    _run(args)
-    assert called.get("dry_run") is True
-
-
-def test_dry_run_global_deploy_passes_true(monkeypatch):
-    """--dry-run deploy hub doit passer dry_run=True a action_deploy."""
-    from hubctl_cli.__main__ import _run, build_parser
-    called = {}
-    monkeypatch.setattr("hubctl_cli.__main__.action_deploy",
-                        lambda con, target, *, validate=False, dry_run=False: called.update(dry_run=dry_run))
-    args = build_parser().parse_args(["--dry-run", "deploy", "hub"])
-    _run(args)
-    assert called.get("dry_run") is True
-
-
-def test_dry_run_vpn_does_not_mutate_db(monkeypatch):
-    """vpn on --dry-run ne doit PAS ecrire vpn_enabled en base."""
-    from unittest import mock
-    from hubctl_cli import actions
-    _vpn_set_called = []
-    monkeypatch.setattr(actions, "_vpn_set_enabled",
-                        lambda value, con=None: _vpn_set_called.append(value) or True)
-    monkeypatch.setattr(actions, "_vpn_reconcile", lambda *a, **kw: None)
-    actions.action_vpn(mock.Mock(), "on", dry_run=True)
-    assert len(_vpn_set_called) == 0, "vpn DB write should NOT happen in dry-run"
-
-
-def test_parser_dev_prod_mutually_exclusive():
-    """--dev et --prod ensemble doivent etre rejetes."""
-    from hubctl_cli.__main__ import build_parser
-    import pytest as _pytest
-    p = build_parser()
-    with _pytest.raises(SystemExit):
-        p.parse_args(["--dev", "--prod", "status"])
-
+# ── Securite/safety tests ──
 
 def test_compose_file_rejects_absolute_outside_target(monkeypatch, tmp_path):
-    """_compose_file ne doit pas resoudre un chemin absolu externe."""
     from hubctl_cli import actions, hub_state
     apps = tmp_path / "APPS"; apps.mkdir()
     monkeypatch.setattr(hub_state, "active_apps_dir", lambda: apps)
@@ -403,7 +342,6 @@ def test_compose_file_rejects_absolute_outside_target(monkeypatch, tmp_path):
 
 
 def test_compose_file_rejects_traversal_target(monkeypatch, tmp_path):
-    """_compose_file ne doit pas resoudre '../../etc/docker-compose.yml'."""
     from hubctl_cli import actions, hub_state
     apps = tmp_path / "APPS"; apps.mkdir()
     monkeypatch.setattr(hub_state, "active_apps_dir", lambda: apps)
@@ -412,31 +350,7 @@ def test_compose_file_rejects_traversal_target(monkeypatch, tmp_path):
     assert actions._compose_file("../outside") is None
 
 
-def test_slug_is_sanitized_in_dispatch(monkeypatch):
-    """Les slugs/slugs contenant '/' ou '..' doivent etre rejetes en amont."""
-    from hubctl_cli.__main__ import _run, build_parser
-    args = build_parser().parse_args(["work", "../evil"])
-    # Doit etre bloque (SystemExit ou code retour 1)
-    monkeypatch.setattr("hubctl_cli.__main__.action_work",
-                        lambda *a, **kw: None)  # ne doit pas etre appele
-    monkeypatch.setattr("hubctl_cli.__main__._resolve_mode", lambda args: "dev")
-    rc = _run(args)
-    assert rc == 1, f"slug '../evil' should be rejected, got rc={rc}"
-
-
-def test_dispatch_rejects_multiple_slashes_in_slug(monkeypatch):
-    """Les slugs contenant 'a/b' doivent etre rejetes."""
-    from hubctl_cli.__main__ import _run, build_parser
-    args = build_parser().parse_args(["ship", "foo/bar"])
-    monkeypatch.setattr("hubctl_cli.__main__.action_ship",
-                        lambda *a, **kw: None)
-    monkeypatch.setattr("hubctl_cli.__main__._resolve_mode", lambda args: "prod")
-    rc = _run(args)
-    assert rc == 1, f"slug 'foo/bar' should be rejected, got rc={rc}"
-
-
 def test_bootstrap_does_not_leak_password(monkeypatch, tmp_path):
-    """action_bootstrap ne doit pas imprimer le mot de passe admin en clair."""
     import io
     from hubctl_cli import actions, hub_state
     from rich.console import Console
@@ -458,15 +372,11 @@ def test_bootstrap_does_not_leak_password(monkeypatch, tmp_path):
     console = Console(file=out, width=120)
     rc = actions.action_bootstrap(console, force=True, dry_run=False)
     output = out.getvalue()
-    # Le bootstrap doit reussir
     assert rc == 0
-    # Le mot de passe ne doit PAS apparaitre en clair dans la sortie
-    # On verifie qu'aucune valeur genere par generate_password (12+ chars mixtes) n'apparait
     import re
     pwd_pattern = re.compile(r'[A-Za-z0-9!@#$%^&*()+=]{8,}')
     for line in output.splitlines():
         if 'Mot de passe' in line or 'password' in line.lower():
             match = pwd_pattern.search(line)
-            # Le mot de passe ne devrait pas etre imprime, juste une reference
             if match and len(match.group()) >= 12:
                 raise AssertionError(f"potential password leak in bootstrap output: {line}")
