@@ -2264,8 +2264,8 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
         dst_vol = f"{dest_slug}-postgres-data"
         con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
         if not dry_run:
-            subprocess.run(["docker", "volume", "create", dst_vol],
-                           capture_output=True, timeout=10)
+            run_shell(["docker", "volume", "create", dst_vol],
+                       capture_output=True, timeout=10)
             rc = utils.run_shell(
                 ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
                  "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
