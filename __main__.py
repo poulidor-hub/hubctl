@@ -15,6 +15,7 @@ from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
 from hubctl_cli.vault_manager import (
     VaultManager, restore_all, export_vault, import_vault,
+    app_list, app_set_url,
 )
 from hubctl_cli import hub_state, keys
 from hubctl_cli.park_export import export_park
@@ -92,6 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
     vault_export_parser.add_argument("dest", help="Chemin de destination")
     vault_import_parser = vault_sub.add_parser("import", help="Importer un coffre")
     vault_import_parser.add_argument("src", help="Chemin source")
+
+    vault_app = vault_sub.add_parser("app", help="Apps dans le coffre")
+    app_sub = vault_app.add_subparsers(dest="app_action")
+    app_sub.add_parser("list", help="Lister les apps avec git_url et version")
+    set_url = app_sub.add_parser("set-url", help="Modifier le git URL d'une app")
+    set_url.add_argument("slug")
+    set_url.add_argument("url")
 
     return p
 
@@ -276,6 +284,18 @@ def _run(args) -> int:
                 else:
                     console.print(f"[red]Fichier source introuvable : {src}[/red]")
                     return 1
+
+            elif args.vault_action == "app":
+                if args.app_action == "list":
+                    for app in app_list(vault):
+                        print(f"{app['slug']:30s} {app.get('git_url','-') or '-':50s} {app.get('version','-') or '-'}")
+                elif args.app_action == "set-url":
+                    ok = app_set_url(vault, args.slug, args.url)
+                    print("✓ URL mise à jour" if ok else f"✗ App '{args.slug}' non trouvée")
+                else:
+                    console.print("[red]Action app inconnue.[/red]")
+                    return 1
+                return 0
 
             else:
                 console.print("[red]Action coffre inconnue.[/red]")

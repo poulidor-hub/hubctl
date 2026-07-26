@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import subprocess
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -128,24 +129,43 @@ class Vault:
                         current_entries.add(key)
         self._data["__apps__"] = []
         if hub_state.APPS_DIR.exists():
-            self._data["__apps__"] = [
-                d.name for d in sorted(hub_state.APPS_DIR.iterdir())
-                if d.is_dir() and (d / ".env").exists()
-            ]
+            apps_meta = []
+            for d in sorted(hub_state.APPS_DIR.iterdir()):
+                if d.is_dir() and (d / ".env").exists():
+                    git_url = None
+                    try:
+                        r = subprocess.run(["git", "-C", str(d), "remote", "get-url", "origin"],
+                                          capture_output=True, text=True, timeout=5)
+                        git_url = r.stdout.strip() if r.returncode == 0 else None
+                    except Exception:
+                        pass
+                    version = None
+                    ver_file = d / "VERSION"
+                    if ver_file.exists():
+                        version = ver_file.read_text().strip()
+                    apps_meta.append({"slug": d.name, "git_url": git_url, "version": version})
+            self._data["__apps__"] = apps_meta
         # Supprimer les entrees d'apps disparues
         stale = [k for k in self._data if k.startswith(("app:", "ws:")) and k not in current_entries]
         for k in stale:
             self._data.pop(k, None)
 
-    def restore(self, *, dry_run: bool = False, force: bool = False) -> list[str]:
+    def restore(self, *, dry_run: bool = False, force: bool = False, clone_apps: bool = False) -> list[str]:
         assert self._data is not None, "vault verrouillé"
         written = []
         if "hub" in self._data:
             path = hub_state.HUB_DIR / ".env"
             _write_env_if_needed(path, self._data["hub"], dry_run, force)
             written.append(str(path))
-        for slug in self._data.get("__apps__", []):
+        for app in self._data.get("__apps__", []):
+            slug = app if isinstance(app, str) else app.get("slug", "")
             (hub_state.APPS_DIR / slug).mkdir(parents=True, exist_ok=True)
+        if clone_apps:
+            for app in self._data.get("__apps__", []):
+                slug = app if isinstance(app, str) else app.get("slug", "")
+                git_url = app.get("git_url") if isinstance(app, dict) else None
+                if git_url:
+                    subprocess.run(["git", "clone", git_url, str(hub_state.APPS_DIR / slug)], check=True)
         for key, data in self._data.items():
             if key.startswith("app:"):
                 slug = key[4:]
@@ -153,12 +173,7 @@ class Vault:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 _write_env_if_needed(path, data, dry_run, force)
                 written.append(str(path))
-            elif key.startswith("ws:"):
-                slug = key[3:]
-                path = hub_state.WORKSHOP_DIR / slug / ".env"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                _write_env_if_needed(path, data, dry_run, force)
-                written.append(str(path))
+            # ws:* ignorés : ateliers temporaires, recréés à la demande
         for relpath in self._data.get("__files__", {}):
             raw = self.get_file(relpath)
             if raw is None:

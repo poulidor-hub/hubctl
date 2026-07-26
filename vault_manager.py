@@ -143,3 +143,19 @@ def import_vault(vault, src: Path) -> bool:
         return False
     vault.path.write_bytes(src.read_bytes())
     return True
+
+
+def app_list(vault) -> list[dict]:
+    """Retourne la liste des apps avec leurs métadonnées."""
+    return vault._data.get("__apps__", [])
+
+
+def app_set_url(vault, slug: str, url: str) -> bool:
+    """Modifie le git_url d'une app dans le coffre."""
+    apps = vault._data.get("__apps__", [])
+    for app in apps:
+        if app["slug"] == slug:
+            app["git_url"] = url
+            vault.save()
+            return True
+    return False
