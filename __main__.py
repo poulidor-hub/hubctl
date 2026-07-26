@@ -240,11 +240,23 @@ def _run(args) -> int:
 
     if args.command == "vault":
         from rich.console import Console as RichConsole
+        from getpass import getpass
         console = RichConsole()
         try:
             vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
             vault = Vault(vault_path)
             vault_mgr = VaultManager(vault)
+
+            # Déverrouiller le coffre si nécessaire
+            if vault.is_locked:
+                for attempt in range(3):
+                    pw = getpass("🔐 Passphrase du coffre : ")
+                    if vault.unlock(pw):
+                        break
+                    console.print("[red]Passphrase incorrecte.[/red]" if attempt < 2 else "")
+                else:
+                    console.print("[red]❌ 3 tentatives echouees. Abandon.[/red]")
+                    return 1
 
             if args.vault_action == "backup":
                 summary = vault_mgr.backup_all(on_log=lambda msg: console.print(msg))
