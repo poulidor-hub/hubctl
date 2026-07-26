@@ -12,6 +12,13 @@ from hubctl_cli import env_manager, hub_state
 MAGIC = b"HUBCTLV1"
 
 
+def _write_env_if_needed(path: Path, data: dict, dry_run: bool, force: bool) -> None:
+    if not force and path.exists():
+        return
+    if not dry_run:
+        env_manager.write_env(path, data)
+
+
 def derive_key(passphrase: str, salt: bytes) -> bytes:
     kdf = Scrypt(salt=salt, length=32, n=2 ** 14, r=8, p=1)
     raw = kdf.derive(passphrase.encode("utf-8"))
@@ -119,10 +126,50 @@ class Vault:
                         key = f"ws:{d.name}"
                         self._data[key] = env
                         current_entries.add(key)
+        self._data["__apps__"] = []
+        if hub_state.APPS_DIR.exists():
+            self._data["__apps__"] = [
+                d.name for d in sorted(hub_state.APPS_DIR.iterdir())
+                if d.is_dir() and (d / ".env").exists()
+            ]
         # Supprimer les entrees d'apps disparues
         stale = [k for k in self._data if k.startswith(("app:", "ws:")) and k not in current_entries]
         for k in stale:
             self._data.pop(k, None)
+
+    def restore(self, *, dry_run: bool = False, force: bool = False) -> list[str]:
+        assert self._data is not None, "vault verrouillé"
+        written = []
+        if "hub" in self._data:
+            path = hub_state.HUB_DIR / ".env"
+            _write_env_if_needed(path, self._data["hub"], dry_run, force)
+            written.append(str(path))
+        for slug in self._data.get("__apps__", []):
+            (hub_state.APPS_DIR / slug).mkdir(parents=True, exist_ok=True)
+        for key, data in self._data.items():
+            if key.startswith("app:"):
+                slug = key[4:]
+                path = hub_state.APPS_DIR / slug / ".env"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _write_env_if_needed(path, data, dry_run, force)
+                written.append(str(path))
+            elif key.startswith("ws:"):
+                slug = key[3:]
+                path = hub_state.WORKSHOP_DIR / slug / ".env"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _write_env_if_needed(path, data, dry_run, force)
+                written.append(str(path))
+        for relpath in self._data.get("__files__", {}):
+            raw = self.get_file(relpath)
+            if raw is None:
+                continue
+            target = hub_state.PARC_ROOT / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not dry_run:
+                target.write_bytes(raw)
+                os.chmod(target, 0o600)
+            written.append(str(target))
+        return written
 
     def save(self) -> None:
         assert self._fernet is not None and self._salt is not None
