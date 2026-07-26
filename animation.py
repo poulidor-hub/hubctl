@@ -1,60 +1,11 @@
 from __future__ import annotations
-import importlib
-import pkgutil
-import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
 
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn as ProgressTextColumn
 from rich.text import Text
 
-from hubctl_cli import animations as _anim_pkg
 from hubctl_cli import hub_state
-from hubctl_cli import keys
-
-
-@dataclass
-class Animation:
-    name: str
-    description: str
-    play: object
-
-
-def discover_animations() -> list[Animation]:
-    found: list[Animation] = []
-    for mod in pkgutil.iter_modules(_anim_pkg.__path__):
-        if mod.name.startswith("_"):
-            continue
-        module = importlib.import_module(f"hubctl_cli.animations.{mod.name}")
-        if hasattr(module, "NAME") and callable(getattr(module, "play", None)):
-            found.append(Animation(
-                name=module.NAME,
-                description=getattr(module, "DESCRIPTION", ""),
-                play=module.play,
-            ))
-    found.sort(key=lambda a: a.name)
-    return found
-
-
-DEFAULT_NAME = "hub-ascii"
-
-
-def select_animation(animations: list[Animation], name: str | None = None) -> Animation:
-    if not animations:
-        raise RuntimeError("Aucune animation trouvée dans hubctl_cli/animations/")
-    if name == "random":
-        import random
-        return random.choice(animations)
-    if name:
-        for a in animations:
-            if a.name == name:
-                return a
-    for a in animations:
-        if a.name == DEFAULT_NAME:
-            return a
-    return animations[0]
 
 
 _STEPS = [
@@ -118,15 +69,3 @@ def preload_with_bar(canvas, *, animate: bool = True, state_dict: dict | None = 
             time.sleep(min_step - elapsed)
     return state
 
-
-def play_intro(canvas, *, anim: Animation, state: dict) -> None:
-    """Play animation inside the canvas viewport."""
-    fd = sys.stdin.fileno()
-
-    def nap(secs: float) -> bool:
-        k = keys.read_key(fd, timeout=secs)
-        return k is not None
-
-    local_state = dict(state)
-    local_state["sleep"] = nap
-    anim.play(canvas, local_state)

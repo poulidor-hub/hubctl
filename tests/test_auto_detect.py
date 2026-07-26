@@ -18,13 +18,3 @@ def test_default_cors():
     origins = auto_detect.default_cors("192.0.2.10")
     assert "https://192.0.2.10" in origins
     assert "http://192.0.2.10" in origins
-
-
-def test_detect_host_uid():
-    uid = auto_detect.detect_host_uid()
-    assert uid.isdigit() or uid == "1000"
-
-
-def test_detect_docker_gid_returns_string():
-    gid = auto_detect.detect_docker_gid()
-    assert isinstance(gid, str)

@@ -77,71 +77,6 @@ def select(canvas, message: str, choices: list[str], *, disabled: set[str] | Non
                     selected = start + pos
 
 
-def multiselect(canvas, message: str, choices, *, disabled=None):
-    fd = sys.stdin.fileno()
-    selected_idx = 0
-    toggled: set[int] = set()
-
-    def _is_selectable(i: int, label: str) -> bool:
-        if label.startswith("──") or label.startswith("ℹ") or label == "← Retour":
-            return False
-        if disabled and (i in disabled or label in disabled):
-            return False
-        return True
-
-    while True:
-        rendered = _build_multiselect(message, choices, selected_idx, toggled)
-        canvas.render(rendered)
-        key = keys.read_key(fd, timeout=0.15)
-        if key is None:
-            continue
-        if isinstance(key, keys.KeyEnter):
-            return [choices[i] for i in sorted(toggled) if _is_selectable(i, choices[i])]
-        if isinstance(key, keys.KeyEsc):
-            return ESC
-        if isinstance(key, keys.KeyCtrlC):
-            raise KeyboardInterrupt()
-        if isinstance(key, (keys.KeyUp, keys.KeyDown)):
-            step = -1 if isinstance(key, keys.KeyUp) else 1
-            for _ in range(len(choices)):
-                selected_idx = (selected_idx + step) % len(choices)
-                if _is_selectable(selected_idx, choices[selected_idx]):
-                    break
-        elif isinstance(key, keys.KeyChar):
-            if key.char == " " and _is_selectable(selected_idx, choices[selected_idx]):
-                if selected_idx in toggled:
-                    toggled.discard(selected_idx)
-                else:
-                    toggled.add(selected_idx)
-
-
-def _build_multiselect(message, choices, selected_idx, toggled):
-    lines = [Text(message, style="bold"), Text()]
-    for i, label in enumerate(choices):
-        # Déterminer si c'est un séparateur (texte brut ou Text)
-        plain = label.plain if isinstance(label, Text) else str(label)
-        is_sep = plain.startswith("──") or plain.startswith("ℹ") or plain == "← Retour"
-        if is_sep:
-            if isinstance(label, Text):
-                lines.append(Text.assemble(label, style="dim"))
-            else:
-                lines.append(Text(label, style="dim"))
-            continue
-        marker = "[x]" if i in toggled else "[ ]"
-        cursor = ">" if i == selected_idx else " "
-        rendered = label if isinstance(label, Text) else Text(str(label))
-        line = Text.assemble(
-            Text(f"{cursor} {marker} "),
-            rendered,
-        )
-        if i == selected_idx:
-            line.stylize("bold cyan")
-        lines.append(line)
-    lines.append(Text())
-    lines.append(Text("↑↓ naviguer · Espace sélectionner · Entrée valider · Esc annuler", style="dim"))
-    return Text("\n").join(lines)
-
-
 def confirm(canvas, message: str, *, default: bool = False):
     fd = sys.stdin.fileno()
     choice = default
@@ -165,12 +100,6 @@ def confirm(canvas, message: str, *, default: bool = False):
             elif c in ("2", "n"):
                 choice = False
 
-
-def confirm_by_typing(canvas, message: str, expected: str) -> bool:
-    typed = _text_input(canvas, message, mask=None)
-    if typed is ESC:
-        return False
-    return typed == expected
 
 
 def text(canvas, message: str):

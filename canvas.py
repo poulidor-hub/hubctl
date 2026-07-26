@@ -57,19 +57,6 @@ def _scaled_cols(eff_cols: int) -> tuple[int, int, int]:
     return w1, w2, w3
 
 
-def canvas_geometry(cols: int, rows: int, target_cols: int, target_rows: int) -> dict[str, Any]:
-    is_too_small = cols < _HARD_MIN_COLS or rows < _HARD_MIN_ROWS
-    origin_col = max(0, (cols - target_cols) // 2)
-    origin_row = max(0, (rows - target_rows) // 2)
-    return {
-        "origin_col": origin_col,
-        "origin_row": origin_row,
-        "is_too_small": is_too_small,
-        "inner_cols": target_cols - 2,
-        "inner_rows": target_rows - 2,
-    }
-
-
 def _guard_screen(cols: int, rows: int, target_cols: int, target_rows: int) -> Panel:
     msg = f"Agrandis ton terminal ({_HARD_MIN_COLS}×{_HARD_MIN_ROWS} min)\n(actuel : {cols}×{rows})"
     return Panel(Text(msg, style="bold yellow"), title="Fenêtre trop petite")

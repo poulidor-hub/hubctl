@@ -5,10 +5,9 @@ from hubctl_cli import __main__ as m
 
 def test_parser_flags():
     p = build_parser()
-    args = p.parse_args(["--no-anim", "--dry-run", "--anim", "fly-to-flock"])
+    args = p.parse_args(["--no-anim", "--dry-run"])
     assert args.no_anim is True
     assert args.global_dry_run is True
-    assert args.anim == "fly-to-flock"
 
 
 def test_parser_defaults():
@@ -16,7 +15,6 @@ def test_parser_defaults():
     args = p.parse_args([])
     assert args.no_anim is False
     assert args.global_dry_run is False
-    assert args.anim is None
 
 
 def test_non_interactive_exits_cleanly_without_menu(monkeypatch):
@@ -37,7 +35,7 @@ def test_keyboard_interrupt_during_intro_goes_to_menu():
     fake_canvas.inner_rows = 30
     with mock.patch.object(m, "_interactive", return_value=True), \
          mock.patch.object(m, "Canvas", return_value=fake_canvas), \
-         mock.patch.object(m.animation, "play_intro", side_effect=KeyboardInterrupt), \
+         mock.patch.object(m.animation, "preload_with_bar", side_effect=KeyboardInterrupt), \
          mock.patch.object(m, "Vault"), \
          mock.patch.object(m, "VaultManager"), \
          mock.patch.object(m, "_resolve_mode", return_value="prod"), \
@@ -54,7 +52,6 @@ def test_layout_installed_before_choose_mode():
     order = []
     with mock.patch.object(m, "_interactive", return_value=True), \
          mock.patch.object(m, "Canvas", return_value=fake_canvas), \
-         mock.patch.object(m.animation, "play_intro"), \
          mock.patch.object(m.animation, "preload_with_bar", return_value={}), \
          mock.patch.object(m, "Vault"), \
          mock.patch.object(m, "VaultManager"), \

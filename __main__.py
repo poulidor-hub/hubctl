@@ -1,7 +1,6 @@
 from __future__ import annotations
 import argparse
 import sys
-import threading
 
 from rich.console import Console
 from rich.text import Text
@@ -9,7 +8,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all,
-    action_atelier, action_vpn, action_bootstrap,
+    action_atelier, action_bootstrap,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -21,10 +20,9 @@ from hubctl_cli.park_restore import restore_park
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hubctl", description="Menu CLI de pilotage du hub POULIDOR.")
-    p.add_argument("--no-anim", action="store_true", help="Desactiver l'intro animee.")
+    p.add_argument("--no-anim", action="store_true", help="Desactiver l'animation de chargement.")
     p.add_argument("--dry-run", action="store_true", dest="global_dry_run",
                    help="Imprimer les commandes sans les executer.")
-    p.add_argument("--anim", default=None, help="Nom de l'animation d'intro (ou 'random').")
 
     devprod = p.add_mutually_exclusive_group()
     devprod.add_argument("--dev", action="store_true", dest="dev", help="Forcer le mode DEV")
@@ -72,11 +70,6 @@ def build_parser() -> argparse.ArgumentParser:
     debug_parser.add_argument("--model", choices=["8b", "2b"], default=None, help="Forcer le modele")
     debug_parser.add_argument("--off", action="store_true", help="Desactiver l'agent")
     debug_parser.add_argument("--status", action="store_true", help="Verifier la disponibilite")
-
-    # vpn
-    vpn_parser = sub.add_parser("vpn", help="Cycle de vie du conteneur WireGuard (sync/status/on/off)")
-    vpn_parser.add_argument("subcmd", choices=["sync", "status", "on", "off"],
-                            help="sync | status | on | off")
 
     return p
 
@@ -205,17 +198,6 @@ def _run(args) -> int:
             print(f"❌ atelier a echoue : {e}")
             return 1
 
-    if args.command == "vpn":
-        from rich.console import Console as RichConsole
-        console = RichConsole()
-        _resolve_mode(args)
-        try:
-            action_vpn(console, args.subcmd, dry_run=global_dry_run)
-            return 0
-        except Exception as e:
-            print(f"❌ vpn a echoue : {e}")
-            return 1
-
     # ── TUI (pas de sous-commande ou flags seuls) ──
 
     skip_anim = args.no_anim or not interactive
@@ -241,30 +223,8 @@ def _run(args) -> int:
                 return 0
 
         try:
-            state: dict = {"_loading": True}
-            preload_done = threading.Event()
-
-            def _do_preload():
-                animation.preload_with_bar(canvas, animate=not skip_anim, state_dict=state)
-                state["_loading"] = False
-                preload_done.set()
-
-            if not skip_anim:
-                t = threading.Thread(target=_do_preload, daemon=True)
-                t.start()
-
-            try:
-                if not skip_anim:
-                    anims = animation.discover_animations()
-                    chosen = animation.select_animation(anims, name=args.anim)
-                    animation.play_intro(canvas, anim=chosen, state=state)
-                else:
-                    animation.preload_with_bar(canvas, animate=False, state_dict=state)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                if not skip_anim:
-                    preload_done.wait(timeout=30)
+            state: dict = {}
+            animation.preload_with_bar(canvas, animate=not skip_anim, state_dict=state)
         except KeyboardInterrupt:
             pass
 

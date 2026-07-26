@@ -1,6 +1,5 @@
 from __future__ import annotations
 import json
-import os
 import subprocess
 
 
@@ -44,15 +43,3 @@ def default_cors(server_ip: str) -> str:
     return f"https://{server_ip},http://{server_ip}"
 
 
-def detect_host_uid() -> str:
-    return str(os.getuid())
-
-
-def detect_docker_gid() -> str:
-    try:
-        out = subprocess.check_output(
-            ["getent", "group", "docker"], text=True
-        )
-        return out.strip().split(":")[2]
-    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
-        return "986"
