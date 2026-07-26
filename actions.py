@@ -2034,3 +2034,372 @@ def action_ship(console, slug: str, *, copy_db: bool = False, dry_run: bool = Fa
     if copy_db:
         con.print("\n[bold yellow]⚠️  Mode --copy-db : la DB de prod sera ÉCRASÉE par celle de l'atelier.[/bold yellow]")
     action_prod_deploy(con, slug, copy_db=copy_db, dry_run=dry_run)
+
+
+# ── Task 2: nouvelles actions (start_all, stop_all, update_all, atelier) ──
+
+def _start_hub(console, *, dry_run: bool) -> bool:
+    _ensure_jwt_keys(console, dry_run=dry_run)
+    rc = hub_make("up-prod", dry_run=dry_run, console=console)
+    if rc == 0:
+        _health_check("hub", console=console, timeout=60)
+    return rc == 0
+
+
+def _start_app(console, app_name: str, *, dry_run: bool) -> bool:
+    rc = app_make(app_name, "up", dry_run=dry_run, console=console)
+    if rc == 0:
+        _health_check(app_name, console=console, timeout=30)
+    return rc == 0
+
+
+def action_start_all(console=None, *, dry_run: bool = False) -> None:
+    """Démarre le Hub et toutes les apps actives en parallèle."""
+    con = console or _console
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    active_dir = hub_state.active_apps_dir()
+    apps: list[str] = []
+    if active_dir.exists():
+        apps = [d.name for d in sorted(active_dir.iterdir())
+                if d.is_dir() and not d.name.startswith(".") and (d / "docker-compose.yml").exists()]
+
+    if not apps:
+        con.print("[dim]Aucune app active à démarrer.[/dim]")
+
+    tasks: dict = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
+        con.print("[bold]→ Démarrage du Hub…[/bold]")
+        tasks[pool.submit(_start_hub, con, dry_run=dry_run)] = "hub"
+
+        for app_name in apps:
+            con.print(f"[bold]→ Démarrage de « {app_name} »…[/bold]")
+            tasks[pool.submit(_start_app, con, app_name, dry_run=dry_run)] = app_name
+
+        ok, fail = 0, 0
+        for future in as_completed(tasks):
+            name = tasks[future]
+            try:
+                if future.result():
+                    con.print(f"[green]✓ {name} démarré[/green]")
+                    ok += 1
+                else:
+                    con.print(f"[red]✗ {name} échoué[/red]")
+                    fail += 1
+            except Exception as e:
+                con.print(f"[red]✗ {name} erreur : {e}[/red]")
+                fail += 1
+        con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
+
+
+def _stop_app(console, app_name: str, *, dry_run: bool) -> bool:
+    rc = app_make(app_name, "down", dry_run=dry_run, console=console)
+    return rc == 0
+
+
+def action_stop_all(console=None, *, dry_run: bool = False) -> None:
+    """Arrête toutes les apps actives puis le Hub en parallèle."""
+    con = console or _console
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    active_dir = hub_state.active_apps_dir()
+    apps: list[str] = []
+    if active_dir.exists():
+        apps = [d.name for d in sorted(active_dir.iterdir())
+                if d.is_dir() and not d.name.startswith(".") and (d / "docker-compose.yml").exists()]
+
+    tasks: dict = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
+        for app_name in apps:
+            con.print(f"[bold]→ Arrêt de « {app_name} »…[/bold]")
+            tasks[pool.submit(_stop_app, con, app_name, dry_run=dry_run)] = app_name
+
+        con.print("[bold]→ Arrêt du Hub…[/bold]")
+        f_hub = pool.submit(hub_make, "down", dry_run=dry_run, console=con)
+        tasks[f_hub] = "hub"
+
+        ok, fail = 0, 0
+        for future in as_completed(tasks):
+            name = tasks[future]
+            try:
+                if name == "hub":
+                    future.result()
+                    con.print(f"[green]✓ hub arrêté[/green]")
+                    ok += 1
+                elif future.result():
+                    con.print(f"[green]✓ {name} arrêté[/green]")
+                    ok += 1
+                else:
+                    con.print(f"[red]✗ {name} échoué[/red]")
+                    fail += 1
+            except Exception as e:
+                con.print(f"[red]✗ {name} erreur : {e}[/red]")
+                fail += 1
+        con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
+
+
+def _update_target(console, target: str, *, dry_run: bool) -> bool:
+    """Stop → git pull → build → up → health pour un hub ou une app. Retourne True si succès."""
+    con = console or _console
+    target_path = hub_state.HUB_DIR if target == "hub" else hub_state.active_apps_dir() / target
+    compose_file = target_path / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
+        return False
+
+    prev_commit = _git_previous_commit(target_path, con)
+    snapshot = _db_snapshot(con) if target == "hub" else None
+
+    con.print(f"[bold]→ Arrêt de « {target} »…[/bold]")
+    utils.run_shell(["make", "-C", str(target_path), "down"], dry_run=dry_run, console=con)
+
+    con.print(f"[bold]→ git pull « {target} »…[/bold]")
+    rc = utils.run_shell(["git", "-C", str(target_path), "pull", "--recurse-submodules"],
+                         dry_run=dry_run, console=con)
+    if rc != 0:
+        rc = utils.run_shell(["git", "-C", str(target_path), "pull"],
+                             dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print(f"[red]✗ git pull échoué pour {target} — rollback.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return False
+
+    con.print(f"[bold]→ Build « {target} »…[/bold]")
+    rc = utils.run_shell(["make", "-C", str(target_path), "build"],
+                         dry_run=dry_run, console=con, timeout=600)
+    if rc != 0:
+        con.print(f"[red]✗ Build échoué pour {target} — rollback.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return False
+
+    up_target = "up-prod" if target == "hub" else "up"
+    con.print(f"[bold]→ Démarrage « {target} »…[/bold]")
+    rc = utils.run_shell(["make", "-C", str(target_path), up_target],
+                         dry_run=dry_run, console=con, timeout=60)
+    if rc != 0:
+        con.print(f"[red]✗ Démarrage échoué pour {target} — rollback.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return False
+
+    if not _health_check(target, con, timeout=60):
+        con.print(f"[red]✗ Health échoué pour {target} — rollback.[/red]")
+        _rollback(target, target_path, prev_commit, snapshot, con)
+        return False
+    return True
+
+
+def action_update_all(console=None, *, dry_run: bool = False) -> None:
+    """Met à jour le Hub et toutes les apps actives : git pull + rebuild."""
+    con = console or _console
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not disk_guard(con):
+        return
+
+    _ensure_jwt_keys(console, dry_run=dry_run)
+
+    active_dir = hub_state.active_apps_dir()
+    apps: list[str] = []
+    if active_dir.exists():
+        apps = [d.name for d in sorted(active_dir.iterdir())
+                if d.is_dir() and not d.name.startswith(".") and (d / "docker-compose.yml").exists()]
+
+    if not apps:
+        con.print("[dim]Aucune app active à mettre à jour.[/dim]")
+
+    tasks: dict = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
+        con.print("[bold]→ Mise à jour du Hub…[/bold]")
+        tasks[pool.submit(_update_target, con, "hub", dry_run=dry_run)] = "hub"
+
+        for app_name in apps:
+            con.print(f"[bold]→ Mise à jour de « {app_name} »…[/bold]")
+            tasks[pool.submit(_update_target, con, app_name, dry_run=dry_run)] = app_name
+
+        ok, fail = 0, 0
+        for future in as_completed(tasks):
+            name = tasks[future]
+            try:
+                if future.result():
+                    con.print(f"[green]✓ {name} à jour[/green]")
+                    ok += 1
+                else:
+                    con.print(f"[red]✗ {name} échec[/red]")
+                    fail += 1
+            except Exception as e:
+                con.print(f"[red]✗ {name} erreur : {e}[/red]")
+                fail += 1
+        con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
+
+
+def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
+    """Atelier simplifié : crée, déploie ou supprime l'atelier d'une app.
+
+    - Si l'atelier APP_Workshop/<app>-ws n'existe pas → création (clone DB, rename slug, build&up)
+    - Si l'atelier existe déjà → prompt 3 choix (déployer / supprimer / annuler)
+    """
+    con = console or _console
+    import sys as _sys
+
+    source_dir = hub_state.APPS_DIR / app_slug
+    dest_dir = hub_state.WORKSHOP_DIR / f"{app_slug}-ws"
+    source_slug = app_slug
+    dest_slug = f"{app_slug}-ws"
+
+    if not source_dir.exists():
+        con.print(f"[red]✗ Source introuvable : {source_dir}[/red]")
+        return
+    compose_file = source_dir / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {source_dir}[/red]")
+        return
+
+    # ── CRÉATION (atelier inexistant) ──
+    if not dest_dir.exists():
+        con.print(f"[bold]→ Création de l'atelier « {dest_slug} »…[/bold]")
+
+        # 1. Stop prod
+        con.print(f"[bold]→ Arrêt de la prod {source_slug}…[/bold]")
+        utils.run_shell(["docker", "compose", "-f", str(compose_file), "stop"],
+                        cwd=str(source_dir), dry_run=dry_run, console=con)
+
+        # 2. rsync files
+        con.print(f"[bold]→ Copie fichiers : {source_dir.name} → {dest_dir.name}[/bold]")
+        if dry_run:
+            con.print(f"[dim]$ rsync -a {source_dir}/ {dest_dir}/ (dry-run)[/dim]")
+        else:
+            shutil.copytree(str(source_dir), str(dest_dir), symlinks=True,
+                            ignore=_workshop_ignore)
+
+        # 3. Clone DB volume
+        src_vol = f"{source_slug}-postgres-data"
+        dst_vol = f"{dest_slug}-postgres-data"
+        con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
+        if not dry_run:
+            subprocess.run(["docker", "volume", "create", dst_vol],
+                           capture_output=True, timeout=10)
+            rc = utils.run_shell(
+                ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
+                 "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
+                dry_run=dry_run, console=con, timeout=60)
+            if rc != 0:
+                con.print("[yellow]⚠ Clone DB échoué (atelier démarrera avec DB vide).[/yellow]")
+
+        # 4. Rename slug in .env
+        env_path = dest_dir / ".env"
+        con.print(f"[bold]→ Slug : {source_slug} → {dest_slug}[/bold]")
+        if not dry_run:
+            env_manager.write_env(env_path, {"APP_SLUG": dest_slug})
+
+        # 5. docker compose up -d --build
+        dest_compose = dest_dir / "docker-compose.yml"
+        con.print(f"[bold]→ Build & démarrage de {dest_slug}…[/bold]")
+        rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "build"],
+                             cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=120)
+        if not dry_run and rc != 0:
+            con.print(f"[red]✗ Build échoué. ROLLBACK : suppression atelier + restart prod.[/red]")
+            shutil.rmtree(str(dest_dir))
+            subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                           cwd=str(source_dir), capture_output=True, timeout=60)
+            return
+        rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "up", "-d"],
+                             cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
+        if not dry_run and rc != 0:
+            con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
+            shutil.rmtree(str(dest_dir))
+            subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                           cwd=str(source_dir), capture_output=True, timeout=60)
+            return
+
+        # 6. Health check
+        if not dry_run:
+            env_vars = env_manager.read_env(env_path)
+            api_port = env_vars.get("API_PORT", "8000")
+        else:
+            api_port = "8000"
+        con.print(f"[bold]→ Santé atelier (port {api_port}, timeout 30s)…[/bold]")
+        healthy = True if dry_run else _health_check(dest_slug, console=con, timeout=30, port_override=api_port)
+        if not healthy:
+            con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + restart prod.[/red]")
+            if not dry_run:
+                subprocess.run(["docker", "compose", "-f", str(dest_compose), "down"],
+                               cwd=str(dest_dir), capture_output=True, timeout=30)
+                shutil.rmtree(str(dest_dir))
+                subprocess.run(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                               cwd=str(source_dir), capture_output=True, timeout=60)
+            return
+
+        con.print(f"[green]✓ Atelier « {dest_slug} » créé. Prod {source_slug} stoppée (en place).[/green]")
+        return
+
+    # ── ATELIER EXISTANT ──
+    ws_compose = dest_dir / "docker-compose.yml"
+    con.print(f"[yellow]⚠ Atelier « {dest_slug} » déjà existant.[/yellow]")
+    con.print("   1) [bold]déployer[/bold] — git pull prod + rebuild + restart")
+    con.print("   2) [bold]supprimer[/bold] — backup tar.gz + rm -rf + restart prod")
+    con.print("   3) [bold]annuler[/bold]")
+
+    if not _sys.stdin.isatty():
+        con.print("[dim]Mode non interactif — annulation.[/dim]")
+        return
+
+    try:
+        choice = input("   Choix [1/2/3] : ").strip()
+    except (EOFError, KeyboardInterrupt):
+        con.print("[dim]Annulé.[/dim]")
+        return
+
+    if choice == "1":
+        # Déployer : git pull prod + rebuild + restart
+        con.print(f"[bold]→ Déployer « {dest_slug} » vers la prod (code-only)…[/bold]")
+        prev_commit = _git_previous_commit(source_dir, con)
+        con.print("[bold]→ git pull prod…[/bold]")
+        utils.run_shell(["git", "-C", str(source_dir), "pull", "--recurse-submodules"],
+                        dry_run=dry_run, console=con)
+        con.print(f"[bold]→ Build « {source_slug} »…[/bold]")
+        utils.run_shell(["make", "-C", str(source_dir), "build"],
+                        dry_run=dry_run, console=con, timeout=600)
+        con.print(f"[bold]→ Démarrage « {source_slug} »…[/bold]")
+        utils.run_shell(["make", "-C", str(source_dir), "up"],
+                        dry_run=dry_run, console=con, timeout=60)
+        if not _health_check(source_slug, con, timeout=60):
+            con.print(f"[red]✗ Health échoué — rollback.[/red]")
+            _rollback(source_slug, source_dir, prev_commit, snapshot=None, console=con, dry_run=dry_run)
+            return
+        con.print(f"[green]✓ « {source_slug} » déployée (code-only). Atelier conservé.[/green]")
+
+    elif choice == "2":
+        # Supprimer : backup tar.gz + rm -rf + restart prod
+        con.print(f"[bold red]→ Suppression de l'atelier « {dest_slug} »…[/bold red]")
+
+        # Down -v atelier
+        if ws_compose.exists():
+            utils.run_shell(["docker", "compose", "-f", str(ws_compose), "down", "-v"],
+                            cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
+
+        # Backup tar.gz
+        backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        archive = backups / f"{dest_slug}-{stamp}.tar.gz"
+        con.print(f"[bold]→ Backup atelier → {archive.name}[/bold]")
+        if not dry_run:
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(str(dest_dir), arcname=dest_dir.name)
+            if archive.exists():
+                os.chmod(archive, 0o600)
+
+        # rm -rf
+        con.print(f"[bold]→ Suppression de {dest_dir.name}…[/bold]")
+        if not dry_run:
+            shutil.rmtree(str(dest_dir))
+
+        # Restart prod
+        if source_dir.exists() and (source_dir / "docker-compose.yml").exists():
+            con.print(f"[bold]→ Redémarrage prod « {source_slug} »…[/bold]")
+            utils.run_shell(["make", "-C", str(source_dir), "up"],
+                            dry_run=dry_run, console=con, timeout=60)
+        con.print(f"[green]✓ Atelier « {dest_slug} » supprimé.[/green]")
+
+    else:
+        con.print("[dim]Annulé.[/dim]")
