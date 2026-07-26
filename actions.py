@@ -969,6 +969,12 @@ _WS_IGNORE_NAMES: tuple[str, ...] = (
 
 # ── Task 2: nouvelles actions (start_all, stop_all, update_all, atelier) ──
 
+VPN_VOLUME = "hub_base_vpn-config"
+WG_CONTAINER = "hub-wireguard"
+WG_SERVICE = "wireguard-client"   # nom du service compose (≠ container_name)
+WG_PROFILE = "wireguard"
+
+
 def _vpn_read_enabled(console=None) -> str | None:
     """Lit vpn_enabled en DB. Retourne 'true'/'false', '' si la ligne est absente, ou None si hub-db injoignable."""
     for _ in range(3):
@@ -1117,3 +1123,7 @@ def _port_in_use(port: int) -> bool:
     try:
         result = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
         return f":{port} " in result.stdout
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
