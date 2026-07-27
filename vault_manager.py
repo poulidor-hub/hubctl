@@ -33,7 +33,7 @@ class VaultManager:
 
     def backup_all(self, *, on_log=None) -> dict:
         if self.vault.is_locked or self.vault._data is None:
-            return {"env": 0, "files": 0}
+            return {"env": 0, "files": 0, "db": False}
         self.vault.sync()
         files = 0
         secrets_dir = hub_state.HUB_DIR / "secrets"
@@ -46,9 +46,11 @@ class VaultManager:
                 files += 1
                 if on_log:
                     on_log(f"[vault] backup {rel}")
+        # Backup DB : utilisateurs, apps, service accounts, settings
+        db_ok = _backup_db(self.vault, on_log=on_log)
         self.vault.save()
         env_count = sum(1 for k in self.vault.list_entries() if not k.startswith("__"))
-        return {"env": env_count, "files": files}
+        return {"env": env_count, "files": files, "db": db_ok}
 
     def export_recovery(self) -> "Path":
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -118,8 +120,59 @@ class VaultManager:
 
 
 def restore_all(vault, *, dry_run: bool = False, force: bool = False) -> list[str]:
-    """Restaure tous les .env et secrets depuis le coffre."""
-    return vault.restore(dry_run=dry_run, force=force)
+    """Restaure tous les .env, secrets, et la DB depuis le coffre."""
+    restored = vault.restore(dry_run=dry_run, force=force)
+    # Restaurer la DB si présente
+    db_sql = vault.get_file("HUB_base/backup/hub_dump.sql")
+    if db_sql:
+        if not dry_run:
+            _restore_db(db_sql)
+        restored.append("HUB_base/backup/hub_dump.sql → DB restaurée")
+    return restored
+
+
+def _backup_db(vault, *, on_log=None) -> bool:
+    """Sauvegarde les tables critiques dans le coffre."""
+    import subprocess
+    tables = ["users", "applications", "service_accounts", "service_account_app_access",
+              "app_settings", "user_app_roles", "schema_migrations"]
+    cmd = ["docker", "exec", "hub-db", "pg_dump", "-U", "hubadmin", "-d", "hub_auth",
+           "--data-only", "--inserts"]
+    for t in tables:
+        cmd.extend(["-t", t])
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=30)
+        if r.returncode == 0 and r.stdout:
+            vault.set_file("HUB_base/backup/hub_dump.sql", r.stdout)
+            if on_log:
+                on_log(f"[vault] backup DB ({len(r.stdout)} bytes)")
+            return True
+    except Exception as e:
+        if on_log:
+            on_log(f"[vault] backup DB échoué: {e}")
+    return False
+
+
+def _restore_db(sql: bytes) -> bool:
+    """Rejoue le dump SQL dans la base (truncate d'abord pour éviter les conflits)."""
+    import subprocess
+    # Truncater les tables cibles avant restauration
+    tables = ["user_app_roles", "service_account_app_access", "service_accounts",
+              "applications", "app_settings", "users"]
+    for t in tables:
+        subprocess.run(
+            ["docker", "exec", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
+             "-c", f"TRUNCATE {t} CASCADE"],
+            capture_output=True, timeout=10,
+        )
+    try:
+        r = subprocess.run(
+            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth"],
+            input=sql, capture_output=True, timeout=30,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def export_vault(vault, dest: Path) -> Path:
