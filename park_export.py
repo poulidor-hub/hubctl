@@ -241,9 +241,10 @@ def export_park(app_slug: Optional[str] = None, *, encrypt: bool = True,
 
         # ── Hub ──
         print("🏠 Hub")
-        if not _pg_dump(HUB_DB_CONTAINER, HUB_DB_USER, HUB_DB_NAME,
-                         db_dir / "hub.pgdump"):
-            print("  ⚠️  Hub DB dump échoué")
+        hub_db_dumped = _pg_dump(HUB_DB_CONTAINER, HUB_DB_USER, HUB_DB_NAME,
+                                 db_dir / "hub.pgdump")
+        if not hub_db_dumped:
+            print("  ⚠️  Hub DB dump échoué — la DB Hub ne sera PAS dans l'archive.")
 
         hub_env = _collect_hub_env()
         if hub_env:
@@ -255,10 +256,10 @@ def export_park(app_slug: Optional[str] = None, *, encrypt: bool = True,
         manifest = {
             "version": "1.0",
             "exported_at": datetime.now(timezone.utc).isoformat(),
-            "hub_db": {
-                "pgdump": "databases/hub.pgdump",
-                "env": "envs/HUB_base.env",
-            },
+            "hub_db": (
+                {"pgdump": "databases/hub.pgdump", "env": "envs/HUB_base.env"}
+                if hub_db_dumped else None
+            ),
             "apps": exported_apps,
         }
         (work / "manifest.json").write_text(json.dumps(manifest, indent=2))

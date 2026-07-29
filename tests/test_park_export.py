@@ -150,6 +150,20 @@ def test_export_park_no_encrypt_produces_plain_tarball(fake_parc, tmp_path, monk
     assert not blob.startswith(pe.ARCHIVE_MAGIC), "ne doit pas avoir le magic chiffré"
 
 
+def test_export_park_hub_db_null_when_dump_fails(fake_parc, tmp_path, monkeypatch):
+    """Si le dump Hub DB échoue, le manifest doit marquer hub_db à null — sinon
+    il pointait vers databases/hub.pgdump inexistant → restore abortait plus tard
+    sans explication (faux sentiment de backup valide)."""
+    import io, tarfile, json
+    monkeypatch.setattr(pe, "_pg_dump", lambda c, u, d, o: False)  # dump échoue
+    monkeypatch.setattr(pe, "_detect_apps", lambda: [])
+
+    archive = pe.export_park(encrypt=False)
+    with tarfile.open(archive, "r:gz") as tar:
+        manifest = json.loads(tar.extractfile("manifest.json").read())
+    assert manifest["hub_db"] is None
+
+
 def test_export_park_encrypted_roundtrip_restore(fake_parc, tmp_path, monkeypatch):
     """Une archive chiffrée peut être déchiffrée et extraite (round-trip export→restore)."""
     import io

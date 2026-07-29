@@ -201,8 +201,11 @@ def _bar(value: float, max_val: float) -> str:
 
 
 def _fmt_net(kbs: float) -> str:
+    # kbs = kilo-octets/s. 1000 KB/s ≈ 1 MB/s, 1_000_000 KB/s ≈ 1 GB/s.
+    if kbs >= 1_000_000:
+        return f"{kbs / 1_000_000:.1f}G"
     if kbs >= 1000:
-        return f"{kbs / 1000:.1f}G"
+        return f"{kbs / 1000:.1f}M"
     if kbs >= 1:
         return f"{kbs:.0f}K"
     return f"{kbs * 1000:.0f}"
@@ -297,7 +300,9 @@ def _build_resources() -> Text:
 
     disk = hub_state.get_disk_usage()
     disk_pct = 100 - disk.percent_free
-    text.append(f"/     {_bar(int(disk_pct), 100)} {disk.percent_free:.0f}%\n", style="white")
+    # Barre et chiffre alignés sur le % utilisé (avant : barre = utilisé mais
+    # chiffre = % libre → lecture contradictoire pour l'opérateur).
+    text.append(f"/     {_bar(int(disk_pct), 100)} {disk_pct:.0f}%\n", style="white")
     text.append(f"/data {_bar(0, 100)}   —\n", style="dim")
 
     text.append("\n")
@@ -701,7 +706,7 @@ def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = 
             raise KeyboardInterrupt()
         if isinstance(key, keys.KeyEsc):
             confirm = widgets.confirm(canvas, "Quitter hubctl ?")
-            if confirm:
+            if confirm is True:
                 break
         if not isinstance(key, keys.KeyChar):
             continue
@@ -723,7 +728,7 @@ def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = 
                 _coffre_submenu(canvas, vault)
             elif c == '0':
                 confirm = widgets.confirm(canvas, "Quitter hubctl ?")
-                if confirm:
+                if confirm is True:
                     break
         else:
             if c == '1':
@@ -736,7 +741,7 @@ def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = 
                 _coffre_submenu(canvas, vault)
             elif c == '0':
                 confirm = widgets.confirm(canvas, "Quitter hubctl ?")
-                if confirm:
+                if confirm is True:
                     break
 
         # Rendu immédiat après action pour réactivité

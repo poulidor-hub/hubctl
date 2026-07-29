@@ -61,4 +61,11 @@ def _decode(data: bytes) -> Key:
         return KeyUp()
     if data == b"\x1b[B":
         return KeyDown()
-    return KeyChar(data.decode("utf-8"))
+    try:
+        char = data.decode("utf-8")
+    except UnicodeDecodeError:
+        # En mode cbreak, un caractère multioctet peut arriver scindé en
+        # plusieurs os.read → séquence UTF-8 invalide. On l'ignore (la suite
+        # arrivera au prochain read) plutôt que de crasher le TUI.
+        return None
+    return KeyChar(char)

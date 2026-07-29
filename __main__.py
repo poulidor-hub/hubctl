@@ -175,10 +175,14 @@ def _run(args) -> int:
             return 1
 
     if args.command == "restore":
-        passphrase = None
-        if args.passphrase_stdin:
-            passphrase = sys.stdin.readline().rstrip("\n")
-        return 0 if restore_park(args.archive, passphrase=passphrase) else 1
+        try:
+            passphrase = None
+            if args.passphrase_stdin:
+                passphrase = sys.stdin.readline().rstrip("\n")
+            return 0 if restore_park(args.archive, passphrase=passphrase) else 1
+        except Exception as e:
+            print(f"❌ restore a échoué : {e}")
+            return 1
 
     if args.command == "debug":
         from hubctl_cli.debug_agent import run_debug

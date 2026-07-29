@@ -293,3 +293,36 @@ def test_restore_park_encrypted_wrong_passphrase_fails_gracefully(tmp_path, monk
 
     result = pr.restore_park(str(enc_archive), passphrase="mauvaise")
     assert result is False
+
+
+# ── _safe_extractall : anti path-traversal + compat Python < 3.12 (#18) ──
+
+
+def _make_tar(members):
+    """Construit un tar.gz en mémoire avec les (name, data) donnés."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in members:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    buf.seek(0)
+    return tarfile.open(fileobj=buf, mode="r:gz")
+
+
+def test_safe_extractall_rejects_path_traversal(tmp_path):
+    """Une archive malveillante avec une entrée '../../evil' ne doit pas être
+    extraite hors du répertoire cible."""
+    tar = _make_tar([("../evil_outside.txt", b"PWNED")])
+    assert pr._safe_extractall(tar, tmp_path) is False
+    assert not (tmp_path.parent / "evil_outside.txt").exists()
+
+
+def test_safe_extractall_accepts_clean_archive(tmp_path):
+    tar = _make_tar([
+        ("manifest.json", b'{"version":"1.0"}'),
+        ("databases/hub.pgdump", b"DUMP"),
+    ])
+    assert pr._safe_extractall(tar, tmp_path) is True
+    assert (tmp_path / "manifest.json").read_bytes() == b'{"version":"1.0"}'
+    assert (tmp_path / "databases" / "hub.pgdump").read_bytes() == b"DUMP"

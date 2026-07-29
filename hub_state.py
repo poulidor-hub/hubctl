@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -151,7 +152,11 @@ def get_workshop_apps() -> list[AppInfo]:
 
 
 def _norm(s: str) -> str:
-    return "".join(c for c in s.lower() if c.isalnum())
+    """Normalise un nom pour la correspondance app↔conteneur, comme Compose v2 :
+    minuscules + tout caractère non alphanumérique remplacé par '-'.
+    L'ancienne version supprimait les séparateurs → collisions (ex. 'exemple-app' et
+    'exemple' donnaient 'exemple' → faux statut app)."""
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower())
 
 
 def _docker_api_containers() -> dict[str, tuple[str, str]]:
@@ -171,12 +176,17 @@ def _docker_api_containers() -> dict[str, tuple[str, str]]:
             item = json.loads(line)
         except json.JSONDecodeError:
             continue
-        labels = item.get("Labels", "") or ""
+        labels = item.get("Labels", "")
+        # Docker peut renvoyer Labels soit en string comma-separated, soit en dict
+        # (selon la version/le format). Gérer les deux formes.
         label_map: dict[str, str] = {}
-        for kv in labels.split(","):
-            if "=" in kv:
-                k, _, v = kv.partition("=")
-                label_map[k.strip()] = v.strip()
+        if isinstance(labels, dict):
+            label_map = {str(k).strip(): str(v).strip() for k, v in labels.items()}
+        elif labels:
+            for kv in str(labels).split(","):
+                if "=" in kv:
+                    k, _, v = kv.partition("=")
+                    label_map[k.strip()] = v.strip()
         if label_map.get("com.docker.compose.service") != "api":
             continue
         project = label_map.get("com.docker.compose.project", "")

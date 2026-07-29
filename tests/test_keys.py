@@ -37,6 +37,16 @@ def test_decode_arrow_down():
     assert isinstance(keys._decode(b"\x1b[B"), keys.KeyDown)
 
 
+def test_decode_invalid_utf8_does_not_crash():
+    """En mode cbreak, un caractère multioctet (accent, emoji, collage) peut
+    arriver scindé en plusieurs os.read → bytes UTF-8 invalides. _decode ne doit
+    PAS lever UnicodeDecodeError (sinon crash non rattrapé du TUI)."""
+    # 0xc3 0x28 est une séquence UTF-8 invalide (début de multi-octet non terminé)
+    result = keys._decode(b"\xc3\x28")
+    # On accepte None (séquence ignorée) ou un KeyChar ; l'important = pas d'exception.
+    assert result is None or isinstance(result, keys.KeyChar)
+
+
 def test_decode_empty_raises():
     import pytest
     with pytest.raises(ValueError):

@@ -46,10 +46,13 @@ class StreamWriter:
 
 
 def cancel_current() -> None:
-    global _current_proc
-    if _current_proc is not None:
+    # Capturer dans une var locale évite la TOCTOU : le worker peut mettre
+    # `_current_proc = None` entre le test `is not None` et `.kill()`, ce qui
+    # ferait `None.kill()` → AttributeError (non catché par OSError) → crash UI.
+    proc = _current_proc
+    if proc is not None:
         try:
-            _current_proc.kill()
+            proc.kill()
         except OSError:
             pass
 
@@ -84,6 +87,7 @@ def run_shell(cmd, *, cwd=None, timeout=120, dry_run=False, stream=True, console
         con.print(f"[dim]$ {printable}[/dim]  [yellow](dry-run)[/yellow]")
         return 0
     con.print(f"[dim]$ {printable}[/dim]")
+    proc = None
     try:
         if stream:
             proc = subprocess.Popen(cmd, cwd=cwd, env=env)
@@ -92,6 +96,19 @@ def run_shell(cmd, *, cwd=None, timeout=120, dry_run=False, stream=True, console
         proc = subprocess.run(cmd, cwd=cwd, timeout=timeout, capture_output=True, env=env)
         return proc.returncode
     except subprocess.TimeoutExpired:
+        # `communicate(timeout=)` ne tue PAS le fils : il faut le faire explicitement,
+        # sinon des processus orphelins (docker/compose) s'accumulent après timeout.
+        # (proc n'est assigné que pour la branche Popen ; subprocess.run tue déjà
+        # lui-même son fils avant de lever TimeoutExpired.)
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.communicate(timeout=5)  # reaper le zombie
+            except Exception:
+                pass
         con.print(f"[red]\u2717 Timeout ({timeout}s) sur:[/red] {printable}")
         return 124
     except FileNotFoundError:

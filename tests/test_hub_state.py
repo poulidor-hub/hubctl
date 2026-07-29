@@ -163,3 +163,47 @@ def test_auto_detect_mode_prod_when_workshop_has_only_dirs_without_compose(tmp_p
     (ws / "leftover").mkdir(parents=True)
     monkeypatch.setattr(hub_state, "WORKSHOP_DIR", ws)
     assert hub_state.auto_detect_mode() == "prod"
+
+
+# ── _norm : cohérence avec Compose v2 (remplacement, pas suppression) ──
+
+
+def test_norm_distinguishes_separator_vs_concatenated():
+    """_norm doit distinguer 'exemple-app' de 'exemple'. L'ancienne version supprimait
+    les séparateurs → collision (faux statut app). Compose v2 remplace les
+    séparateurs par '-', on fait pareil."""
+    assert hub_state._norm("exemple-app") != hub_state._norm("exemple")
+
+
+def test_norm_case_insensitive_and_stable():
+    assert hub_state._norm("exemple-app") == hub_state._norm("exemple-app")
+    assert hub_state._norm("MyApp") == hub_state._norm("myapp")
+
+
+# ── _docker_api_containers : Labels au format dict OU string ──
+
+
+def test_docker_api_containers_accepts_labels_as_dict(tmp_path):
+    """Selon la version/format Docker, Labels peut être un dict JSON (et non une
+    string comma-separated). Les deux formes doivent être comprises, sinon toutes
+    les apps apparaissent 'stopped'."""
+    import json
+    items = [
+        # Forme string (docker ps --format json classique)
+        {"Labels": "com.docker.compose.service=api,com.docker.compose.project=appA",
+         "State": "running", "Status": "Up 2h"},
+        # Forme dict (autre format)
+        {"Labels": {"com.docker.compose.service": "api",
+                    "com.docker.compose.project": "appB"},
+         "State": "running", "Status": "Up 1h"},
+        # Service non-api → ignoré
+        {"Labels": {"com.docker.compose.service": "db",
+                    "com.docker.compose.project": "appC"},
+         "State": "running", "Status": "Up 1h"},
+    ]
+    fake = mock.Mock(stdout="\n".join(json.dumps(i) for i in items), returncode=0)
+    with mock.patch.object(hub_state.subprocess, "run", return_value=fake):
+        result = hub_state._docker_api_containers()
+    assert hub_state._norm("appA") in result
+    assert hub_state._norm("appB") in result
+    assert hub_state._norm("appC") not in result  # service=db ignoré

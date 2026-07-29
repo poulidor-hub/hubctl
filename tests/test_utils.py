@@ -64,3 +64,36 @@ def test_streamwriter_falls_back_to_stdout(monkeypatch):
     w = utils.StreamWriter()
     w.write("line1\n")
     assert "line1" in fake.getvalue()
+
+
+# ── run_shell : pas de fuite de processus sur timeout (#14) ──
+
+
+def test_run_shell_kills_proc_on_timeout(monkeypatch):
+    """run_shell (stream=True) doit tuer le processus fils en cas de timeout.
+    `communicate(timeout=)` ne le tue pas — l'ancien code laissait des fils
+    orphelins (docker/compose) s'accumuler."""
+    import subprocess
+    proc = mock.Mock()
+    proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["x"], timeout=1)
+    proc.returncode = 124
+    monkeypatch.setattr(utils.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(utils, "_stream_callback", None)  # forcer la branche non-stream-callback
+    rc = utils.run_shell(["sleep", "1000"], stream=True, timeout=1)
+    assert rc == 124
+    proc.kill.assert_called(), "le proc fils doit être tué sur timeout (pas d'orphelin)"
+
+
+# ── cancel_current : robustesse (#15) ──
+
+
+def test_cancel_current_kills_active_proc(monkeypatch):
+    proc = mock.Mock()
+    monkeypatch.setattr(utils, "_current_proc", proc)
+    utils.cancel_current()
+    proc.kill.assert_called_once()
+
+
+def test_cancel_current_safe_when_none(monkeypatch):
+    monkeypatch.setattr(utils, "_current_proc", None)
+    utils.cancel_current()  # ne doit pas lever

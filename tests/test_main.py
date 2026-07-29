@@ -342,3 +342,17 @@ def test_bootstrap_does_not_leak_password(monkeypatch, tmp_path):
             match = pwd_pattern.search(line)
             if match and len(match.group()) >= 12:
                 raise AssertionError(f"potential password leak in bootstrap output: {line}")
+
+
+def test_restore_command_catches_exception(monkeypatch):
+    """restore doit attraper les exceptions prévisibles (archive corrompue, magic
+    absent, docker manquant) et retourner 1 avec un message, pas cracher un
+    traceback non contrôlé (contrairement à l'ancien code sans try/except)."""
+
+    def _raise(*a, **k):
+        raise ValueError("Archive sans magic PARKEV1")
+    monkeypatch.setattr(m, "restore_park", _raise)
+
+    args = build_parser().parse_args(["restore", "/tmp/inexistent.tar.gz"])
+    rc = m._run(args)
+    assert rc == 1

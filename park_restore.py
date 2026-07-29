@@ -7,6 +7,7 @@ Usage :
 """
 
 from __future__ import annotations
+import io
 import json
 import os
 import shutil
@@ -20,6 +21,34 @@ from hubctl_cli.hub_state import PARC_ROOT, HUB_DIR, APPS_DIR
 from hubctl_cli.park_export import is_encrypted_archive, decrypt_archive, WrongPassphraseError
 
 HUB_DB_CONTAINER = "hub-db"
+
+
+def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> bool:
+    """Extrait une archive de façon sûre.
+
+    - Compat Python 3.10/3.11 : `extractall(filter=)` n'existe qu'en 3.12+.
+    - Sur < 3.12 (pas de filtre natif), on valide manuellement chaque membre
+      (anti path-traversal + rejet des symlinks) avant extraction.
+    Retourne True si extraction OK, False si une entrée est refusée.
+    """
+    dest_resolved = dest.resolve()
+    for m in tar.getmembers():
+        target = (dest / m.name).resolve()
+        try:
+            inside = target.is_relative_to(dest_resolved)
+        except (ValueError, OSError):
+            inside = False
+        if not inside:
+            print(f"❌ Entrée d'archive suspecte (path traversal) : {m.name}")
+            return False
+        if m.issym() or m.islnk():
+            print(f"❌ Lien symbolique interdit dans l'archive : {m.name}")
+            return False
+    if sys.version_info >= (3, 12):
+        tar.extractall(dest, filter="data")
+    else:
+        tar.extractall(dest)
+    return True
 HUB_DB_USER = "hubadmin"
 HUB_DB_NAME = "hub_auth"
 
@@ -173,9 +202,10 @@ def restore_park(archive_path: str, passphrase: str | None = None) -> bool:
         work = Path(tmp)
 
         print(f"📦 Extraction...")
-        import io
         with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
-            tar.extractall(work, filter="data")
+            if not _safe_extractall(tar, work):
+                print("❌ Restauration annulée : archive non sûre.")
+                return False
 
         manifest_file = work / "manifest.json"
         if not manifest_file.exists():

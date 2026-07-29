@@ -5,11 +5,12 @@ import subprocess
 
 def detect_server_ip() -> str:
     try:
-        out = subprocess.check_output(["hostname", "-I"], text=True)
+        out = subprocess.check_output(["hostname", "-I"], text=True, timeout=5)
         ip = out.strip().split()[0]
         if ip:
             return ip
-    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, IndexError):
         pass
     return ""
 
@@ -24,12 +25,12 @@ def lan_cidr(ip: str) -> str:
 def detect_docker_subnet() -> str:
     try:
         out = subprocess.check_output(
-            ["docker", "network", "inspect", "hub-network"], text=True
+            ["docker", "network", "inspect", "hub-network"], text=True, timeout=10
         )
         net = json.loads(out)
         return net[0]["IPAM"]["Config"][0]["Subnet"]
-    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError,
-            KeyError, IndexError):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError,
+            json.JSONDecodeError, KeyError, IndexError):
         return "10.42.0.0/16"
 
 

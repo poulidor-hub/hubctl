@@ -251,6 +251,36 @@ def test_is_healthy_body_empty():
     assert actions._is_healthy_body(None) is False
 
 
+# ── ALTER USER : échappement SQL du mot de passe (#3) ──
+
+
+def test_build_alter_user_sql_escapes_single_quotes():
+    """Un mot de passe contenant une apostrophe (ex: 'OConnor123') ne doit pas
+    casser le ALTER USER ni permettre une injection SQL. Standard SQL : doubler
+    les quotes à l'intérieur d'un string literal."""
+    sql = actions._build_alter_user_sql("hubadmin", "My'Pass'Word")
+    # Les ' internes au password sont doublées (échappement SQL) → pas d'injection.
+    assert "My''Pass''Word" in sql
+    # L'instruction reste bien formée (un seul statement, terminé par ;).
+    assert sql.endswith(";")
+    assert sql.count(";") == 1
+
+
+def test_build_alter_user_sql_simple_password_unchanged():
+    sql = actions._build_alter_user_sql("hubadmin", "plainsecret123")
+    assert sql == "ALTER USER hubadmin WITH PASSWORD 'plainsecret123';"
+
+
+def test_build_alter_user_sql_rejects_invalid_username():
+    """Un POSTGRES_USER contenant un caractère non-identifiant doit être refusé
+    (et non interpolé tel quel dans le SQL)."""
+    import pytest
+    with pytest.raises(ValueError):
+        actions._build_alter_user_sql("hub';DROP--", "x")
+    with pytest.raises(ValueError):
+        actions._build_alter_user_sql("", "x")
+
+
 def test_health_check_reads_app_port(tmp_path, monkeypatch):
     """H3: _health_check doit lire API_PORT du .env de l'app cible."""
     app_dir = tmp_path / "myapp"

@@ -210,6 +210,24 @@ def _read_hub_env_value(key: str, default: str = "") -> str:
     return default
 
 
+_PG_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _build_alter_user_sql(pg_user: str, pg_password: str) -> str:
+    """Construit l'instruction `ALTER USER ... PASSWORD '...'` de façon sûre.
+
+    Le mot de passe vient du `.env` (éditable à la main) : il peut contenir une
+    apostrophe, ce qui ouvrait une injection SQL (l'ancienne interpolation
+    `f"...'{pg_password}'"` cassait le bootstrap silencieusement, voire exécutait
+    du SQL involontaire). On valide l'identifiant `pg_user` et on double les
+    quotes du password (échappement SQL standard pour les string literals).
+    """
+    if not _PG_IDENT_RE.match(pg_user or ""):
+        raise ValueError(f"POSTGRES_USER invalide (identifiant attendu): {pg_user!r}")
+    escaped = (pg_password or "").replace("'", "''")
+    return f"ALTER USER {pg_user} WITH PASSWORD '{escaped}';"
+
+
 def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
     """Synchronise le mot de passe PostgreSQL du volume avec le .env actuel.
 
@@ -274,8 +292,13 @@ def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
     # Connexion en tant que superuser POSTGRES_USER via trust auth locale.
     # Dans l'image Docker postgres, POSTGRES_USER crée le superuser (pas 'postgres').
     # Les connexions socket locales utilisent 'trust' (pas de mot de passe requis).
-    # Le mot de passe contient des caractères spéciaux → on passe via stdin psql.
-    alter_sql = f"ALTER USER {pg_user} WITH PASSWORD '{pg_password}';"
+    # Le mot de passe contient des caractères spéciaux → on passe via stdin psql,
+    # ET on échappe les quotes pour éviter toute injection SQL (cf. _build_alter_user_sql).
+    try:
+        alter_sql = _build_alter_user_sql(pg_user, pg_password)
+    except ValueError as e:
+        con.print(f"[yellow]⚠ {e} — sync du mot de passe annulée.[/yellow]")
+        return
     result = subprocess.run(
         ["docker", "exec", "-i", "hub-db", "psql", "-U", pg_user, "-d", pg_user],
         input=alter_sql, capture_output=True, text=True, timeout=15,
@@ -1407,74 +1430,90 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
         utils.run_shell(["docker", "compose", "-f", str(compose_file), "stop"],
                         cwd=str(source_dir), dry_run=dry_run, console=con)
 
-        # 2. rsync files
-        con.print(f"[bold]→ Copie fichiers : {source_dir.name} → {dest_dir.name}[/bold]")
-        if dry_run:
-            con.print(f"[dim]$ rsync -a {source_dir}/ {dest_dir}/ (dry-run)[/dim]")
-        else:
-            shutil.copytree(str(source_dir), str(dest_dir), symlinks=True,
-                            ignore=_workshop_ignore)
+        # Garde-fou : la prod a été stoppée ci-dessus. Toute exception non gérée
+        # dans la création (copytree, volume create, write_env…) doit garantir le
+        # redémarrage de la prod, sinon elle reste DOWN.
+        try:
+            # 2. rsync files
+            con.print(f"[bold]→ Copie fichiers : {source_dir.name} → {dest_dir.name}[/bold]")
+            if dry_run:
+                con.print(f"[dim]$ rsync -a {source_dir}/ {dest_dir}/ (dry-run)[/dim]")
+            else:
+                shutil.copytree(str(source_dir), str(dest_dir), symlinks=True,
+                                ignore=_workshop_ignore)
 
-        # 3. Clone DB volume
-        src_vol = f"{source_slug}-postgres-data"
-        dst_vol = f"{dest_slug}-postgres-data"
-        con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
-        if not dry_run:
-            subprocess.run(["docker", "volume", "create", dst_vol],
-                           capture_output=True, timeout=10)
-            rc = utils.run_shell(
-                ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
-                 "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
-                dry_run=dry_run, console=con, timeout=60)
-            if rc != 0:
-                con.print("[yellow]⚠ Clone DB échoué (atelier démarrera avec DB vide).[/yellow]")
-
-        # 4. Rename slug in .env
-        env_path = dest_dir / ".env"
-        con.print(f"[bold]→ Slug : {source_slug} → {dest_slug}[/bold]")
-        if not dry_run:
-            env_manager.write_env(env_path, {"APP_SLUG": dest_slug})
-
-        # 5. docker compose up -d --build
-        dest_compose = dest_dir / "docker-compose.yml"
-        con.print(f"[bold]→ Build & démarrage de {dest_slug}…[/bold]")
-        rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "build"],
-                             cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=120)
-        if not dry_run and rc != 0:
-            con.print(f"[red]✗ Build échoué. ROLLBACK : suppression atelier + restart prod.[/red]")
-            shutil.rmtree(str(dest_dir))
-            utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                            cwd=str(source_dir), dry_run=False, console=con, timeout=60)
-            return
-        rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "up", "-d"],
-                             cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
-        if not dry_run and rc != 0:
-            con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
-            shutil.rmtree(str(dest_dir))
-            utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                            cwd=str(source_dir), dry_run=False, console=con, timeout=60)
-            return
-
-        # 6. Health check
-        if not dry_run:
-            env_vars = env_manager.read_env(env_path)
-            api_port = env_vars.get("API_PORT", "8000")
-        else:
-            api_port = "8000"
-        con.print(f"[bold]→ Santé atelier (port {api_port}, timeout 30s)…[/bold]")
-        healthy = True if dry_run else _health_check(dest_slug, console=con, timeout=30, port_override=api_port)
-        if not healthy:
-            con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + restart prod.[/red]")
+            # 3. Clone DB volume
+            src_vol = f"{source_slug}-postgres-data"
+            dst_vol = f"{dest_slug}-postgres-data"
+            con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
             if not dry_run:
-                utils.run_shell(["docker", "compose", "-f", str(dest_compose), "down"],
-                                cwd=str(dest_dir), dry_run=False, console=con, timeout=30)
+                subprocess.run(["docker", "volume", "create", dst_vol],
+                               capture_output=True, timeout=10)
+                rc = utils.run_shell(
+                    ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
+                     "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
+                    dry_run=dry_run, console=con, timeout=60)
+                if rc != 0:
+                    con.print("[yellow]⚠ Clone DB échoué (atelier démarrera avec DB vide).[/yellow]")
+
+            # 4. Rename slug in .env
+            env_path = dest_dir / ".env"
+            con.print(f"[bold]→ Slug : {source_slug} → {dest_slug}[/bold]")
+            if not dry_run:
+                env_manager.write_env(env_path, {"APP_SLUG": dest_slug})
+
+            # 5. docker compose up -d --build
+            dest_compose = dest_dir / "docker-compose.yml"
+            con.print(f"[bold]→ Build & démarrage de {dest_slug}…[/bold]")
+            rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "build"],
+                                 cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=120)
+            if not dry_run and rc != 0:
+                con.print(f"[red]✗ Build échoué. ROLLBACK : suppression atelier + restart prod.[/red]")
                 shutil.rmtree(str(dest_dir))
                 utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
                                 cwd=str(source_dir), dry_run=False, console=con, timeout=60)
-            return
+                return
+            rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "up", "-d"],
+                                 cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
+            if not dry_run and rc != 0:
+                con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
+                shutil.rmtree(str(dest_dir))
+                utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                                cwd=str(source_dir), dry_run=False, console=con, timeout=60)
+                return
 
-        con.print(f"[green]✓ Atelier « {dest_slug} » créé. Prod {source_slug} stoppée (en place).[/green]")
-        return
+            # 6. Health check
+            if not dry_run:
+                env_vars = env_manager.read_env(env_path)
+                api_port = env_vars.get("API_PORT", "8000")
+            else:
+                api_port = "8000"
+            con.print(f"[bold]→ Santé atelier (port {api_port}, timeout 30s)…[/bold]")
+            healthy = True if dry_run else _health_check(dest_slug, console=con, timeout=30, port_override=api_port)
+            if not healthy:
+                con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + restart prod.[/red]")
+                if not dry_run:
+                    utils.run_shell(["docker", "compose", "-f", str(dest_compose), "down"],
+                                    cwd=str(dest_dir), dry_run=False, console=con, timeout=30)
+                    shutil.rmtree(str(dest_dir))
+                    utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                                    cwd=str(source_dir), dry_run=False, console=con, timeout=60)
+                return
+
+            con.print(f"[green]✓ Atelier « {dest_slug} » créé. Prod {source_slug} stoppée (en place).[/green]")
+            return
+        except Exception as e:
+            con.print(f"[red]✗ Erreur pendant la création de l'atelier : {e}[/red]")
+            con.print(f"[red]  ROLLBACK de sécurité : nettoyage + redémarrage de la prod {source_slug}.[/red]")
+            if not dry_run:
+                try:
+                    if dest_dir.exists():
+                        shutil.rmtree(str(dest_dir))
+                except OSError:
+                    pass
+                utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                                cwd=str(source_dir), dry_run=False, console=con, timeout=60)
+            return
 
     # ── ATELIER EXISTANT ──
     ws_compose = dest_dir / "docker-compose.yml"

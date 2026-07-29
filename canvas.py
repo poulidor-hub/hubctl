@@ -141,16 +141,26 @@ class Canvas:
         signal.signal(signal.SIGWINCH, self._on_resize)
 
     def close(self) -> None:
-        if self._live is not None:
-            self._live.__exit__(None, None, None)
-            self._live = None
+        # Restaurer le terminal EN PREMIER (et de façon indépendante) : si le
+        # __exit__ de Live lève (stdout cassé, état incohérent), le terminal doit
+        # quand même revenir en mode normal — sinon l'opérateur se retrouve avec
+        # une entrée raw (sans écho) après un crash.
         if self._old_termios is not None and self._raw_fd is not None:
             try:
                 signal.signal(signal.SIGWINCH, signal.SIG_DFL)
             except (TypeError, ValueError, OSError):
                 pass
-            termios.tcsetattr(self._raw_fd, termios.TCSADRAIN, self._old_termios)
+            try:
+                termios.tcsetattr(self._raw_fd, termios.TCSADRAIN, self._old_termios)
+            except OSError:
+                pass
             self._old_termios = None
+        if self._live is not None:
+            try:
+                self._live.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._live = None
 
     def render(self, inner: RenderableType) -> None:
         if self._live is None:
