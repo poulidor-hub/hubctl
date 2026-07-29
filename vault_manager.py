@@ -60,33 +60,37 @@ class VaultManager:
         dest.mkdir(parents=True, exist_ok=True)
         os.chmod(dest, 0o700)
         old_umask = os.umask(0o077)
-        for entry in self.vault.list_entries():
-            if entry.startswith("__"):
-                continue
-            data = self.vault.get_entry(entry)
-            if entry == "hub":
-                rel = Path("HUB_base") / ".env"
-            elif entry.startswith("app:"):
-                rel = Path("APPS") / entry[4:] / ".env"
-            elif entry.startswith("ws:"):
-                rel = Path("APP_Workshop") / entry[3:] / ".env"
-            else:
-                continue
-            out = (dest / rel).resolve()
-            if not out.is_relative_to(dest.resolve()):
-                continue
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("".join(f"{k}={v}\n" for k, v in data.items()))
-        for rel in self.vault.list_files():
-            raw = self.vault.get_file(rel)
-            if raw is None:
-                continue
-            out = (dest / rel).resolve()
-            if not out.is_relative_to(dest.resolve()):
-                continue
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(raw)
-        os.umask(old_umask)
+        try:
+            for entry in self.vault.list_entries():
+                if entry.startswith("__"):
+                    continue
+                data = self.vault.get_entry(entry)
+                if entry == "hub":
+                    rel = Path("HUB_base") / ".env"
+                elif entry.startswith("app:"):
+                    rel = Path("APPS") / entry[4:] / ".env"
+                elif entry.startswith("ws:"):
+                    rel = Path("APP_Workshop") / entry[3:] / ".env"
+                else:
+                    continue
+                out = (dest / rel).resolve()
+                if not out.is_relative_to(dest.resolve()):
+                    continue
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text("".join(f"{k}={v}\n" for k, v in data.items()))
+                os.chmod(out, 0o600)
+            for rel in self.vault.list_files():
+                raw = self.vault.get_file(rel)
+                if raw is None:
+                    continue
+                out = (dest / rel).resolve()
+                if not out.is_relative_to(dest.resolve()):
+                    continue
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(raw)
+                os.chmod(out, 0o600)
+        finally:
+            os.umask(old_umask)
         return dest
 
     def check_divergence(self) -> dict[str, str]:
@@ -242,7 +246,7 @@ def export_vault(vault, dest: Path) -> Path:
     manifest.write_text(json.dumps({
         "apps": vault._data.get("__apps__", []),
         "version": __version__,
-        "exported_at": datetime.datetime.utcnow().isoformat()
+        "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }, indent=2))
     return dest
 

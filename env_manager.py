@@ -22,6 +22,14 @@ def read_env(path: Path) -> dict[str, str]:
 
 
 def write_env(path: Path, updates: dict[str, str]) -> None:
+    # Valider les valeurs : un '\n' dans une valeur casse le fichier .env
+    # (la ligne suivante serait interprétée comme une nouvelle variable).
+    for k, v in updates.items():
+        if "\n" in v:
+            raise ValueError(
+                f"La valeur de {k} contient un saut de ligne — "
+                f"les valeurs multilignes ne sont pas supportées dans les .env"
+            )
     if not path.exists():
         lines = [f"{k}={v}" for k, v in updates.items()]
         _atomic_write(path, "\n".join(lines) + "\n")
@@ -50,6 +58,14 @@ def _atomic_write(path: Path, content: str) -> None:
         os.fsync(fd)
         os.close(fd)
         os.replace(tmp, str(path))
+        # Durabilité : forcer le fsync du répertoire parent pour garantir que
+        # le rename est persisté en cas de crash système (atomicité préservée).
+        try:
+            dirfd = os.open(str(path.parent), os.O_RDONLY)
+            os.fsync(dirfd)
+            os.close(dirfd)
+        except OSError:
+            pass
     except Exception:
         try:
             os.close(fd)

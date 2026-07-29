@@ -81,10 +81,10 @@ def _check_hub_is_empty() -> bool:
             r = _run(["docker", "exec", HUB_DB_CONTAINER,
                       "psql", "-U", HUB_DB_USER, "-d", HUB_DB_NAME,
                       "-tAc",
-                      "SELECT COUNT(*) FROM information_schema.tables "
-                      "WHERE table_schema='public' AND table_name='users'"],
+                      "SELECT COUNT(*) FROM users"],
                      check=False)
-            if r.returncode == 0 and r.stdout.strip() == "0":
+            # 0 = table vide ou inexistante → Hub non initialisé
+            if r.returncode == 0 and r.stdout.strip() in ("0", ""):
                 return True  # Table users vide ou inexistante → Hub non initialisé
             return False  # Table users a des données → Hub initialisé
         except Exception as e:

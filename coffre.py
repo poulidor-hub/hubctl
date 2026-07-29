@@ -67,6 +67,11 @@ def _write_env_if_needed(path: Path, data: dict, dry_run: bool, force: bool) -> 
 
 
 def derive_key(passphrase: str, salt: bytes) -> bytes:
+    # n=2^14 (16 384) est délibérément bas pour la rapidité de déchiffrement
+    # au démarrage du TUI. Ce paramètre n'est PAS versionné dans le fichier
+    # coffre (MAGIC=HUBCTLV1, pas de header KDF). Pour monter à 2^17+ (résistance
+    # brute-force renforcée), il faudra introduire un versionnage du KDF dans le
+    # blob chiffré (ex: header {version,kdf,n,r,p} avant le salt).
     kdf = Scrypt(salt=salt, length=32, n=2 ** 14, r=8, p=1)
     raw = kdf.derive(passphrase.encode("utf-8"))
     return base64.urlsafe_b64encode(raw)
@@ -103,6 +108,10 @@ class Vault:
             self._fernet = fernet
             self._data = data
         else:
+            if not passphrase:
+                # Une passphrase vide rend le coffre trivialement déchiffrable
+                # (Fernet avec une clé dérivée d'une chaîne vide).
+                return False
             self._salt = os.urandom(16)
             self._fernet = Fernet(derive_key(passphrase, self._salt))
             self._data = {}
