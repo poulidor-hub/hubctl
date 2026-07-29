@@ -2,6 +2,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -797,6 +798,46 @@ def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tup
         return (False, f"erreur : {e}")
 
 
+def action_remove_app(console, name: str, vault=None, *, dry_run: bool = False) -> None:
+    """Supprime physiquement une app : compose down -v + rm -rf dossier.
+
+    Utilisé par ``seed --prune`` pour retirer les apps non listées dans le seed.
+    Préserve un backup tar.gz du dossier avant suppression (best-effort).
+    """
+    con = console or _console
+    app_dir = hub_state.APPS_DIR / name
+    compose_file = app_dir / "docker-compose.yml"
+
+    con.print(f"[bold]→ Suppression de « {name} »…[/bold]")
+
+    # 1. compose down -v (stop conteneurs + volumes)
+    if compose_file.exists():
+        utils.run_shell(["docker", "compose", "-f", str(compose_file), "down", "-v"],
+                        cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60)
+
+    # 2. backup tar.gz best-effort puis rm -rf
+    if app_dir.exists():
+        backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        archive = backups / f"{name}-{stamp}.tar.gz"
+        con.print(f"[dim]→ Backup {archive.name}[/dim]")
+        if not dry_run:
+            try:
+                with tarfile.open(archive, "w:gz") as tar:
+                    tar.add(str(app_dir), arcname=app_dir.name)
+                if archive.exists():
+                    os.chmod(archive, 0o600)
+            except (OSError, tarfile.TarError):
+                con.print(f"[yellow]⚠ Backup échoué, suppression quand même.[/yellow]")
+
+        con.print(f"[dim]→ rm -rf {app_dir.name}[/dim]")
+        if not dry_run:
+            shutil.rmtree(str(app_dir), ignore_errors=True)
+
+    con.print(f"[green]✓ « {name} » supprimée[/green]")
+
+
 def _seed_prune(console, listed_slugs: set[str], vault, *, dry_run: bool = False) -> int:
     """Supprime les apps présentes dans le dossier actif mais non listées dans le seed.
 
@@ -941,10 +982,11 @@ def _db_snapshot(console=None) -> Path | None:
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = backups / f"snap_{stamp}.sql"
     try:
-        subprocess.run(
-            ["docker", "exec", "hub-db", "pg_dump", "-U", "hubadmin", "hub_auth"],
-            stdout=open(path, "w"), stderr=subprocess.PIPE, timeout=30, check=True,
-        )
+        with open(path, "w") as f:
+            subprocess.run(
+                ["docker", "exec", "hub-db", "pg_dump", "-U", "hubadmin", "hub_auth"],
+                stdout=f, stderr=subprocess.PIPE, timeout=30, check=True,
+            )
         if path.exists():
             os.chmod(path, 0o600)
         con.print(f"[green]✓ Snapshot DB →[/green] {path.name}")
@@ -1360,8 +1402,8 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
         dst_vol = f"{dest_slug}-postgres-data"
         con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
         if not dry_run:
-            run_shell(["docker", "volume", "create", dst_vol],
-                       capture_output=True, timeout=10)
+            subprocess.run(["docker", "volume", "create", dst_vol],
+                           capture_output=True, timeout=10)
             rc = utils.run_shell(
                 ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
                  "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
@@ -1503,8 +1545,6 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
     else:
         con.print("[dim]Annulé.[/dim]")
 
-
-_console = Console()
 
 # ── Workshop: répertoires exclus de la copie (lourds, régénérables) ──
 
@@ -1669,13 +1709,5 @@ def action_vpn(console, subcmd: str, *, dry_run: bool = False) -> None:
         return
 
     raise ValueError(f"subcmd inconnu: {subcmd!r} (attendu: sync|status|on|off)")
-
-
-def _port_in_use(port: int) -> bool:
-    try:
-        result = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
-        return f":{port} " in result.stdout
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
 
 

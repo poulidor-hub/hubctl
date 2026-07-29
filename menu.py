@@ -18,7 +18,6 @@ _APPS_WINDOW = 4
 _APPS_SCROLL_PERIOD = 2.0
 
 _app_status_rows = None
-_ui_state = {"hint": ""}
 
 
 def pause(canvas: Canvas) -> None:
@@ -129,12 +128,24 @@ def _cpu_pct() -> float:
         return 0
 
 
-def _cpu_load() -> float:
+def _mem_usage() -> tuple[float, float]:
+    """Retourne (ram_utilisee_pct, swap_utilisee_pct) depuis /proc/meminfo."""
     try:
-        with open("/proc/loadavg") as f:
-            return float(f.read().split()[0])
-    except (FileNotFoundError, ValueError):
-        return 0
+        info: dict[str, int] = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    info[parts[0].strip()] = int(parts[1].strip().split()[0])
+        total = info.get("MemTotal", 0)
+        avail = info.get("MemAvailable", info.get("MemFree", 0))
+        ram_pct = ((total - avail) / total * 100) if total > 0 else 0.0
+        swap_total = info.get("SwapTotal", 0)
+        swap_free = info.get("SwapFree", 0)
+        swap_pct = ((swap_total - swap_free) / swap_total * 100) if swap_total > 0 else 0.0
+        return ram_pct, swap_pct
+    except (FileNotFoundError, ValueError, ZeroDivisionError):
+        return 0.0, 0.0
 
 
 def _bar(value: float, max_val: float) -> str:
@@ -231,10 +242,10 @@ def _build_resources() -> Text:
     cpu = _cpu_pct()
     text.append(f"CPU {_bar(int(cpu), 100)} {cpu:.0f}%\n", style="white")
 
-    load = _cpu_load()
-    text.append(f"RAM {_bar(int(load * 10), 100)} {load:.1f}\n", style="white")
+    ram_pct, swap_pct = _mem_usage()
+    text.append(f"RAM {_bar(int(ram_pct), 100)} {ram_pct:.0f}%\n", style="white")
 
-    text.append(f"SWP {_bar(0, 100)}   0%\n", style="dim")
+    text.append(f"SWP {_bar(int(swap_pct), 100)} {swap_pct:.0f}%\n", style="dim")
 
     text.append("\n")
 
@@ -608,8 +619,14 @@ def main_loop(canvas: Canvas, vault: VaultManager) -> None:
 
     threading.Thread(target=_apps_poll_worker, args=(canvas,), daemon=True).start()
 
+    _render_interval = 0.25  # 4 fps max — évite l'étranglement du terminal
+    _last_render = 0.0
+
     while True:
-        canvas.render(_build_key_hints())
+        now = time.monotonic()
+        if now - _last_render >= _render_interval:
+            canvas.render(_build_key_hints())
+            _last_render = now
 
         key = keys.read_key(sys.stdin.fileno(), timeout=0.12)
         if key is None:
@@ -655,3 +672,7 @@ def main_loop(canvas: Canvas, vault: VaultManager) -> None:
                 confirm = widgets.confirm(canvas, "Quitter hubctl ?")
                 if confirm:
                     break
+
+        # Rendu immédiat après action pour réactivité
+        canvas.render(_build_key_hints())
+        _last_render = time.monotonic()

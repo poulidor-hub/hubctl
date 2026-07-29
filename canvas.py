@@ -136,7 +136,7 @@ class Canvas:
         self._raw_fd = sys.stdin.fileno()
         self._old_termios = termios.tcgetattr(self._raw_fd)
         tty.setcbreak(self._raw_fd)
-        self._live = Live(screen=True, refresh_per_second=30, transient=False)
+        self._live = Live(screen=True, refresh_per_second=8, transient=False)
         self._live.__enter__()
         signal.signal(signal.SIGWINCH, self._on_resize)
 
@@ -251,9 +251,9 @@ class Canvas:
         finally:
             if self._raw_fd is not None:
                 tty.setcbreak(self._raw_fd)
-            self._live = Live(screen=True, refresh_per_second=30, transient=False)
-            self._live.__enter__()
-            if self._last_inner is not None:
+        self._live = Live(screen=True, refresh_per_second=8, transient=False)
+        self._live.__enter__()
+        if self._last_inner is not None:
                 self.render(self._last_inner)
 
     def stream_command(self, fn, *, label: str = "") -> tuple[int, bool]:
