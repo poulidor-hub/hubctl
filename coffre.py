@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -11,6 +12,51 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from hubctl_cli import env_manager, hub_state
 
 MAGIC = b"HUBCTLV1"
+
+
+def _atomic_write_bytes(path: Path, blob: bytes) -> None:
+    """Écrit `blob` dans `path` de façon atomique : temp (mode 0600) → fsync →
+    `os.replace`. Un crash pendant l'écriture ne corrompt donc jamais le fichier
+    cible (le temp orphelin est nettoyé).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix="." + path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            Path(tmp).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+# Schémas Git autorisés pour le clonage d'apps depuis le coffre. On refuse
+# explicitement file:// et les chemins locaux : un coffre importé d'une source
+# externe pourrait sinon forcer le clonage d'un dépôt arbitraire (vecteur
+# d'exécution git : hooks, core.fsmonitor, etc.).
+_GIT_URL_OK_PREFIXES = ("http://", "https://", "ssh://", "git@", "git://")
+
+
+def _validate_git_url(url: str) -> str | None:
+    """Valide qu'une URL Git utilise un schéma distant autorisé.
+    Retourne un message d'erreur si refusée, None si acceptée.
+    """
+    u = (url or "").strip()
+    if not u:
+        return "URL Git vide."
+    if u.startswith(("file://", "/", "..")) or u.startswith("./"):
+        return "Schéma non autorisé : file:// et chemins locaux interdits."
+    if not u.startswith(_GIT_URL_OK_PREFIXES):
+        return ("Seuls les schémas http(s)://, ssh (git@host:), git:// sont autorisés.")
+    return None
 
 
 def _write_env_if_needed(path: Path, data: dict, dry_run: bool, force: bool) -> None:
@@ -164,8 +210,19 @@ class Vault:
             for app in self._data.get("__apps__", []):
                 slug = app if isinstance(app, str) else app.get("slug", "")
                 git_url = app.get("git_url") if isinstance(app, dict) else None
-                if git_url:
-                    subprocess.run(["git", "clone", git_url, str(hub_state.APPS_DIR / slug)], check=True)
+                if not git_url:
+                    continue
+                if _validate_git_url(git_url) is not None:
+                    # Schéma interdit (file://, chemin local…) : on ignore, on ne clone pas.
+                    continue
+                try:
+                    subprocess.run(
+                        ["git", "clone", git_url, str(hub_state.APPS_DIR / slug)],
+                        check=True, timeout=120,
+                    )
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+                    # Clone best-effort : un échec ne doit pas interrompre le restore.
+                    pass
         for key, data in self._data.items():
             if key.startswith("app:"):
                 slug = key[4:]
@@ -179,6 +236,15 @@ class Vault:
             if raw is None:
                 continue
             target = hub_state.PARC_ROOT / relpath
+            # Path traversal : un coffre importé (source externe) peut contenir
+            # des relpath malveillants (`../../etc/cron.d/evil` ou chemin absolu).
+            # On n'écrit jamais en dehors du parc.
+            try:
+                inside = target.resolve().is_relative_to(hub_state.PARC_ROOT.resolve())
+            except (ValueError, OSError):
+                inside = False
+            if not inside:
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             if not dry_run:
                 target.write_bytes(raw)
@@ -189,9 +255,24 @@ class Vault:
     def save(self) -> None:
         assert self._fernet is not None and self._salt is not None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        token = self._fernet.encrypt(json.dumps(self._data).encode("utf-8"))
-        self.path.write_bytes(MAGIC + self._salt + token)
-        os.chmod(self.path, 0o600)
+        blob = MAGIC + self._salt + self._fernet.encrypt(json.dumps(self._data).encode("utf-8"))
+
+        # Backup tolérant du coffre précédent : on préserve l'ancien contenu dans
+        # un .bak récupérable. Ne doit JAMAIS faire échouer la sauvegarde courante
+        # (d'où le except OSError: pass).
+        if self.path.exists():
+            try:
+                prev = self.path.read_bytes()
+                if prev != blob:
+                    bak = self.path.with_name(self.path.name + ".bak")
+                    _atomic_write_bytes(bak, prev)
+            except OSError:
+                pass
+
+        # Écriture atomique : temp → fsync → os.replace. Un crash (disque plein,
+        # SIGINT, panne) pendant l'écriture ne peut ni corrompre ni tronquer le
+        # coffre — c'est la garantie critique pour ne pas perdre tous les secrets.
+        _atomic_write_bytes(self.path, blob)
 
     def list_entries(self) -> list[str]:
         assert self._data is not None

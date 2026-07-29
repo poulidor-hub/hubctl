@@ -4,7 +4,10 @@ import re
 import tempfile
 from pathlib import Path
 
-_KEY_RE = re.compile(r"^([A-Z_][A-Z0-9_]*)=(.*)$")
+# Accepte : `KEY=val`, `export KEY=val` (convention shell), `KEY = val` (espaces
+# autour de '='). Sans cela, ces lignes étaient ignorées silencieusement → le
+# secret correspondant n'était PAS sauvegardé dans le coffre.
+_KEY_RE = re.compile(r"^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$")
 
 
 def read_env(path: Path) -> dict[str, str]:

@@ -220,6 +220,37 @@ def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
 
 
 
+def test_is_healthy_body_with_spaces_after_colon():
+    """L'ancien code matchait '"status":"healthy"' littéralement → un corps
+    `{"status": "healthy"}` (espace après le `:`, format json.dumps par défaut)
+    n'était JAMAIS reconnu sain → health check faux négatif → rollbacks destructeurs.
+    """
+    assert actions._is_healthy_body('{"status": "healthy"}') is True
+
+
+def test_is_healthy_body_without_spaces():
+    assert actions._is_healthy_body('{"status":"healthy"}') is True
+
+
+def test_is_healthy_body_with_extra_fields():
+    assert actions._is_healthy_body('{"status": "healthy", "version": "1.2.3"}') is True
+
+
+def test_is_healthy_body_unhealthy_status():
+    assert actions._is_healthy_body('{"status": "unhealthy"}') is False
+    assert actions._is_healthy_body('{"status":"starting"}') is False
+
+
+def test_is_healthy_body_non_json():
+    assert actions._is_healthy_body("<html>404 Not Found</html>") is False
+    assert actions._is_healthy_body("Service Unavailable") is False
+
+
+def test_is_healthy_body_empty():
+    assert actions._is_healthy_body("") is False
+    assert actions._is_healthy_body(None) is False
+
+
 def test_health_check_reads_app_port(tmp_path, monkeypatch):
     """H3: _health_check doit lire API_PORT du .env de l'app cible."""
     app_dir = tmp_path / "myapp"

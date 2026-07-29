@@ -29,6 +29,48 @@ def _park_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+# ── Garde-fou SQL pour db_query_select ──
+# `psql -c` exécute TOUS les statements séparés par `;` — un simple `SELECT 1;
+# COPY ... TO PROGRAM 'cmd'` lancerait un shell sur l'hôte DB. On bloque donc :
+#  - le chainage de statements (tout `;` sauf le final optionnel),
+#  - les mots-clés modifiants ET les vecteurs RCE (COPY/PROGRAM/DO/CALL/...).
+_READONLY_START_RE = re.compile(r"^(SELECT|WITH)\b", re.IGNORECASE)
+_READONLY_DENY_RE = re.compile(
+    r"\b("
+    r"INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|"
+    r"COPY|PROGRAM|DO|CALL|VACUUM|GRANT|REVOKE|MERGE|"
+    r"ANALYZE|CLUSTER|REINDEX|ATTACH|DETACH"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _validate_readonly_query(query: str) -> str | None:
+    """Valide qu'une requête est un SELECT/WITH en lecture seule, sûr pour psql -c.
+
+    Retourne un message d'erreur si la requête est refusée, None si elle est acceptée.
+    Bloque le chainage de statements (`;`) et les mots-clés dangereux afin qu'un
+    payload du type `SELECT 1; COPY ... TO PROGRAM 'cmd'` ne puisse exécuter de
+    shell ni de code arbitraire côté Postgres.
+    """
+    q = (query or "").strip()
+    if not q:
+        return "Requête vide."
+    # Un seul statement : on tolère un `;` final, tout autre `;` = chainage → rejet.
+    if q.endswith(";"):
+        q = q[:-1].rstrip()
+    if ";" in q:
+        return ("Requêtes multi-statements (;) interdites — "
+                "une seule instruction SELECT/WITH par appel.")
+    if not _READONLY_START_RE.match(q):
+        return "Seules les requêtes SELECT/WITH sont autorisées."
+    if _READONLY_DENY_RE.search(q):
+        return ("Requête modifiante ou potentiellement dangereuse refusée. "
+                "Utilisez le mode --rw dédié pour ce type d'opération.")
+    return None
+
+
+
 def _app_dir(app_slug: str) -> Path:
     root = _park_root()
     # Chercher dans APPS/ puis APP_Workshop/
@@ -111,12 +153,9 @@ async def _handle_docker_stats(args, app_slug, mode):
 
 async def _handle_db_query_select(args, app_slug, mode):
     query = args.get("query", "").strip()
-    # Securite : refuser tout ce qui n'est pas un SELECT
-    if not re.match(r"^\s*(SELECT|WITH)\b", query, re.IGNORECASE):
-        return {"error": "Seules les requetes SELECT/WITH sont autorisees."}
-    if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE)\b",
-                 query, re.IGNORECASE):
-        return {"error": "Requete modifiante refusee. Utilisez le mode --rw."}
+    err = _validate_readonly_query(query)
+    if err:
+        return {"error": err}
     compose = _compose_path(app_slug)
     result = _run_subprocess([
         "docker", "compose", "-f", str(compose),

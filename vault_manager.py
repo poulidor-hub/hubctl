@@ -3,9 +3,11 @@ import base64
 import datetime
 import hashlib
 import os
+import subprocess
 from pathlib import Path
 
 from hubctl_cli import __version__, hub_state, env_manager
+from hubctl_cli import coffre
 from hubctl_cli.coffre import Vault
 
 
@@ -133,7 +135,6 @@ def restore_all(vault, *, dry_run: bool = False, force: bool = False) -> list[st
 
 def _backup_db(vault, *, on_log=None) -> bool:
     """Sauvegarde les tables critiques dans le coffre."""
-    import subprocess
     tables = ["users", "applications", "service_accounts", "service_account_app_access",
               "app_settings", "user_app_roles", "schema_migrations"]
     cmd = ["docker", "exec", "hub-db", "pg_dump", "-U", "hubadmin", "-d", "hub_auth",
@@ -153,26 +154,82 @@ def _backup_db(vault, *, on_log=None) -> bool:
     return False
 
 
-def _restore_db(sql: bytes) -> bool:
-    """Rejoue le dump SQL dans la base (truncate d'abord pour éviter les conflits)."""
-    import subprocess
-    # Truncater les tables cibles avant restauration
-    tables = ["user_app_roles", "service_account_app_access", "service_accounts",
-              "applications", "app_settings", "users"]
+_RESTORE_TABLES = ["user_app_roles", "service_account_app_access", "service_accounts",
+                   "applications", "app_settings", "users"]
+
+
+def _pg_dump_tables(tables, *, on_log=None) -> bytes | None:
+    """Snapshot live des tables (filet de sécurité avant truncate). None si injoignable."""
+    cmd = ["docker", "exec", "hub-db", "pg_dump", "-U", "hubadmin", "-d", "hub_auth",
+           "--data-only", "--inserts"]
     for t in tables:
-        subprocess.run(
-            ["docker", "exec", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
-             "-c", f"TRUNCATE {t} CASCADE"],
-            capture_output=True, timeout=10,
-        )
+        cmd.extend(["-t", t])
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=30)
+        if r.returncode == 0 and r.stdout:
+            return r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        if on_log:
+            on_log(f"[vault] snapshot live DB échoué: {e}")
+    return None
+
+
+def _restore_db(sql: bytes, *, on_log=None) -> bool:
+    """Rejoue le dump SQL dans la base.
+
+    Safety net : on snapshot la base live AVANT tout truncate, puis on la
+    restaurera si le replay échoue — sinon un dump partiel/corrompu laissait la
+    base vidée (TRUNCATE CASCADE) sans recours, perdant users/apps/settings.
+    """
+    snapshot = _pg_dump_tables(_RESTORE_TABLES, on_log=on_log)
+    if snapshot is None:
+        if on_log:
+            on_log("[vault] restore DB annulé : snapshot live impossible (hub-db injoignable ?)")
+        return False
+    # Truncate des tables cibles.
+    for t in _RESTORE_TABLES:
+        try:
+            subprocess.run(
+                ["docker", "exec", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
+                 "-c", f"TRUNCATE {t} CASCADE"],
+                capture_output=True, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    # Replay du dump du coffre.
     try:
         r = subprocess.run(
             ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth"],
             input=sql, capture_output=True, timeout=30,
         )
-        return r.returncode == 0
-    except Exception:
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        if on_log:
+            on_log(f"[vault] restore DB échoué (psql): {e}")
+        _rollback_db(snapshot, on_log=on_log)
         return False
+    if r.returncode != 0:
+        if on_log:
+            on_log(f"[vault] restore DB échoué (code {r.returncode}): "
+                   f"{r.stderr.decode(errors='replace')[:200]}")
+        _rollback_db(snapshot, on_log=on_log)
+        return False
+    return True
+
+
+def _rollback_db(snapshot: bytes, *, on_log=None) -> None:
+    """Restaure le snapshot live pris avant le truncate (best-effort)."""
+    try:
+        r = subprocess.run(
+            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth"],
+            input=snapshot, capture_output=True, timeout=30,
+        )
+        if r.returncode == 0 and on_log:
+            on_log("[vault] rollback DB effectué (base restaurée à l'état d'avant truncate)")
+        elif on_log:
+            on_log("[vault] rollback DB échoué ⚠ — base laissée à l'état post-truncate")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        if on_log:
+            on_log("[vault] rollback DB échoué ⚠ — base laissée à l'état post-truncate")
 
 
 def export_vault(vault, dest: Path) -> Path:
@@ -191,10 +248,27 @@ def export_vault(vault, dest: Path) -> Path:
 
 
 def import_vault(vault, src: Path) -> bool:
-    """Importe un coffre depuis un fichier externe."""
+    """Importe un coffre depuis un fichier externe.
+
+    Valide le magic HUBCTLV1 (refuse tout binaire arbitraire — sinon un coffre
+    malveillant pouvait activer le path traversal de restore() et le git clone)
+    et préserve l'ancien coffre dans un .bak récupérable avant écrasement.
+    """
     if not src.exists():
         return False
-    vault.path.write_bytes(src.read_bytes())
+    blob = src.read_bytes()
+    if not blob.startswith(coffre.MAGIC):
+        return False
+    # Backup tolérant du coffre courant avant écrasement.
+    if vault.path.exists():
+        try:
+            prev = vault.path.read_bytes()
+            if prev != blob:
+                bak = vault.path.with_name(vault.path.name + ".bak")
+                coffre._atomic_write_bytes(bak, prev)
+        except OSError:
+            pass
+    coffre._atomic_write_bytes(vault.path, blob)
     return True
 
 

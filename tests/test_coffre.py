@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 from hubctl_cli import coffre, hub_state
 
 
@@ -135,3 +136,128 @@ def test_sync_does_not_follow_symlink_dirs(tmp_path, monkeypatch):
     v.unlock("pw")
     v.sync()
     assert "app:linked" not in v.list_entries()
+
+
+# ── Atomicité de save() (perte de secrets au crash) ──
+
+
+def test_save_keeps_backup_on_overwrite(tmp_path):
+    """Une 2e save() doit préserver l'ancien coffre dans un .bak récupérable."""
+    from hubctl_cli.coffre import Vault
+    p = tmp_path / "c.vault.enc"
+    v = Vault(p)
+    v.unlock("pw")
+    v.set_entry("hub", {"K": "V1"})
+    v.save()
+
+    v.set_entry("hub", {"K": "V2"})
+    v.save()
+
+    bak = tmp_path / "c.vault.enc.bak"
+    assert bak.exists(), "le backup .bak doit être créé lors d'une réécriture"
+    # Le backup doit contenir l'ancien état (V1), pas le courant (V2).
+    vb = Vault(bak)
+    assert vb.unlock("pw") is True
+    assert vb.reveal("hub") == {"K": "V1"}
+    # Et le courant contient bien V2.
+    assert v.reveal("hub") == {"K": "V2"}
+
+
+def test_save_atomic_crash_preserves_original(tmp_path, monkeypatch):
+    """Si l'écriture échoue (ex: disque plein pendant os.replace), le coffre
+    original doit rester INTACT et re-déchiffrable — sinon on perd tous les secrets.
+    """
+    from hubctl_cli import coffre
+    from hubctl_cli.coffre import Vault
+
+    p = tmp_path / "c.vault.enc"
+    v = Vault(p)
+    v.unlock("pw")
+    v.set_entry("hub", {"SECRET": "ORIGINAL"})
+    v.save()
+    original_bytes = p.read_bytes()
+
+    # On tente une 2e save avec un os.replace qui échoue (simule disque plein).
+    v.set_entry("hub", {"SECRET": "CORROMPU"})
+
+    def boom(*a, **k):
+        raise OSError("No space left on device")
+    monkeypatch.setattr(coffre.os, "replace", boom)
+
+    with pytest.raises(OSError):
+        v.save()
+
+    # Le coffre sur disque n'a pas été touché.
+    assert p.read_bytes() == original_bytes
+    v2 = Vault(p)
+    assert v2.unlock("pw") is True
+    assert v2.reveal("hub") == {"SECRET": "ORIGINAL"}
+
+    # Aucun fichier temporaire traînant.
+    leftovers = [x.name for x in tmp_path.iterdir() if x.name.endswith(".tmp")]
+    assert leftovers == [], f"fichiers temporaires non nettoyés : {leftovers}"
+
+
+def test_save_no_backup_when_first_write(tmp_path):
+    """À la 1re création du coffre, il n'y a rien à backuper → pas de .bak."""
+    from hubctl_cli.coffre import Vault
+    p = tmp_path / "c.vault.enc"
+    v = Vault(p)
+    v.unlock("pw")
+    v.set_entry("hub", {"K": "V"})
+    v.save()
+    assert p.exists()
+    assert not (tmp_path / "c.vault.enc.bak").exists()
+
+
+def test_restore_blocks_path_traversal(tmp_path, monkeypatch):
+    """Un coffre importé (source externe) peut contenir des relpath malveillants
+    dans __files__ (`../../etc/cron.d/evil`). restore() ne doit JAMAIS écrire
+    hors du parc — sinon écriture arbitraire sur le disque.
+    """
+    from hubctl_cli.coffre import Vault
+    parc = tmp_path / "parc"
+    parc.mkdir()
+    monkeypatch.setattr(hub_state, "PARC_ROOT", parc)
+
+    v = Vault(tmp_path / "v.enc")
+    v.unlock("pw")
+    v.set_file("../evil_outside.txt", b"PWNED")   # résout hors du parc
+    v.set_file("legit/inside.txt", b"OK")          # reste dans le parc
+
+    written = v.restore()
+
+    # Le fichier légitime est bien écrit.
+    assert (parc / "legit" / "inside.txt").read_bytes() == b"OK"
+    # Le fichier malveillant n'a PAS été écrit hors du parc.
+    assert not (tmp_path / "evil_outside.txt").exists()
+    # Et il n'est pas annoncé dans la liste des fichiers restaurés.
+    assert all("evil_outside" not in w for w in written)
+
+
+# ── Validation des git_url avant clone (anti file:// / hooks locaux) ──
+
+
+def test_validate_git_url_accepts_remote_schemes():
+    from hubctl_cli.coffre import _validate_git_url
+    for ok in [
+        "https://github.com/x/y.git",
+        "http://git.internal/x/y",
+        "git@github.com:x/y.git",
+        "ssh://git@gitlab.com/x/y.git",
+        "git://host/x/y",
+    ]:
+        assert _validate_git_url(ok) is None, f"{ok} devrait être accepté"
+
+
+def test_validate_git_url_rejects_file_and_local_paths():
+    from hubctl_cli.coffre import _validate_git_url
+    for bad in [
+        "file:///etc/passwd",
+        "/etc/passwd",
+        "./relative/repo",
+        "../escape/repo",
+        "relative/path",
+        "",
+    ]:
+        assert _validate_git_url(bad) is not None, f"{bad!r} devrait être rejeté"

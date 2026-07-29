@@ -121,3 +121,127 @@ def test_backup_all_cleans_stale_app_entries(tmp_path, monkeypatch):
     (app / ".env").unlink(); app.rmdir()
     mgr.backup_all()
     assert "app:gone" not in v.list_entries()
+
+
+# ── import_vault : validation + backup de l'ancien coffre ──
+
+
+def test_import_vault_rejects_invalid_magic(tmp_path):
+    """Un fichier externe sans magic HUBCTLV1 ne doit pas remplacer le coffre
+    courant (n'importe quel binaire était auparavant accepté)."""
+    from hubctl_cli.vault_manager import import_vault
+    cur = tmp_path / "v.enc"
+    v = Vault(cur)
+    v.unlock("pw")
+    v.set_entry("hub", {"K": "ORIGINAL"})
+    v.save()
+    original = cur.read_bytes()
+
+    bad = tmp_path / "bad.enc"
+    bad.write_bytes(b"NOT_A_VAULT_garbage")
+
+    assert import_vault(v, bad) is False
+    assert cur.read_bytes() == original, "le coffre courant ne doit pas être touché"
+    assert not (tmp_path / "v.enc.bak").exists(), "rien n'a été importé → pas de backup"
+
+
+def test_import_vault_valid_backs_up_current(tmp_path):
+    """Un import valide préserve l'ancien coffre dans un .bak récupérable."""
+    from hubctl_cli.vault_manager import import_vault
+    cur = tmp_path / "v.enc"
+    v = Vault(cur)
+    v.unlock("pw")
+    v.set_entry("hub", {"K": "OLD"})
+    v.save()
+
+    src_path = tmp_path / "new.enc"
+    vsrc = Vault(src_path)
+    vsrc.unlock("other")
+    vsrc.set_entry("hub", {"K": "NEW"})
+    vsrc.save()
+
+    assert import_vault(v, src_path) is True
+
+    bak = tmp_path / "v.enc.bak"
+    assert bak.exists(), "un backup de l'ancien coffre doit être créé"
+    vb = Vault(bak)
+    assert vb.unlock("pw") is True
+    assert vb.reveal("hub") == {"K": "OLD"}, "le .bak doit contenir l'ancien état"
+    assert cur.read_bytes() == src_path.read_bytes(), "le courant = le nouveau"
+
+
+def test_import_vault_missing_src(tmp_path):
+    from hubctl_cli.vault_manager import import_vault
+    v = Vault(tmp_path / "v.enc")
+    v.unlock("pw")
+    assert import_vault(v, tmp_path / "absent.enc") is False
+
+
+# ── _restore_db : snapshot avant truncate + rollback sur échec ──
+
+
+_SNAPSHOT = b"-- snapshot live --\nINSERT INTO users VALUES (1);\n"
+
+
+def _db_dispatch(cmd, success_replay):
+    """Fake subprocess.run : simule pg_dump (snapshot), TRUNCATE, et psql replay."""
+    from unittest import mock
+    joined = " ".join(str(c) for c in cmd)
+    inp = cmd  # placeholder
+    if "pg_dump" in joined:
+        return mock.Mock(returncode=0, stdout=_SNAPSHOT, stderr=b"")
+    if "TRUNCATE" in joined:
+        return mock.Mock(returncode=0, stdout=b"", stderr=b"")
+    return mock.Mock(returncode=0 if success_replay else 1,
+                     stdout=b"", stderr=b"ERROR: bad dump")
+
+
+def test_restore_db_rolls_back_on_failure(monkeypatch):
+    """Si le replay du dump échoue, _restore_db doit restaurer le snapshot live
+    (pris AVANT truncate) pour ne pas laisser la DB vidée sans recours."""
+    import subprocess
+    from hubctl_cli import vault_manager
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), "input": kw.get("input")})
+        return _db_dispatch(cmd, success_replay=False)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    logs = []
+    ok = vault_manager._restore_db(b"DUMP_COFFRE", on_log=logs.append)
+
+    assert ok is False
+    # 1) un snapshot live est pris AVANT le 1er truncate
+    def joined(c):
+        return " ".join(str(x) for x in c["cmd"])
+    pgdump_idx = next(i for i, c in enumerate(calls) if "pg_dump" in joined(c))
+    truncate_idx = next(i for i, c in enumerate(calls) if "TRUNCATE" in joined(c))
+    assert pgdump_idx < truncate_idx, "le snapshot doit précéder le truncate"
+    # 2) le rollback rejoue le snapshot (psql avec input=snapshot)
+    assert any(c["input"] == _SNAPSHOT for c in calls), \
+        "le snapshot live doit être rejoué en rollback après échec"
+    # 3) un log d'erreur est émis (plus d'échec silencieux)
+    assert logs, "un log doit être émis en cas d'échec"
+
+
+def test_restore_db_success_takes_snapshot(monkeypatch):
+    """Même en succès, un snapshot live est pris (filet de sécurité), sans rollback."""
+    import subprocess
+    from hubctl_cli import vault_manager
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), "input": kw.get("input")})
+        return _db_dispatch(cmd, success_replay=True)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ok = vault_manager._restore_db(b"DUMP_COFFRE")
+
+    assert ok is True
+    # snapshot pris
+    assert any("pg_dump" in " ".join(str(x) for x in c["cmd"]) for c in calls)
+    # pas de rollback : le snapshot n'est jamais rejoué en psql
+    assert not any(c["input"] == _SNAPSHOT for c in calls)

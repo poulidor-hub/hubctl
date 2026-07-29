@@ -1011,6 +1011,23 @@ def _git_previous_commit(path: Path, console=None) -> str | None:
         return None
 
 
+def _is_healthy_body(text: str | None) -> bool:
+    """True si le corps de réponse /api/health indique un statut « healthy ».
+
+    Parse réellement le JSON (et non une sous-chaîne littérale) afin de reconnaître
+    `{"status": "healthy"}` (espaces après `:`, format json.dumps par défaut) qui
+    échouait avec l'ancien test `'"status":"healthy"' in stdout` → faux négatif
+    → rollbacks destructeurs sur une API pourtant saine.
+    """
+    if not text:
+        return False
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("status") == "healthy"
+
+
 def _health_check(target: str, console=None, timeout: int = 60, port_override: str | None = None) -> bool:
     """Wait for hub API to be healthy. Returns True if healthy within timeout."""
     con = console or _console
@@ -1032,21 +1049,22 @@ def _health_check(target: str, console=None, timeout: int = 60, port_override: s
         except Exception:
             pass
     health_url = f"http://localhost:{api_port}/api/health"
-    elapsed = 0
-    while elapsed < timeout:
+    start = time.monotonic()
+    deadline = start + timeout
+    while time.monotonic() < deadline:
         try:
             result = subprocess.run(
                 ["curl", "-sk", health_url],
                 capture_output=True, text=True, timeout=5,
             )
-            if '"status":"healthy"' in result.stdout:
-                con.print(f"[green]✓ Hub healthy après {elapsed}s[/green]")
+            if _is_healthy_body(result.stdout):
+                con.print(f"[green]✓ Hub healthy après {int(time.monotonic() - start)}s[/green]")
                 return True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            # FileNotFoundError = curl absent ; on continue à réessayer jusqu'au timeout.
             pass
         time.sleep(3)
-        elapsed += 3
-        con.print(f"  ... attente {elapsed}s/{timeout}s")
+        con.print(f"  ... attente {int(time.monotonic() - start)}s/{timeout}s")
     con.print(f"[yellow]⚠ Hub pas healthy après {timeout}s[/yellow]")
     return False
 

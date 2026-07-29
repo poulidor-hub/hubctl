@@ -379,7 +379,7 @@ def _run(args) -> int:
         else:
             RichConsole().print("[dim]Mode auto-detecte : PROD (APPS/)[/dim]")
         menu._require_vault(canvas, vault_mgr)
-        menu.main_loop(canvas, vault_mgr)
+        menu.main_loop(canvas, vault_mgr, initial_state=state)
         return 0
 
     except (KeyboardInterrupt, EOFError):

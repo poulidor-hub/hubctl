@@ -30,6 +30,27 @@ def test_read_env_ignores_comments_and_blanks():
     assert result == {"KEY": "value"}
 
 
+def test_read_env_accepts_export_prefix():
+    """`export KEY=val` est une convention shell répandue. L'ancien regex
+    l'ignorait → le secret n'était PAS sauvegardé dans le coffre (silencieux)."""
+    path = _write_temp("export DATABASE_URL=postgres://localhost/db\n")
+    result = env_manager.read_env(path)
+    assert result == {"DATABASE_URL": "postgres://localhost/db"}
+
+
+def test_read_env_accepts_spaces_around_equals():
+    """`KEY = value` (espaces autour de '=') doit être parsé, pas ignoré."""
+    path = _write_temp("POSTGRES_PASSWORD = s3cr3t\n")
+    result = env_manager.read_env(path)
+    assert result == {"POSTGRES_PASSWORD": "s3cr3t"}
+
+
+def test_read_env_preserves_internal_spaces_in_value():
+    path = _write_temp("DESCRIPTION = hello world value\n")
+    result = env_manager.read_env(path)
+    assert result == {"DESCRIPTION": "hello world value"}
+
+
 def test_write_env_updates_existing_key():
     path = _write_temp(ENV_CONTENT)
     env_manager.write_env(path, {"APP_ENV": "development"})

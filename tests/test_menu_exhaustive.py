@@ -11,6 +11,23 @@ def _plain(obj) -> str:
     return obj.plain if hasattr(obj, 'plain') else str(obj)
 
 
+def _snap_with(monkeypatch, **overrides):
+    """Injecte un cache d'état (_snap) déterministe pour un test de builder.
+
+    Les builders du dashboard consomment désormais le cache _snap (rafraîchi par
+    le poll worker) au lieu d'appeler directement hub_state. On remplace donc la
+    référence _snap pour ce test uniquement (restaurée par monkeypatch à la fin).
+    """
+    base = {
+        "docker_ok": None,
+        "services": None,
+        "apps_count": None,
+    }
+    base.update(overrides)
+    monkeypatch.setattr(menu, "_snap", base)
+    return base
+
+
 def _fake_canvas():
     c = mock.Mock()
     c.inner_rows = 28
@@ -44,60 +61,47 @@ def test_build_welcome_prod_mode(monkeypatch):
 
 
 def test_build_resources_shows_legacy_count(monkeypatch):
-    from hubctl_cli.hub_state import AppInfo
-    from pathlib import Path
-    apps = [
-        AppInfo("a", Path("."), "1", False, 0, legacy=False),
-        AppInfo("b", Path("."), "1", False, 0, legacy=True),
-    ]
-    monkeypatch.setattr(menu.hub_state, "get_active_apps", lambda: apps)
+    # Le builder lit apps_count dans le cache _snap (plus d'appel direct à
+    # hub_state.get_active_apps, qui lançait git status × N à chaque frame).
+    _snap_with(monkeypatch, apps_count=(2, 1))
     text = menu._build_resources().plain
     assert "Apps : 2 (1 legacy)" in text
 
 
 def test_build_resources_no_legacy_suffix_when_none(monkeypatch):
-    from hubctl_cli.hub_state import AppInfo
-    from pathlib import Path
-    apps = [AppInfo("a", Path("."), "1", False, 0, legacy=False)]
-    monkeypatch.setattr(menu.hub_state, "get_active_apps", lambda: apps)
+    _snap_with(monkeypatch, apps_count=(1, 0))
     text = menu._build_resources().plain
     assert "Apps : 1" in text
     assert "legacy" not in text
 
 
-def test_build_services_reads_app_status():
+def test_build_services_reads_app_status(monkeypatch):
     from hubctl_cli.hub_state import AppStatus
     rows = [
         AppStatus("shop", "running", "Up 2h", False),
         AppStatus("old", "legacy", "—", True),
     ]
     menu._app_status_rows = rows
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(menu.hub_state, "check_docker", lambda: True)
-    monkeypatch.setattr(menu.hub_state, "get_hub_services", lambda: [])
+    _snap_with(monkeypatch, docker_ok=True, services=[])
     text = menu._build_services().plain
     assert "APPS" in text
     assert "shop" in text and "Up 2h" in text
     assert "old" in text and "legacy" in text
 
 
-def test_build_services_docker_down():
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(menu.hub_state, "check_docker", lambda: False)
-    monkeypatch.setattr(menu.hub_state, "get_hub_services", lambda: [])
+def test_build_services_docker_down(monkeypatch):
+    _snap_with(monkeypatch, docker_ok=False, services=[])
     menu._app_status_rows = None
     text = menu._build_services().plain
     assert "Docker injoignable" in text
 
 
-def test_build_services_scrolls_window():
+def test_build_services_scrolls_window(monkeypatch):
     from hubctl_cli.hub_state import AppStatus
     rows = [AppStatus(f"a{i}", "running", "Up", False) for i in range(6)]
     menu._app_status_rows = rows
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(menu.time, "monotonic", lambda: 4.0)
-    monkeypatch.setattr(menu.hub_state, "check_docker", lambda: True)
-    monkeypatch.setattr(menu.hub_state, "get_hub_services", lambda: [])
+    _snap_with(monkeypatch, docker_ok=True, services=[])
     text = menu._build_services().plain
     for name in ("a2", "a3", "a4", "a5"):
         assert name in text

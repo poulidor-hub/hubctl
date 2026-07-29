@@ -19,6 +19,52 @@ _APPS_SCROLL_PERIOD = 2.0
 
 _app_status_rows = None
 
+# ── Snapshot d'état (cache rafraîchi en arrière-plan) ──
+# Les builders du dashboard ne lisent JAMAIS directement les fonctions bloquantes
+# de hub_state (check_docker / get_hub_services / get_active_apps) : celles-ci
+# lancent des subprocesss Docker + `git status` × N et parcourent récursivement
+# chaque app (_dir_size), soit ~400 ms par frame. Appelées sur le thread de rendu,
+# elles gèlent la lecture clavier → lag perceptible sur TOUS les inputs.
+# On délègue donc à un poll worker (cf. _state_poll_worker) qui peuple ce cache.
+_state_lock = threading.Lock()
+_snap: dict = {
+    "docker_ok": None,     # bool | None  (None = pas encore calculé)
+    "services": None,      # list[ServiceInfo] | None
+    "apps_count": None,    # tuple[int, int] = (total, legacy) | None
+}
+
+
+def _refresh_state_snapshot() -> None:
+    """Rafraîchit le cache d'état du dashboard. À n'appeler que depuis le poll
+    worker (appels bloquants Docker/git). Ne jamais appeler sur le thread de rendu.
+    """
+    try:
+        docker_ok = hub_state.check_docker()
+        services = hub_state.get_hub_services() if docker_ok else []
+        apps = hub_state.get_active_apps()
+        legacy = sum(1 for a in apps if getattr(a, "legacy", False))
+        with _state_lock:
+            _snap["docker_ok"] = docker_ok
+            _snap["services"] = services
+            _snap["apps_count"] = (len(apps), legacy)
+    except Exception:
+        # Best-effort : on garde le précédent snapshot si l'appel échoue.
+        pass
+
+
+def seed_state_snapshot(initial: dict | None = None) -> None:
+    """Amorce le cache depuis un état pré-calculé (ex: preload_with_bar),
+    pour éviter tout appel bloquant au démarrage. Clés attendues (optionnelles) :
+    'docker' (bool), 'services' (list[ServiceInfo]).
+    """
+    if not initial:
+        return
+    with _state_lock:
+        if _snap["docker_ok"] is None and initial.get("docker") is not None:
+            _snap["docker_ok"] = bool(initial["docker"])
+        if _snap["services"] is None and initial.get("services") is not None:
+            _snap["services"] = initial["services"]
+
 
 def pause(canvas: Canvas) -> None:
     canvas.render(Text("↵ Entrée pour revenir au menu…", style="dim"))
@@ -263,12 +309,16 @@ def _build_resources() -> Text:
     text.append(f"Σ {_fmt_bytes(rx_total)}↓ {_fmt_bytes(tx_total)}↑\n", style="dim")
 
     text.append("\n")
-    apps = hub_state.get_active_apps()
-    legacy_count = sum(1 for a in apps if getattr(a, "legacy", False))
-    if legacy_count:
-        text.append(f"Apps : {len(apps)} ({legacy_count} legacy)", style="bold green")
+    with _state_lock:
+        apps_count = _snap["apps_count"]
+    if apps_count is None:
+        text.append("Apps : …", style="bold green")
     else:
-        text.append(f"Apps : {len(apps)}", style="bold green")
+        total, legacy_count = apps_count
+        if legacy_count:
+            text.append(f"Apps : {total} ({legacy_count} legacy)", style="bold green")
+        else:
+            text.append(f"Apps : {total}", style="bold green")
 
     return text
 
@@ -278,10 +328,14 @@ def _build_services() -> Text:
     text.append("[ SERVICES STATUS ]\n", style="bold blue")
     text.append("\n")
 
-    services = hub_state.get_hub_services()
-    docker_ok = hub_state.check_docker()
+    with _state_lock:
+        docker_ok = _snap["docker_ok"]
+        services = _snap["services"]
 
-    if not docker_ok:
+    if docker_ok is None or services is None:
+        # Premier rendu : le poll worker n'a pas encore rempli le cache.
+        text.append("  …\n", style="dim")
+    elif not docker_ok:
         text.append("  Docker injoignable\n", style="red")
     elif not services:
         text.append("  Aucun service\n", style="yellow")
@@ -395,10 +449,19 @@ def _refresh_apps_status() -> None:
         pass
 
 
-def _apps_poll_worker(canvas: Canvas) -> None:
+def _state_poll_worker(canvas: Canvas) -> None:
+    """Poll worker d'arrière-plan : rafraîchit les données coûteuses du dashboard
+    (Docker ps/info, git status × N, _dir_size × N, apps status) toutes les 3 s.
+    Ces appels sont bloquants (~400 ms) : ils DOIVENT rester hors du thread de
+    rendu, sinon la lecture clavier est gelée → lag sur les inputs.
+    """
+    # Premier refresh immédiat : on veut le cache peuplé au plus vite au démarrage.
+    _refresh_state_snapshot()
+    _refresh_apps_status()
     while True:
-        _refresh_apps_status()
         time.sleep(3.0)
+        _refresh_state_snapshot()
+        _refresh_apps_status()
 
 
 # ── Views ──
@@ -610,14 +673,17 @@ def _coffre_submenu(canvas: Canvas, vault_mgr: VaultManager) -> None:
 
 # ── Main loop ──
 
-def main_loop(canvas: Canvas, vault: VaultManager) -> None:
+def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = None) -> None:
     global _vault_mgr
     _vault_mgr = vault
     is_dev = hub_state.get_mode() == "dev"
 
     install_layout(canvas)
 
-    threading.Thread(target=_apps_poll_worker, args=(canvas,), daemon=True).start()
+    # Amorce le cache depuis l'état pré-calculé par le preload (docker/services),
+    # puis lance le poll worker qui maintiendra le cache à jour en arrière-plan.
+    seed_state_snapshot(initial_state)
+    threading.Thread(target=_state_poll_worker, args=(canvas,), daemon=True).start()
 
     _render_interval = 0.25  # 4 fps max — évite l'étranglement du terminal
     _last_render = 0.0
