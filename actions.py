@@ -1878,7 +1878,6 @@ def action_seed_export(console, output_path: str | None = None, *, force: bool =
     urls.sort()
 
     # 5. Déterminer le chemin de sortie
-    from pathlib import Path
     if output_path:
         out = Path(output_path)
     else:

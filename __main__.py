@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     seed_parser = sub.add_parser("seed",
                                  help="Déployer/converger des apps depuis un fichier seed YAML")
     seed_parser.add_argument("fichier", nargs="?", default=None,
-                              help="Chemin vers le fichier seed (YAML) [ou 'export']")
+                              help="Chemin vers le fichier seed (YAML) — ou 'export' pour exporter le parc")
     seed_parser.add_argument("--prune", action="store_true",
                               help="Supprimer les apps présentes mais non listées (confirmation)")
     seed_parser.add_argument("--dry-run", action="store_true",
@@ -342,8 +342,8 @@ def _run(args) -> int:
         console = RichConsole()
         _resolve_mode(args)
 
-        # Export mode
-        if args.output is not None:
+        # Export mode : -o flag ou fichier == "export"
+        if args.output is not None or args.fichier == "export":
             try:
                 return action_seed_export(console,
                                           output_path=args.output,
@@ -355,7 +355,7 @@ def _run(args) -> int:
         # Legacy : seed <fichier>
         if not args.fichier:
             console.print("[red]✗ Fichier seed requis. Usage : hubctl seed <fichier.yaml>[/red]")
-            console.print("[dim]Nouveau : hubctl seed -o <chemin> pour exporter le parc actuel.[/dim]")
+            console.print("[dim]Nouveau : hubctl seed export [-o <chemin>] pour exporter le parc actuel.[/dim]")
             return 1
         try:
             return action_seed(console, args.fichier,

@@ -1237,33 +1237,7 @@ def test_action_seed_empty_apps_returns_zero(tmp_path, monkeypatch):
 
 # ── action_seed_export ──────────────────────────────────────────
 
-@pytest.fixture
-def _fake_apps_dir(tmp_path, monkeypatch):
-    """Crée un faux APPS/ avec 2 apps (avec .git + remote)."""
-    apps = tmp_path / "APPS"
-    apps.mkdir()
-    # App 1
-    app1 = apps / "mon-app-1"
-    app1.mkdir()
-    (app1 / ".git").mkdir()
-    # App 2
-    app2 = apps / "mon-app-2"
-    app2.mkdir()
-    (app2 / ".git").mkdir()
-    # App 3 : pas de .git → doit être ignorée
-    app3 = apps / "sans-git"
-    app3.mkdir()
-
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    return apps
-
-
-def _fake_git_remote(path, url):
-    """Simule git remote get-url origin pour un dossier."""
-    return url
-
-
-def test_action_seed_export_generates_yaml(tmp_path, monkeypatch, capsys):
+def test_action_seed_export_generates_yaml(tmp_path, monkeypatch):
     """Vérifie que le YAML généré contient les URLs attendues."""
     apps = tmp_path / "APPS"
     apps.mkdir()
@@ -1341,3 +1315,57 @@ def test_action_seed_export_refuses_overwrite(tmp_path, monkeypatch):
     rc = actions.action_seed_export(console, output_path=str(out_path), force=False)
     assert rc == 1
     assert out_path.read_text() == "original content"
+
+
+def test_action_seed_export_force_overwrites(tmp_path, monkeypatch):
+    """Fichier existant avec --force → écrase le fichier."""
+    apps = tmp_path / "APPS"
+    apps.mkdir()
+    app = apps / "app-x"
+    app.mkdir()
+    (app / ".git").mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git" and cmd[-1] == "origin":
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"git@github.com:user/app-x.git", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out_path = tmp_path / "existing.yaml"
+    out_path.write_text("original content")
+
+    console = Console()
+
+    rc = actions.action_seed_export(console, output_path=str(out_path), force=True)
+    assert rc == 0
+    assert "git@github.com:user/app-x.git" in out_path.read_text()
+
+
+def test_action_seed_export_default_filename(tmp_path, monkeypatch):
+    """Sans output_path → génère le nom par défaut seed-export-YYYY-MM-DD.yaml."""
+    apps = tmp_path / "APPS"
+    apps.mkdir()
+    app = apps / "app-x"
+    app.mkdir()
+    (app / ".git").mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git" and cmd[-1] == "origin":
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"git@github.com:user/app-x.git", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    console = Console()
+    rc = actions.action_seed_export(console)
+    assert rc == 0
+
+    # Vérifier qu'un fichier seed-export-*.yaml a été créé
+    exports = list(tmp_path.glob("seed-export-*.yaml"))
+    assert len(exports) == 1
+    assert exports[0].name.startswith("seed-export-")
+    assert exports[0].name.endswith(".yaml")
