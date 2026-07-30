@@ -69,7 +69,7 @@ def test_main_loop_key_3_dispatches_update_all(monkeypatch):
     assert "Mise à jour complète" in called
 
 
-def test_main_loop_key_4_dispatches_coffre_submenu(monkeypatch):
+def test_main_loop_key_4_dispatches_coffre_view(monkeypatch):
     monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
     monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
     c = _fake_canvas()
@@ -78,7 +78,7 @@ def test_main_loop_key_4_dispatches_coffre_submenu(monkeypatch):
     it = iter([KeyChar("4"), KeyCtrlC()])
     monkeypatch.setattr(menu.keys, "read_key", lambda fd, timeout=None: next(it, None))
     called = []
-    monkeypatch.setattr(menu, "_coffre_submenu", lambda *a, **kw: called.append("coffre"))
+    monkeypatch.setattr(menu, "view_coffre", lambda *a, **kw: called.append("coffre"))
     with pytest.raises(KeyboardInterrupt):
         menu.main_loop(c, vault)
     assert "coffre" in called
@@ -159,7 +159,7 @@ def test_main_loop_dev_key_5_dispatches_update(monkeypatch):
     assert "Mise à jour complète" in called
 
 
-def test_main_loop_dev_key_6_dispatches_coffre_submenu(monkeypatch):
+def test_main_loop_dev_key_6_dispatches_coffre_view(monkeypatch):
     monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
     monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "dev")
     c = _fake_canvas()
@@ -168,7 +168,7 @@ def test_main_loop_dev_key_6_dispatches_coffre_submenu(monkeypatch):
     it = iter([KeyChar("6"), KeyCtrlC()])
     monkeypatch.setattr(menu.keys, "read_key", lambda fd, timeout=None: next(it, None))
     called = []
-    monkeypatch.setattr(menu, "_coffre_submenu", lambda *a, **kw: called.append("coffre"))
+    monkeypatch.setattr(menu, "view_coffre", lambda *a, **kw: called.append("coffre"))
     with pytest.raises(KeyboardInterrupt):
         menu.main_loop(c, vault)
     assert "coffre" in called
@@ -306,7 +306,7 @@ def test_coffre_submenu_esc(monkeypatch):
 def test_run_action_returns_true_on_success():
     c = _fake_canvas()
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(menu, "pause", lambda c: None)
+    monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
     result = menu._run_action(c, "test", lambda: None)
     assert result is True
 
@@ -314,6 +314,6 @@ def test_run_action_returns_true_on_success():
 def test_run_action_returns_false_on_failure():
     c = _fake_canvas()
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(menu, "pause", lambda c: None)
+    monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
     result = menu._run_action(c, "test", lambda: 1 / 0)
     assert result is False

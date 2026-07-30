@@ -1189,7 +1189,51 @@ def _workshop_ignore(src_dir: str, names: list[str]) -> set[str]:
     return ignored
 
 
+# ── Helpers d'idempotence (éviter de redémarrer/remettre à jour inutilement) ──
+
+
+def _app_running(app_name: str) -> bool:
+    """Vérifie si les conteneurs Docker de l'app tournent déjà."""
+    norm = hub_state._norm(app_name)
+    containers = hub_state._docker_api_containers()
+    if norm in containers:
+        state, _ = containers[norm]
+        return state == "running"
+    return False
+
+
+def _hub_running() -> bool:
+    """Vérifie si les services du Hub tournent déjà."""
+    services = hub_state.get_hub_services()
+    if not services:
+        return False
+    return all(s.state == "running" for s in services)
+
+
+def _git_up_to_date(target_path, con) -> bool:
+    """Vérifie si le dépôt git est déjà à jour avec le remote (fetch silencieux)."""
+    try:
+        subprocess.run(
+            ["git", "-C", str(target_path), "fetch", "--quiet"],
+            capture_output=True, timeout=30,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(target_path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        upstream = subprocess.run(
+            ["git", "-C", str(target_path), "rev-parse", "@{u}"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        return head == upstream
+    except Exception:
+        return False  # en cas d'erreur, on considère qu'il faut mettre à jour (safe)
+
+
 def _start_hub(console, *, dry_run: bool) -> bool:
+    if _hub_running():
+        console.print("[dim]✓ hub déjà démarré[/dim]")
+        return True
     _ensure_jwt_keys(console, dry_run=dry_run)
     rc = hub_make("up-prod", dry_run=dry_run, console=console)
     if rc == 0:
@@ -1198,6 +1242,9 @@ def _start_hub(console, *, dry_run: bool) -> bool:
 
 
 def _start_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = None) -> bool:
+    if _app_running(app_name):
+        console.print(f"[dim]✓ {app_name} déjà démarré[/dim]")
+        return True
     rc = app_make(app_name, "up", dry_run=dry_run, console=console, apps_dir=apps_dir)
     if rc == 0:
         _health_check(app_name, console=console, timeout=30)
@@ -1254,6 +1301,9 @@ def action_start_all(console=None, *, target: str = "all", dry_run: bool = False
 
 
 def _stop_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = None) -> bool:
+    if not _app_running(app_name):
+        console.print(f"[dim]✓ {app_name} déjà arrêté[/dim]")
+        return True
     rc = app_make(app_name, "down", dry_run=dry_run, console=console, apps_dir=apps_dir)
     return rc == 0
 
@@ -1285,9 +1335,12 @@ def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False)
             tasks[pool.submit(_stop_app, con, app_name, dry_run=dry_run, apps_dir=apps_dir)] = app_name
 
         if target in ("all", "prod"):
-            con.print("[bold]→ Arrêt du Hub…[/bold]")
-            f_hub = pool.submit(hub_make, "down", dry_run=dry_run, console=con)
-            tasks[f_hub] = "hub"
+            if not _hub_running():
+                con.print("[dim]✓ hub déjà arrêté[/dim]")
+            else:
+                con.print("[bold]→ Arrêt du Hub…[/bold]")
+                f_hub = pool.submit(hub_make, "down", dry_run=dry_run, console=con)
+                tasks[f_hub] = "hub"
 
         ok, fail = 0, 0
         for future in as_completed(tasks):
@@ -1317,6 +1370,11 @@ def _update_target(console, target: str, *, dry_run: bool) -> bool:
     if not compose_file.exists():
         con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
         return False
+
+    # Idempotence : si git est déjà à jour, on saute tout le cycle.
+    if _git_up_to_date(target_path, con):
+        con.print(f"[dim]✓ {target} déjà à jour[/dim]")
+        return True
 
     prev_commit = _git_previous_commit(target_path, con)
     snapshot = _db_snapshot(con) if target == "hub" else None

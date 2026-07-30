@@ -66,8 +66,17 @@ def seed_state_snapshot(initial: dict | None = None) -> None:
             _snap["services"] = initial["services"]
 
 
-def pause(canvas: Canvas) -> None:
-    canvas.render(Text("↵ Entrée pour revenir au menu…", style="dim"))
+def pause(canvas: Canvas, message=None) -> None:
+    """Affiche un message optionnel + invite Entrée.
+
+    Quand `message` est fourni, il est composé AVEC l'invite (pas écrasé).
+    """
+    if message is not None:
+        if isinstance(message, str):
+            message = Text(message)
+        canvas.render(Text.assemble(message, Text("\n\n"), Text("↵ Entrée pour continuer…", style="dim")))
+    else:
+        canvas.render(Text("↵ Entrée pour revenir au menu…", style="dim"))
     fd = sys.stdin.fileno()
     while True:
         k = keys.read_key(fd, timeout=0.2)
@@ -511,15 +520,13 @@ def choose_app(canvas: Canvas, prompt: str = "Quelle app ?"):
 def view_coffre(canvas: Canvas, vault_mgr) -> None:
     vault = vault_mgr.vault if vault_mgr else None
     if vault is None:
-        canvas.render(Text("Coffre indisponible.", style="yellow"))
-        pause(canvas)
+        pause(canvas, Text("Coffre indisponible.", style="yellow"))
         return
     with _modal(canvas):
         if vault.is_locked:
             pw = widgets.password(canvas, "Passphrase du coffre :")
             if pw is widgets.ESC or pw is None or not pw or not vault.unlock(pw):
-                canvas.render(Text("Coffre verrouillé.", style="red"))
-                pause(canvas)
+                pause(canvas, Text("Coffre verrouillé.", style="red"))
                 return
 
     while True:
@@ -536,27 +543,39 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
         if sel is widgets.ESC or sel is None or sel == "← Retour":
             return
         if sel == "💾 Sauvegarder maintenant":
-            summary = vault_mgr.backup_all()
-            canvas.render(Text(f"✓ Sauvegardé : {summary['env']} .env, {summary['files']} fichiers.", style="green"))
-            pause(canvas)
+            # Si aucun .env n'a divergé, la sauvegarde est inutile
+            # (le contenu disque est identique à celui du coffre).
+            if not divs:
+                pause(canvas, Text("✓ Coffre déjà à jour — rien à sauvegarder.", style="green"))
+                continue
+            try:
+                summary = vault_mgr.backup_all()
+                pause(canvas, Text(
+                    f"✓ Sauvegardé : {summary['env']} .env, {summary['files']} fichiers.",
+                    style="green"))
+            except Exception as e:
+                pause(canvas, Text(f"✗ Erreur lors de la sauvegarde :\n{e}", style="red"))
             continue
         if sel == "⬇ Récupérer (export)":
-            dest = vault_mgr.export_recovery()
-            canvas.render(Text(f"✓ Export de récupération :\n{dest}", style="green"))
-            pause(canvas)
+            try:
+                dest = vault_mgr.export_recovery()
+                pause(canvas, Text(f"✓ Export de récupération :\n{dest}", style="green"))
+            except Exception as e:
+                pause(canvas, Text(f"✗ Erreur lors de l'export :\n{e}", style="red"))
             continue
         if sel == "🔑 Changer la passphrase":
             with _modal(canvas):
                 pw1 = widgets.password(canvas, "Nouvelle passphrase :")
                 pw2 = widgets.password(canvas, "Confirme la passphrase :")
             if pw1 is widgets.ESC or pw2 is widgets.ESC or not pw1 or pw1 != pw2:
-                canvas.render(Text("Passphrase inchangée (vide ou non concordante).", style="yellow"))
-                pause(canvas)
+                pause(canvas, Text("Passphrase inchangée (vide ou non concordante).", style="yellow"))
                 continue
-            vault.change_passphrase(pw1)
-            vault.save()
-            canvas.render(Text("✓ Passphrase changée.", style="green"))
-            pause(canvas)
+            try:
+                vault.change_passphrase(pw1)
+                vault.save()
+                pause(canvas, Text("✓ Passphrase changée.", style="green"))
+            except Exception as e:
+                pause(canvas, Text(f"✗ Erreur lors du changement de passphrase :\n{e}", style="red"))
             continue
         entry = sel.replace(" [MODIFIÉ]", "")
         with _modal(canvas):
@@ -587,8 +606,11 @@ def _run_action(canvas: Canvas, label: str, fn, *args, **kw) -> bool:
 
     retcode, cancelled = canvas.stream_command(runner, label=label)
     success = not cancelled and retcode == 0
-    canvas.render(Text(f"{'✓' if success else '✗'} {label}", style="green" if success else "red"))
-    pause(canvas)
+    # stream_command a déjà affiché le résultat avec les logs dans son
+    # dernier render — on compose juste le résumé avec l'invite Entrée.
+    pause(canvas, Text(
+        f"{'✓' if success else '✗'} {label}",
+        style="green" if success else "red"))
     return success
 
 
@@ -725,7 +747,7 @@ def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = 
             elif c == '5':
                 _run_action(canvas, "Mise à jour complète", actions.action_update_all)
             elif c == '6':
-                _coffre_submenu(canvas, vault)
+                view_coffre(canvas, vault)
             elif c == '0':
                 confirm = widgets.confirm(canvas, "Quitter hubctl ?")
                 if confirm is True:
@@ -738,7 +760,7 @@ def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = 
             elif c == '3':
                 _run_action(canvas, "Mise à jour complète", actions.action_update_all)
             elif c == '4':
-                _coffre_submenu(canvas, vault)
+                view_coffre(canvas, vault)
             elif c == '0':
                 confirm = widgets.confirm(canvas, "Quitter hubctl ?")
                 if confirm is True:
