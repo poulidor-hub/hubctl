@@ -101,14 +101,20 @@ def build_parser() -> argparse.ArgumentParser:
     set_url.add_argument("slug")
     set_url.add_argument("url")
 
-    # seed (déploiement batch déclaratif d'apps)
+    # seed (déploiement batch déclaratif d'apps + export)
     seed_parser = sub.add_parser("seed",
                                  help="Déployer/converger des apps depuis un fichier seed YAML")
-    seed_parser.add_argument("fichier", help="Chemin vers le fichier seed (YAML)")
+    seed_parser.add_argument("fichier", nargs="?", default=None,
+                              help="Chemin vers le fichier seed (YAML) [ou 'export']")
     seed_parser.add_argument("--prune", action="store_true",
-                             help="Supprimer les apps présentes mais non listées (confirmation)")
+                              help="Supprimer les apps présentes mais non listées (confirmation)")
     seed_parser.add_argument("--dry-run", action="store_true",
-                             help="Simulation : afficher les actions sans les exécuter")
+                              help="Simulation : afficher les actions sans les exécuter")
+    seed_parser.add_argument("-o", "--output", default=None,
+                              help="Chemin de sortie (défaut: seed-export-YYYY-MM-DD.yaml)")
+    seed_parser.add_argument("--force", action="store_true",
+                              help="Écraser le fichier s'il existe déjà")
+    seed_parser.set_defaults(seed_action=None)
 
     return p
 
