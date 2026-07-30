@@ -10,6 +10,7 @@ from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all,
     action_atelier, action_bootstrap, action_vpn, action_seed,
+    action_seed_export,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -340,6 +341,22 @@ def _run(args) -> int:
         from rich.console import Console as RichConsole
         console = RichConsole()
         _resolve_mode(args)
+
+        # Export mode
+        if args.output is not None:
+            try:
+                return action_seed_export(console,
+                                          output_path=args.output,
+                                          force=args.force)
+            except Exception as e:
+                print(f"❌ seed export a échoué : {e}")
+                return 1
+
+        # Legacy : seed <fichier>
+        if not args.fichier:
+            console.print("[red]✗ Fichier seed requis. Usage : hubctl seed <fichier.yaml>[/red]")
+            console.print("[dim]Nouveau : hubctl seed -o <chemin> pour exporter le parc actuel.[/dim]")
+            return 1
         try:
             return action_seed(console, args.fichier,
                                prune=args.prune,
