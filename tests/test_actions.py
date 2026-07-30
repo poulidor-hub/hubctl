@@ -1,3 +1,4 @@
+import subprocess
 from unittest import mock
 
 import pytest
@@ -1232,3 +1233,111 @@ def test_action_seed_empty_apps_returns_zero(tmp_path, monkeypatch):
         rc = actions.action_seed(console, str(seed), dry_run=False)
     assert rc == 0
     soa.assert_not_called()
+
+
+# ── action_seed_export ──────────────────────────────────────────
+
+@pytest.fixture
+def _fake_apps_dir(tmp_path, monkeypatch):
+    """Crée un faux APPS/ avec 2 apps (avec .git + remote)."""
+    apps = tmp_path / "APPS"
+    apps.mkdir()
+    # App 1
+    app1 = apps / "mon-app-1"
+    app1.mkdir()
+    (app1 / ".git").mkdir()
+    # App 2
+    app2 = apps / "mon-app-2"
+    app2.mkdir()
+    (app2 / ".git").mkdir()
+    # App 3 : pas de .git → doit être ignorée
+    app3 = apps / "sans-git"
+    app3.mkdir()
+
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+    return apps
+
+
+def _fake_git_remote(path, url):
+    """Simule git remote get-url origin pour un dossier."""
+    return url
+
+
+def test_action_seed_export_generates_yaml(tmp_path, monkeypatch, capsys):
+    """Vérifie que le YAML généré contient les URLs attendues."""
+    apps = tmp_path / "APPS"
+    apps.mkdir()
+    for slug in ("app-a", "app-b"):
+        d = apps / slug
+        d.mkdir()
+        (d / ".git").mkdir()
+
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+
+    # Mock subprocess.run pour simuler git remote
+    git_urls = {
+        "app-a": "git@github.com:user/app-a.git",
+        "app-b": "git@github.com:user/app-b.git",
+    }
+    orig_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git" and cmd[-1] == "origin":
+            slug = Path(cmd[2]).name
+            url = git_urls.get(slug, "")
+            return subprocess.CompletedProcess(cmd, 0, stdout=url.encode(), stderr=b"")
+        return orig_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out_path = tmp_path / "seed-test.yaml"
+    console = Console()
+
+    rc = actions.action_seed_export(console, output_path=str(out_path), force=False)
+    assert rc == 0
+
+    content = out_path.read_text()
+    assert "git@github.com:user/app-a.git" in content
+    assert "git@github.com:user/app-b.git" in content
+    assert content.strip().startswith("#")
+    assert "apps:" in content
+
+
+def test_action_seed_export_empty_apps_returns_1(tmp_path, monkeypatch):
+    """APPS/ vide → retourne 1, pas de fichier créé."""
+    apps = tmp_path / "APPS"
+    apps.mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+
+    out_path = tmp_path / "seed-empty.yaml"
+    console = Console()
+
+    rc = actions.action_seed_export(console, output_path=str(out_path), force=False)
+    assert rc == 1
+    assert not out_path.exists()
+
+
+def test_action_seed_export_refuses_overwrite(tmp_path, monkeypatch):
+    """Fichier existant sans --force → retourne 1, fichier inchangé."""
+    apps = tmp_path / "APPS"
+    apps.mkdir()
+    app = apps / "app-x"
+    app.mkdir()
+    (app / ".git").mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git" and cmd[-1] == "origin":
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"git@github.com:user/app-x.git", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out_path = tmp_path / "existing.yaml"
+    out_path.write_text("original content")
+
+    console = Console()
+
+    rc = actions.action_seed_export(console, output_path=str(out_path), force=False)
+    assert rc == 1
+    assert out_path.read_text() == "original content"
