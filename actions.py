@@ -1826,3 +1826,76 @@ def action_vpn(console, subcmd: str, *, dry_run: bool = False) -> None:
     raise ValueError(f"subcmd inconnu: {subcmd!r} (attendu: sync|status|on|off)")
 
 
+def action_seed_export(console, output_path: str | None = None, *, force: bool = False) -> int:
+    """Génère un fichier seed YAML à partir des apps installées dans APPS/.
+
+    Retourne 0 si au moins une app exportée, 1 si aucune.
+    """
+    import yaml
+    from datetime import date
+
+    con = console or _console
+    apps_dir = hub_state.APPS_DIR
+
+    # 1. Vérifier que APPS/ existe et contient des dossiers
+    if not apps_dir.exists() or not any(
+        d.is_dir() and not d.name.startswith(".") for d in apps_dir.iterdir()
+    ):
+        con.print("[dim]Aucune app dans APPS/, rien à exporter.[/dim]")
+        return 1
+
+    # 2. Collecter les URLs git de chaque app
+    urls: list[str] = []
+    for app_path in sorted(apps_dir.iterdir()):
+        if not app_path.is_dir() or app_path.name.startswith("."):
+            continue
+        if not (app_path / ".git").exists():
+            con.print(f"[dim yellow]⚠ {app_path.name} ignorée (pas de dépôt git)[/dim yellow]")
+            continue
+
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(app_path), "remote", "get-url", "origin"],
+                capture_output=True, text=True, timeout=5,
+            )
+            stdout = r.stdout
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode()
+            if r.returncode != 0 or not stdout.strip():
+                con.print(f"[dim yellow]⚠ {app_path.name} ignorée (pas de remote git)[/dim yellow]")
+                continue
+            urls.append(stdout.strip())
+        except Exception:
+            con.print(f"[dim yellow]⚠ {app_path.name} ignorée (erreur git)[/dim yellow]")
+            continue
+
+    # 3. Aucune URL collectée
+    if not urls:
+        con.print("[dim]Aucune app avec remote git trouvée dans APPS/.[/dim]")
+        return 1
+
+    # 4. Trier (déterministe)
+    urls.sort()
+
+    # 5. Déterminer le chemin de sortie
+    from pathlib import Path
+    if output_path:
+        out = Path(output_path)
+    else:
+        today = date.today().isoformat()
+        out = hub_state.PARC_ROOT / f"seed-export-{today}.yaml"
+
+    # 6. Vérifier si le fichier existe déjà
+    if out.exists() and not force:
+        con.print(f"[red]✗ {out} existe déjà. Utilisez --force pour écraser.[/red]")
+        return 1
+
+    # 7. Écrire le YAML
+    header = f"# seed-export-{date.today().isoformat()}.yaml — export du parc au {date.today().isoformat()}\n"
+    content = header + yaml.dump({"apps": urls}, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    out.write_text(content)
+
+    con.print(f"[green]✓ {len(urls)} app(s) exportée(s) vers {out}[/green]")
+    return 0
+
+
