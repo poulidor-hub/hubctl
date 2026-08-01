@@ -1173,22 +1173,6 @@ def cleanup_orphan_tests(console=None) -> None:
         pass
 
 
-def _workshop_ignore(src_dir: str, names: list[str]) -> set[str]:
-    """Filtre les répertoires/fichiers à exclure lors de la copie atelier."""
-    import fnmatch
-    ignored: set[str] = set()
-    for name in names:
-        full = os.path.join(src_dir, name)
-        if os.path.isdir(full) and name in _WORKSHOP_IGNORE_DIRS:
-            ignored.add(name)
-        elif os.path.isfile(full):
-            for pat in _WS_IGNORE_NAMES:
-                if fnmatch.fnmatch(name, pat):
-                    ignored.add(name)
-                    break
-    return ignored
-
-
 # ── Helpers d'idempotence (éviter de redémarrer/remettre à jour inutilement) ──
 
 
@@ -1256,29 +1240,81 @@ def action_start_all(console=None, *, target: str = "all", dry_run: bool = False
 
     Args:
         target: ``\"all\"`` ou ``\"prod\"`` → apps de APPS_DIR + Hub.
-                ``\"dev\"`` → apps de WORKSHOP_DIR, **sans** le Hub.
+                ``\"dev\"`` → ateliers (docker compose -p X-ws).
+                En mode dev, les ateliers manquants sont automatiquement créés
+                (clone DB + 2e instance Compose) avant le démarrage.
     """
     if target not in ("all", "prod", "dev"):
         raise ValueError(f"target doit être 'all', 'prod' ou 'dev' (reçu : {target!r})")
 
     con = console or _console
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     if target == "dev":
-        apps = [a.name for a in hub_state.get_workshop_apps()]
-        apps_dir = str(hub_state.WORKSHOP_DIR)
-    else:
-        apps = [a.name for a in hub_state.get_apps()]
-        apps_dir = str(hub_state.APPS_DIR)
+        # ── Phase 1 : créer les ateliers manquants (clone DB + compose up) ──
+        _ws_session_ports.clear()  # reset allocation pour cette session
+        prod_apps = hub_state.get_apps()
+        created, skipped, failed = 0, 0, 0
+        for app in prod_apps:
+            if _ws_exists(app.name):
+                skipped += 1
+                continue
+            con.print(f"\n[bold]── {app.name} ──[/bold]")
+            if _create_workshop(con, app.name, dry_run=dry_run):
+                created += 1
+            else:
+                failed += 1
+        if created or skipped or failed:
+            con.print(f"\n[bold]Ateliers : {created} créé(s), {skipped} déjà présent(s), {failed} échec(s)[/bold]")
+
+        # ── Phase 2 : démarrer les ateliers existants en parallèle ──
+        # (ceux qui viennent d'être créés sont déjà démarrés par _create_workshop)
+        workshop_slugs = [a.name for a in prod_apps if _ws_exists(a.name)]
+        if dry_run and created > 0:
+            # En dry-run, .workshop.env n'est pas écrit → _ws_exists retourne False.
+            # Les ateliers créés ci-dessus ont déjà affiché leurs commandes "up -d".
+            con.print(f"[dim]Phase 2 ignorée (dry-run) : les {created} atelier(s) ci-dessus ont déjà affiché leurs commandes.[/dim]")
+            return
+        if not workshop_slugs:
+            con.print("[dim]Aucun atelier à démarrer.[/dim]")
+            return
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        tasks: dict = {}
+        with ThreadPoolExecutor(max_workers=max(1, len(workshop_slugs))) as pool:
+            for app_slug in workshop_slugs:
+                ws_slug = _ws_project(app_slug)
+                con.print(f"[bold]→ Démarrage de « {ws_slug} »…[/bold]")
+                tasks[pool.submit(_start_workshop, con, app_slug, dry_run=dry_run)] = ws_slug
+
+            ok, fail = 0, 0
+            for future in as_completed(tasks):
+                name = tasks[future]
+                try:
+                    if future.result():
+                        con.print(f"[green]✓ {name} démarré[/green]")
+                        ok += 1
+                    else:
+                        con.print(f"[red]✗ {name} échoué[/red]")
+                        fail += 1
+                except Exception as e:
+                    con.print(f"[red]✗ {name} erreur : {e}[/red]")
+                    fail += 1
+            con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
+        return
+
+    # ── Mode prod/all : démarrage classique ──
+    apps = [a.name for a in hub_state.get_apps()]
+    apps_dir = str(hub_state.APPS_DIR)
 
     if not apps:
         con.print("[dim]Aucune app active à démarrer.[/dim]")
+        return
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     tasks: dict = {}
     with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
-        if target in ("all", "prod"):
-            con.print("[bold]→ Démarrage du Hub…[/bold]")
-            tasks[pool.submit(_start_hub, con, dry_run=dry_run)] = "hub"
+        con.print("[bold]→ Démarrage du Hub…[/bold]")
+        tasks[pool.submit(_start_hub, con, dry_run=dry_run)] = "hub"
 
         for app_name in apps:
             con.print(f"[bold]→ Démarrage de « {app_name} »…[/bold]")
@@ -1313,7 +1349,7 @@ def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False)
 
     Args:
         target: ``\"all\"`` ou ``\"prod\"`` → apps de APPS_DIR puis Hub.
-                ``\"dev\"`` → apps de WORKSHOP_DIR, **sans** le Hub.
+                ``\"dev\"`` → ateliers (docker compose -p X-ws down), sans le Hub.
     """
     if target not in ("all", "prod", "dev"):
         raise ValueError(f"target doit être 'all', 'prod' ou 'dev' (reçu : {target!r})")
@@ -1322,11 +1358,38 @@ def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False)
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     if target == "dev":
-        apps = [a.name for a in hub_state.get_workshop_apps()]
-        apps_dir = str(hub_state.WORKSHOP_DIR)
-    else:
-        apps = [a.name for a in hub_state.get_apps()]
-        apps_dir = str(hub_state.APPS_DIR)
+        # Arrêter les ateliers via docker compose -p X-ws down
+        workshop_slugs = [a.name for a in hub_state.get_apps() if _ws_exists(a.name)]
+        if not workshop_slugs:
+            con.print("[dim]Aucun atelier à arrêter.[/dim]")
+            return
+
+        tasks: dict = {}
+        with ThreadPoolExecutor(max_workers=max(1, len(workshop_slugs))) as pool:
+            for app_slug in workshop_slugs:
+                ws_slug = _ws_project(app_slug)
+                con.print(f"[bold]→ Arrêt de « {ws_slug} »…[/bold]")
+                tasks[pool.submit(_stop_workshop, con, app_slug, dry_run=dry_run)] = ws_slug
+
+            ok, fail = 0, 0
+            for future in as_completed(tasks):
+                name = tasks[future]
+                try:
+                    if future.result():
+                        con.print(f"[green]✓ {name} arrêté[/green]")
+                        ok += 1
+                    else:
+                        con.print(f"[red]✗ {name} échoué[/red]")
+                        fail += 1
+                except Exception as e:
+                    con.print(f"[red]✗ {name} erreur : {e}[/red]")
+                    fail += 1
+            con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
+        return
+
+    # ── Mode prod/all : arrêt classique ──
+    apps = [a.name for a in hub_state.get_apps()]
+    apps_dir = str(hub_state.APPS_DIR)
 
     tasks: dict = {}
     with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
@@ -1334,13 +1397,12 @@ def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False)
             con.print(f"[bold]→ Arrêt de « {app_name} »…[/bold]")
             tasks[pool.submit(_stop_app, con, app_name, dry_run=dry_run, apps_dir=apps_dir)] = app_name
 
-        if target in ("all", "prod"):
-            if not _hub_running():
-                con.print("[dim]✓ hub déjà arrêté[/dim]")
-            else:
-                con.print("[bold]→ Arrêt du Hub…[/bold]")
-                f_hub = pool.submit(hub_make, "down", dry_run=dry_run, console=con)
-                tasks[f_hub] = "hub"
+        if not _hub_running():
+            con.print("[dim]✓ hub déjà arrêté[/dim]")
+        else:
+            con.print("[bold]→ Arrêt du Hub…[/bold]")
+            f_hub = pool.submit(hub_make, "down", dry_run=dry_run, console=con)
+            tasks[f_hub] = "hub"
 
         ok, fail = 0, 0
         for future in as_completed(tasks):
@@ -1457,228 +1519,309 @@ def action_update_all(console=None, *, dry_run: bool = False) -> None:
         con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
 
 
-def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
-    """Atelier simplifié : crée, déploie ou supprime l'atelier d'une app.
+# ── Workshop (ateliers Docker Compose -p) ──
+# Au lieu de copier les dossiers vers APP_Workshop/, on lance une 2e instance
+# Docker Compose du même dossier APPS/X/ avec un project name différent
+# (-p X-ws) et des variables d'environnement override (APP_SLUG, ports).
+# L'existence d'un atelier est matérialisée par un fichier .workshop.env
+# dans APPS/X/, qui contient les overrides (slug, ports).
 
-    - Si l'atelier APP_Workshop/<app>-ws n'existe pas → création (clone DB, rename slug, build&up)
-    - Si l'atelier existe déjà → prompt 3 choix (déployer / supprimer / annuler)
+# Plages atelier volontairement écartées de la prod pour éviter tout conflit
+# (y compris ports HTTPS = FRONTEND_PORT + 1 qui montent jusque 4700 en prod).
+_WS_API_PORT_START = 10000
+_WS_API_PORT_END = 10499
+_WS_FE_PORT_START = 5200
+_WS_FE_PORT_END = 5699
+
+# Ports alloués pendant la session courante (pour dry-run où les .workshop.env
+# ne sont pas écrits sur disque, il faut tracker en mémoire).
+_ws_session_ports: set[int] = set()
+
+
+def _ws_project(app_slug: str) -> str:
+    """Nom du projet Docker Compose pour l'atelier : {slug}-ws."""
+    return f"{app_slug}-ws"
+
+
+def _ws_env_path(app_slug: str) -> Path:
+    """Chemin du fichier de config atelier : APPS/X/.workshop.env."""
+    return hub_state.APPS_DIR / app_slug / ".workshop.env"
+
+
+def _ws_exists(app_slug: str) -> bool:
+    """True si l'atelier existe (fichier .workshop.env présent)."""
+    return _ws_env_path(app_slug).exists()
+
+
+def _ws_read_env(app_slug: str) -> dict[str, str]:
+    """Lit la config atelier depuis .workshop.env. Retourne {} si inexistant."""
+    return env_manager.read_env(_ws_env_path(app_slug))
+
+
+def _ws_compose_env(app_slug: str) -> dict[str, str] | None:
+    """Construit l'environnement pour docker compose -p X-ws.
+
+    Fusionne os.environ + .workshop.env. Les valeurs de .workshop.env
+    override celles du .env de prod (que Docker Compose lira lui-même).
+    Retourne None si l'atelier n'existe pas.
+    """
+    ws = _ws_read_env(app_slug)
+    if not ws:
+        return None
+    return {**os.environ, **ws}
+
+
+def _ws_used_ports() -> set[int]:
+    """Ports déjà utilisés par les ateliers existants."""
+    used: set[int] = set()
+    for app in hub_state.get_apps():
+        if _ws_exists(app.name):
+            ws = _ws_read_env(app.name)
+            for key in ("API_PORT", "FRONTEND_PORT", "FRONTEND_HTTPS_PORT"):
+                val = ws.get(key)
+                if val:
+                    try:
+                        used.add(int(val))
+                    except ValueError:
+                        pass
+    return used
+
+
+def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
+    """Crée l'atelier d'une app : clone DB + 2e instance Docker Compose.
+
+    Pas de copytree : on lance ``docker compose -p X-ws`` avec des variables
+    d'environnement override depuis le même dossier ``APPS/X/``.
+    Retourne True si la création a réussi, False sinon.
+    """
+    con = console or _console
+
+    app_dir = hub_state.APPS_DIR / app_slug
+    compose_file = app_dir / "docker-compose.yml"
+    ws_slug = _ws_project(app_slug)
+
+    if not app_dir.exists():
+        con.print(f"[red]✗ Source introuvable : {app_dir}[/red]")
+        return False
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {app_dir}[/red]")
+        return False
+    if _ws_exists(app_slug):
+        con.print(f"[dim]  Atelier « {ws_slug} » déjà existant.[/dim]")
+        return False
+
+    con.print(f"[bold]→ Création de l'atelier « {ws_slug} »…[/bold]")
+
+    try:
+        # 1. Allouer des ports libres pour l'atelier
+        prod_env = env_manager.read_env(app_dir / ".env")
+        prod_api = int(prod_env.get("API_PORT", "9000"))
+        prod_fe = int(prod_env.get("FRONTEND_PORT", "4200"))
+        used = _ws_used_ports() | _ws_session_ports | {prod_api, prod_fe}
+
+        ws_api = _find_free_port(_WS_API_PORT_START, _WS_API_PORT_END, used)
+        ws_fe = _find_free_port(_WS_FE_PORT_START, _WS_FE_PORT_END, used | ({ws_api} if ws_api else set()))
+        if not ws_api or not ws_fe:
+            con.print("[red]✗ Plus de ports libres pour l'atelier.[/red]")
+            return False
+
+        # Tracker les ports alloués (pour dry-run et allocations consécutives)
+        _ws_session_ports.update({ws_api, ws_fe, ws_fe + 1})
+
+        ws_config = {
+            "APP_SLUG": ws_slug,
+            "API_PORT": str(ws_api),
+            "FRONTEND_PORT": str(ws_fe),
+            "FRONTEND_HTTPS_PORT": str(ws_fe + 1),
+        }
+
+        # 2. Écrire .workshop.env
+        env_path = _ws_env_path(app_slug)
+        con.print(f"[bold]→ Config atelier : ports {ws_api}/{ws_fe}[/bold]")
+        if not dry_run:
+            env_manager.write_env(env_path, ws_config)
+
+        # 3. Cloner le volume DB
+        src_vol = f"{app_slug}-postgres-data"
+        dst_vol = f"{ws_slug}-postgres-data"
+        con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
+        if not dry_run:
+            subprocess.run(["docker", "volume", "create", dst_vol],
+                           capture_output=True, timeout=10)
+            rc = utils.run_shell(
+                ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
+                 "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
+                dry_run=dry_run, console=con, timeout=60)
+            if rc != 0:
+                con.print("[yellow]⚠ Clone DB échoué (atelier démarrera avec DB vide).[/yellow]")
+
+        # 4. docker compose -p X-ws build + up
+        compose_env = {**os.environ, **ws_config}
+        con.print(f"[bold]→ Build & démarrage de {ws_slug}…[/bold]")
+        rc = utils.run_shell(
+            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "build"],
+            cwd=str(app_dir), dry_run=dry_run, console=con, timeout=120, env=compose_env)
+        if not dry_run and rc != 0:
+            con.print(f"[red]✗ Build échoué. ROLLBACK : suppression .workshop.env + volume.[/red]")
+            env_path.unlink(missing_ok=True)
+            subprocess.run(["docker", "volume", "rm", dst_vol], capture_output=True, timeout=10)
+            return False
+
+        rc = utils.run_shell(
+            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "up", "-d"],
+            cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
+        if not dry_run and rc != 0:
+            con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
+            env_path.unlink(missing_ok=True)
+            subprocess.run(["docker", "volume", "rm", dst_vol], capture_output=True, timeout=10)
+            return False
+
+        # 5. Health check
+        con.print(f"[bold]→ Santé atelier (port {ws_api}, timeout 30s)…[/bold]")
+        healthy = True if dry_run else _health_check(
+            ws_slug, console=con, timeout=30, port_override=str(ws_api))
+        if not healthy:
+            con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + suppression config.[/red]")
+            if not dry_run:
+                utils.run_shell(
+                    ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "down"],
+                    cwd=str(app_dir), dry_run=False, console=con, timeout=30, env=compose_env)
+                env_path.unlink(missing_ok=True)
+                subprocess.run(["docker", "volume", "rm", dst_vol], capture_output=True, timeout=10)
+            return False
+
+        con.print(f"[green]✓ Atelier « {ws_slug} » créé (ports {ws_api}/{ws_fe}).[/green]")
+        return True
+    except Exception as e:
+        con.print(f"[red]✗ Erreur pendant la création de l'atelier : {e}[/red]")
+        if not dry_run:
+            _ws_env_path(app_slug).unlink(missing_ok=True)
+        return False
+
+
+def _start_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
+    """Démarre un atelier existant : docker compose -p X-ws up -d."""
+    con = console or _console
+    ws_slug = _ws_project(app_slug)
+
+    compose_env = _ws_compose_env(app_slug)
+    if compose_env is None:
+        con.print(f"[red]✗ Atelier « {ws_slug} » inexistant (.workshop.env manquant).[/red]")
+        return False
+
+    app_dir = hub_state.APPS_DIR / app_slug
+    compose_file = app_dir / "docker-compose.yml"
+    ws_config = _ws_read_env(app_slug)
+    ws_slug_check = ws_config.get("APP_SLUG", ws_slug)
+
+    if _app_running(ws_slug_check):
+        con.print(f"[dim]✓ {ws_slug} déjà démarré[/dim]")
+        return True
+
+    rc = utils.run_shell(
+        ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "up", "-d"],
+        cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
+    if rc == 0 and not dry_run:
+        api_port = ws_config.get("API_PORT", "8000")
+        _health_check(ws_slug_check, console=con, timeout=30, port_override=api_port)
+    return rc == 0
+
+
+def _stop_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
+    """Arrête un atelier : docker compose -p X-ws down (sans -v, préserve les volumes)."""
+    con = console or _console
+    ws_slug = _ws_project(app_slug)
+
+    compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+    app_dir = hub_state.APPS_DIR / app_slug
+    compose_file = app_dir / "docker-compose.yml"
+
+    ws_config = _ws_read_env(app_slug)
+    ws_slug_check = ws_config.get("APP_SLUG", ws_slug)
+    if not _app_running(ws_slug_check):
+        con.print(f"[dim]✓ {ws_slug} déjà arrêté[/dim]")
+        return True
+
+    rc = utils.run_shell(
+        ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "down"],
+        cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
+    return rc == 0
+
+
+def _remove_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
+    """Supprime un atelier : docker compose -p X-ws down -v + suppression .workshop.env."""
+    con = console or _console
+    ws_slug = _ws_project(app_slug)
+
+    compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+    app_dir = hub_state.APPS_DIR / app_slug
+    compose_file = app_dir / "docker-compose.yml"
+
+    # Down -v (détruit conteneurs + volumes)
+    utils.run_shell(
+        ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "down", "-v"],
+        cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
+
+    # Supprimer .workshop.env
+    env_path = _ws_env_path(app_slug)
+    con.print(f"[bold]→ Suppression config atelier ({env_path.name})…[/bold]")
+    if not dry_run:
+        env_path.unlink(missing_ok=True)
+
+    con.print(f"[green]✓ Atelier « {ws_slug} » supprimé.[/green]")
+    return True
+
+
+def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
+    """Atelier simplifié : crée ou supprime l'atelier d'une app.
+
+    - Si l'atelier n'existe pas (pas de .workshop.env) → création (clone DB + 2e instance Compose)
+    - Si l'atelier existe déjà → prompt 2 choix (supprimer / annuler)
     """
     con = console or _console
     import sys as _sys
 
-    source_dir = hub_state.APPS_DIR / app_slug
-    dest_dir = hub_state.WORKSHOP_DIR / f"{app_slug}-ws"
-    source_slug = app_slug
-    dest_slug = f"{app_slug}-ws"
+    app_dir = hub_state.APPS_DIR / app_slug
+    ws_slug = _ws_project(app_slug)
 
-    if not source_dir.exists():
-        con.print(f"[red]✗ Source introuvable : {source_dir}[/red]")
+    if not app_dir.exists():
+        con.print(f"[red]✗ Source introuvable : {app_dir}[/red]")
         return
-    compose_file = source_dir / "docker-compose.yml"
+    compose_file = app_dir / "docker-compose.yml"
     if not compose_file.exists():
-        con.print(f"[red]✗ docker-compose.yml introuvable dans {source_dir}[/red]")
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {app_dir}[/red]")
         return
 
     # ── CRÉATION (atelier inexistant) ──
-    if not dest_dir.exists():
-        con.print(f"[bold]→ Création de l'atelier « {dest_slug} »…[/bold]")
-
-        # 1. Stop prod
-        con.print(f"[bold]→ Arrêt de la prod {source_slug}…[/bold]")
-        utils.run_shell(["docker", "compose", "-f", str(compose_file), "stop"],
-                        cwd=str(source_dir), dry_run=dry_run, console=con)
-
-        # Garde-fou : la prod a été stoppée ci-dessus. Toute exception non gérée
-        # dans la création (copytree, volume create, write_env…) doit garantir le
-        # redémarrage de la prod, sinon elle reste DOWN.
-        try:
-            # 2. rsync files
-            con.print(f"[bold]→ Copie fichiers : {source_dir.name} → {dest_dir.name}[/bold]")
-            if dry_run:
-                con.print(f"[dim]$ rsync -a {source_dir}/ {dest_dir}/ (dry-run)[/dim]")
-            else:
-                shutil.copytree(str(source_dir), str(dest_dir), symlinks=True,
-                                ignore=_workshop_ignore)
-
-            # 3. Clone DB volume
-            src_vol = f"{source_slug}-postgres-data"
-            dst_vol = f"{dest_slug}-postgres-data"
-            con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
-            if not dry_run:
-                subprocess.run(["docker", "volume", "create", dst_vol],
-                               capture_output=True, timeout=10)
-                rc = utils.run_shell(
-                    ["docker", "run", "--rm", "-v", f"{src_vol}:/from:ro",
-                     "-v", f"{dst_vol}:/to", "alpine", "cp", "-a", "/from/.", "/to/"],
-                    dry_run=dry_run, console=con, timeout=60)
-                if rc != 0:
-                    con.print("[yellow]⚠ Clone DB échoué (atelier démarrera avec DB vide).[/yellow]")
-
-            # 4. Rename slug in .env
-            env_path = dest_dir / ".env"
-            con.print(f"[bold]→ Slug : {source_slug} → {dest_slug}[/bold]")
-            if not dry_run:
-                env_manager.write_env(env_path, {"APP_SLUG": dest_slug})
-
-            # 5. docker compose up -d --build
-            dest_compose = dest_dir / "docker-compose.yml"
-            con.print(f"[bold]→ Build & démarrage de {dest_slug}…[/bold]")
-            rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "build"],
-                                 cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=120)
-            if not dry_run and rc != 0:
-                con.print(f"[red]✗ Build échoué. ROLLBACK : suppression atelier + restart prod.[/red]")
-                shutil.rmtree(str(dest_dir))
-                utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                                cwd=str(source_dir), dry_run=False, console=con, timeout=60)
-                return
-            rc = utils.run_shell(["docker", "compose", "-f", str(dest_compose), "up", "-d"],
-                                 cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
-            if not dry_run and rc != 0:
-                con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
-                shutil.rmtree(str(dest_dir))
-                utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                                cwd=str(source_dir), dry_run=False, console=con, timeout=60)
-                return
-
-            # 6. Health check
-            if not dry_run:
-                env_vars = env_manager.read_env(env_path)
-                api_port = env_vars.get("API_PORT", "8000")
-            else:
-                api_port = "8000"
-            con.print(f"[bold]→ Santé atelier (port {api_port}, timeout 30s)…[/bold]")
-            healthy = True if dry_run else _health_check(dest_slug, console=con, timeout=30, port_override=api_port)
-            if not healthy:
-                con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + restart prod.[/red]")
-                if not dry_run:
-                    utils.run_shell(["docker", "compose", "-f", str(dest_compose), "down"],
-                                    cwd=str(dest_dir), dry_run=False, console=con, timeout=30)
-                    shutil.rmtree(str(dest_dir))
-                    utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                                    cwd=str(source_dir), dry_run=False, console=con, timeout=60)
-                return
-
-            con.print(f"[green]✓ Atelier « {dest_slug} » créé. Prod {source_slug} stoppée (en place).[/green]")
-            return
-        except Exception as e:
-            con.print(f"[red]✗ Erreur pendant la création de l'atelier : {e}[/red]")
-            con.print(f"[red]  ROLLBACK de sécurité : nettoyage + redémarrage de la prod {source_slug}.[/red]")
-            if not dry_run:
-                try:
-                    if dest_dir.exists():
-                        shutil.rmtree(str(dest_dir))
-                except OSError:
-                    pass
-                utils.run_shell(["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                                cwd=str(source_dir), dry_run=False, console=con, timeout=60)
-            return
+    if not _ws_exists(app_slug):
+        _create_workshop(con, app_slug, dry_run=dry_run)
+        return
 
     # ── ATELIER EXISTANT ──
-    ws_compose = dest_dir / "docker-compose.yml"
-    con.print(f"[yellow]⚠ Atelier « {dest_slug} » déjà existant.[/yellow]")
-    con.print("   1) [bold]déployer[/bold] — git pull prod + rebuild + restart")
-    con.print("   2) [bold]supprimer[/bold] — backup tar.gz + rm -rf + restart prod")
-    con.print("   3) [bold]annuler[/bold]")
+    con.print(f"[yellow]⚠ Atelier « {ws_slug} » déjà existant.[/yellow]")
+    con.print("   1) [bold]supprimer[/bold] — down -v + suppression config")
+    con.print("   2) [bold]annuler[/bold]")
 
     if not _sys.stdin.isatty():
         con.print("[dim]Mode non interactif — annulation.[/dim]")
         return
 
     try:
-        choice = input("   Choix [1/2/3] : ").strip()
+        choice = input("   Choix [1/2] : ").strip()
     except (EOFError, KeyboardInterrupt):
         con.print("[dim]Annulé.[/dim]")
         return
 
     if choice == "1":
-        # Déployer : git pull prod + rebuild + restart
-        con.print(f"[bold]→ Déployer « {dest_slug} » vers la prod (code-only)…[/bold]")
-        prev_commit = _git_previous_commit(source_dir, con)
-        con.print("[bold]→ git pull prod…[/bold]")
-        rc = utils.run_shell(["git", "-C", str(source_dir), "pull", "--recurse-submodules"],
-                             dry_run=dry_run, console=con)
-        if rc != 0:
-            rc = utils.run_shell(["git", "-C", str(source_dir), "pull"],
-                                 dry_run=dry_run, console=con)
-        if rc != 0:
-            con.print(f"[red]✗ git pull échoué pour {source_slug} — rollback.[/red]")
-            _rollback(source_slug, source_dir, prev_commit, None, con)
-            return
-        con.print(f"[bold]→ Build « {source_slug} »…[/bold]")
-        rc = utils.run_shell(["make", "-C", str(source_dir), "build"],
-                             dry_run=dry_run, console=con, timeout=600)
-        if rc != 0:
-            con.print(f"[red]✗ Build échoué pour {source_slug} — rollback.[/red]")
-            _rollback(source_slug, source_dir, prev_commit, None, con)
-            return
-        con.print(f"[bold]→ Démarrage « {source_slug} »…[/bold]")
-        rc = utils.run_shell(["make", "-C", str(source_dir), "up"],
-                             dry_run=dry_run, console=con, timeout=60)
-        if rc != 0:
-            con.print(f"[red]✗ Démarrage échoué pour {source_slug} — rollback.[/red]")
-            _rollback(source_slug, source_dir, prev_commit, None, con)
-            return
-        if not _health_check(source_slug, con, timeout=60):
-            con.print(f"[red]✗ Health échoué — rollback.[/red]")
-            _rollback(source_slug, source_dir, prev_commit, snapshot=None, console=con, dry_run=dry_run)
-            return
-        con.print(f"[green]✓ « {source_slug} » déployée (code-only). Atelier conservé.[/green]")
-
-    elif choice == "2":
-        # Supprimer : backup tar.gz + rm -rf + restart prod
-        con.print(f"[bold red]→ Suppression de l'atelier « {dest_slug} »…[/bold red]")
-
-        # Down -v atelier
-        if ws_compose.exists():
-            utils.run_shell(["docker", "compose", "-f", str(ws_compose), "down", "-v"],
-                            cwd=str(dest_dir), dry_run=dry_run, console=con, timeout=60)
-
-        # Backup tar.gz
-        backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
-        backups.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        archive = backups / f"{dest_slug}-{stamp}.tar.gz"
-        con.print(f"[bold]→ Backup atelier → {archive.name}[/bold]")
-        if not dry_run:
-            with tarfile.open(archive, "w:gz") as tar:
-                tar.add(str(dest_dir), arcname=dest_dir.name)
-            if archive.exists():
-                os.chmod(archive, 0o600)
-
-        # rm -rf
-        con.print(f"[bold]→ Suppression de {dest_dir.name}…[/bold]")
-        if not dry_run:
-            shutil.rmtree(str(dest_dir))
-
-        # Restart prod
-        if source_dir.exists() and (source_dir / "docker-compose.yml").exists():
-            con.print(f"[bold]→ Redémarrage prod « {source_slug} »…[/bold]")
-            utils.run_shell(["make", "-C", str(source_dir), "up"],
-                            dry_run=dry_run, console=con, timeout=60)
-        con.print(f"[green]✓ Atelier « {dest_slug} » supprimé.[/green]")
-
+        _remove_workshop(con, app_slug, dry_run=dry_run)
     else:
         con.print("[dim]Annulé.[/dim]")
-
-
-# ── Workshop: répertoires exclus de la copie (lourds, régénérables) ──
-
-_WORKSHOP_IGNORE_DIRS: set[str] = {
-    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    ".venv", "venv", "env",
-    "node_modules", ".next", "dist", "build",
-    ".git",
-}
-
-_WS_IGNORE_NAMES: tuple[str, ...] = (
-    "*.pyc", "*.pyo", "*.egg-info", ".DS_Store", "*.log",
-)
 
 # ── Task 2: nouvelles actions (start_all, stop_all, update_all, atelier) ──
 
 VPN_VOLUME = "hub_base_vpn-config"
 WG_CONTAINER = "hub-wireguard"
-WG_SERVICE = "wireguard-client"   # nom du service compose (≠ container_name)
+WG_SERVICE = "wireguard-server"   # nom du service compose (≠ container_name)
 WG_PROFILE = "wireguard"
 
 
@@ -1766,7 +1909,7 @@ def _vpn_reconcile(enabled: bool, *, dry_run: bool, console=None) -> None:
         con.print(f"[bold]→ vpn_enabled=true, conf={'présente' if conf else 'ABSENTE'} — démarrage conteneur…[/bold]")
         _vpn_compose_up(dry_run=dry_run, console=con)
         if not conf:
-            con.print("[yellow]⚠ Aucune wg0.conf — wg0 ne montera pas. Déploie la conf via l'UI admin.[/yellow]")
+            con.print("[yellow]⚠ Aucune wg0.conf — initialise le serveur via l'UI admin (VPN → Initialiser).[/yellow]")
     else:
         con.print("[bold]→ vpn_enabled=false — arrêt conteneur…[/bold]")
         _vpn_stop(dry_run=dry_run, console=con)
