@@ -1,5 +1,18 @@
 # Changelog — Hubctl
 
+## [0.2.0] — 2 août 2026
+
+### ⚡ Migration ateliers APP_Workshop/ → APPS/ + PARC_ROOT robuste
+
+- **Ateliers** : migrés de `APP_Workshop/` vers `APPS/` via `.workshop.env` et `docker compose -p X-ws`. Plus besoin de dossier séparé.
+- **`auto_detect_mode()`** détecte le mode DEV via la présence de `.workshop.env` dans `APPS/`.
+- **`active_apps_dir()`** retourne toujours `APPS_DIR`.
+- **`get_apps_status()`** gère les conteneurs atelier (`{slug}-ws`) en mode DEV.
+- **`vault_manager`** : la cible `ws:` pointe vers `.workshop.env` (plus de `.env` dupliqué).
+- **`PARC_ROOT`** : nouvelle fonction `_find_parc_root()` qui remonte jusqu'à trouver `manifest.json` et `APPS/`, immunisant `hubctl` contre les symlinks (`hubctl_cli → hubctl_src/hubctl_cli`).
+- **`debug_mcp.py` / `prompt.py`** utilisent `hub_state.PARC_ROOT` au lieu de `parents[2]`.
+- **Tests** refondus pour la nouvelle architecture atelier.
+
 ## [0.1.0] — 31 juillet 2026
 
 ### Initial
