@@ -157,7 +157,7 @@ def run_debug(args) -> int:
     # Generer la config OpenCode temporaire
     park_root = os.environ.get(
         "POULIDOR_ROOT",
-        str(Path(__file__).resolve().parents[1]),
+        str(Path(__file__).resolve().parents[4]),  # debug_agent/ → hubctl_cli/ → hubctl_src/ → POULIDOR/
     )
 
     config = {

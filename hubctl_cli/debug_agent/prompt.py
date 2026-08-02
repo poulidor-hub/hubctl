@@ -18,7 +18,9 @@ def _park_root() -> Path:
     root = os.environ.get("POULIDOR_ROOT")
     if root:
         return Path(root)
-    return Path(__file__).resolve().parents[2]
+    # Fallback : utiliser hub_state.PARC_ROOT (robuste face aux symlinks)
+    from hubctl_cli import hub_state
+    return hub_state.PARC_ROOT
 
 
 def _app_dir(app_slug: str) -> Path:

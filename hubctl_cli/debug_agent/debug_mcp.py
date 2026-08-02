@@ -25,8 +25,9 @@ def _park_root() -> Path:
     root = os.environ.get("POULIDOR_ROOT")
     if root:
         return Path(root)
-    # Fallback : remonter depuis hubctl_cli/
-    return Path(__file__).resolve().parents[2]
+    # Fallback : utiliser hub_state.PARC_ROOT (robuste face aux symlinks)
+    from hubctl_cli import hub_state
+    return hub_state.PARC_ROOT
 
 
 # ── Garde-fou SQL pour db_query_select ──

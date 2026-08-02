@@ -402,7 +402,7 @@ def _run(args) -> int:
         mode = _resolve_mode(args)
         from rich.console import Console as RichConsole
         if mode == "dev":
-            RichConsole().print("[dim]Mode auto-detecte : DEV (APP_Workshop/ actif)[/dim]")
+            RichConsole().print("[dim]Mode auto-detecte : DEV (ateliers .workshop.env actifs)[/dim]")
         else:
             RichConsole().print("[dim]Mode auto-detecte : PROD (APPS/)[/dim]")
         menu._require_vault(canvas, vault_mgr)

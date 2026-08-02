@@ -6,7 +6,29 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-PARC_ROOT = Path(__file__).resolve().parent.parent
+def _find_parc_root() -> Path:
+    """Trouve la racine du parc POULIDOR en cherchant un dossier contenant
+    à la fois ``manifest.json`` et ``APPS/``.
+
+    On remonte depuis le fichier courant (qui peut être dans un sous-module
+    via symlink) jusqu'à trouver la vraie racine du parc. Cela évite que
+    ``Path(__file__).resolve()`` suive un symlink ``hubctl_cli → hubctl_src/hubctl_cli``
+    et donne un PARC_ROOT incorrect.
+    """
+    current = Path(__file__).resolve()
+    for _ in range(10):  # sécurité : 10 niveaux max
+        if (current / "manifest.json").exists() and (current / "APPS").is_dir():
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    # Fallback : comportement legacy (cassé avec les symlinks mais au moins
+    # on ne crashe pas).
+    return Path(__file__).resolve().parent.parent
+
+
+PARC_ROOT = _find_parc_root()
 HUB_DIR = PARC_ROOT / "HUB_base"
 APPS_DIR = PARC_ROOT / "APPS"
 WORKSHOP_DIR = PARC_ROOT / "APP_Workshop"
@@ -24,13 +46,13 @@ def get_mode() -> str:
 
 
 def auto_detect_mode() -> str:
-    """Détecte le mode automatiquement : DEV si APP_Workshop/ contient au
-    moins une app avec docker-compose.yml, PROD sinon.
+    """Détecte le mode automatiquement : DEV si au moins une app dans APPS/
+    a un fichier ``.workshop.env`` (atelier Docker Compose), PROD sinon.
     """
-    ws = WORKSHOP_DIR
-    if ws.exists():
-        for d in ws.iterdir():
-            if d.is_dir() and (d / "docker-compose.yml").exists():
+    apps = APPS_DIR
+    if apps.exists():
+        for d in apps.iterdir():
+            if d.is_dir() and (d / ".workshop.env").exists():
                 return "dev"
     return "prod"
 
@@ -42,8 +64,12 @@ def get_active_apps() -> list[AppInfo]:
 
 
 def active_apps_dir() -> Path:
-    """Répertoire des apps actif selon le mode : APP_Workshop en dev, APPS en prod."""
-    return WORKSHOP_DIR if _mode == "dev" else APPS_DIR
+    """Répertoire des apps actif selon le mode.
+    
+    En mode dev comme en prod, les ateliers sont lancés depuis APPS/ via
+    docker compose -p X-ws. On retourne donc toujours APPS_DIR.
+    """
+    return APPS_DIR
 
 
 @dataclass
@@ -136,12 +162,22 @@ def get_apps() -> list[AppInfo]:
 
 
 def get_workshop_apps() -> list[AppInfo]:
-    ws_dir = PARC_ROOT / "APP_Workshop"
-    if not ws_dir.exists():
+    """Liste les apps de prod qui ont un atelier (.workshop.env).
+    
+    Les ateliers ne sont plus dans APP_Workshop/ : ils tournent via
+    docker compose -p X-ws depuis APPS/X/. On détecte leur existence
+    par la présence du fichier APPS/X/.workshop.env.
+    Le ``name`` retourné est le slug de base (ex: ``canari``), pas le
+    slug atelier (``canari-ws``).
+    """
+    apps_dir = APPS_DIR
+    if not apps_dir.exists():
         return []
     apps = []
-    for d in sorted(ws_dir.iterdir()):
+    for d in sorted(apps_dir.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
+            continue
+        if not (d / ".workshop.env").exists():
             continue
         apps.append(AppInfo(
             name=d.name, path=d, version=_read_version(d),
@@ -196,7 +232,9 @@ def _docker_api_containers() -> dict[str, tuple[str, str]]:
 
 
 def get_apps_status() -> list[AppStatus]:
-    active_dir = WORKSHOP_DIR if _mode == "dev" else APPS_DIR
+    """Statut des apps. En mode dev, affiche les ateliers (slug -ws) ;
+    en mode prod, affiche les apps de prod."""
+    active_dir = APPS_DIR
     if not active_dir.exists():
         return []
     containers = _docker_api_containers()
@@ -207,15 +245,24 @@ def get_apps_status() -> list[AppStatus]:
         if _is_legacy(d):
             rows.append(AppStatus(d.name, "legacy", "—", True))
             continue
-        c = containers.get(_norm(d.name))
+        # En mode dev, on regarde le conteneur atelier ({slug}-ws) ;
+        # en mode prod, le conteneur prod ({slug}).
+        display_name = d.name
+        lookup_name = d.name
+        if _mode == "dev":
+            if not (d / ".workshop.env").exists():
+                continue  # pas d'atelier pour cette app → masquer en dev
+            lookup_name = f"{d.name}-ws"
+            display_name = f"{d.name}-ws"
+        c = containers.get(_norm(lookup_name))
         if c is None:
-            rows.append(AppStatus(d.name, "stopped", "—", False))
+            rows.append(AppStatus(display_name, "stopped", "—", False))
             continue
         c_state, c_status = c
         if c_state == "running":
-            rows.append(AppStatus(d.name, "running", c_status or "Up", False))
+            rows.append(AppStatus(display_name, "running", c_status or "Up", False))
         else:
-            rows.append(AppStatus(d.name, "stopped", c_status or "—", False))
+            rows.append(AppStatus(display_name, "stopped", c_status or "—", False))
     return rows
 
 

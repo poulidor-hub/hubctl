@@ -494,7 +494,7 @@ def _status_banner() -> Text:
 def choose_app(canvas: Canvas, prompt: str = "Quelle app ?"):
     with _modal(canvas):
         apps = hub_state.get_active_apps()
-        active_dir = "APP_Workshop" if hub_state.get_mode() == "dev" else "APPS"
+        active_dir = "APPS"  # les ateliers tournent maintenant depuis APPS/ via compose -p
         if not apps:
             canvas.render(Text(f"Aucune app dans {active_dir}/.", style="yellow"))
             pause(canvas)

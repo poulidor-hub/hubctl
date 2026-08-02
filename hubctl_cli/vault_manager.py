@@ -25,7 +25,9 @@ def _target_path(target: str) -> Path | None:
         return hub_state.APPS_DIR / name / ".env"
     if target.startswith("ws:"):
         name = target[3:]
-        return hub_state.WORKSHOP_DIR / name / ".env"
+        # Les ateliers partagent le .env de la prod (APPS/X/.env) avec des overrides.
+        # Le .workshop.env ne contient que des configs (slug, ports), pas de secrets.
+        return hub_state.APPS_DIR / name / ".workshop.env"
     return None
 
 
