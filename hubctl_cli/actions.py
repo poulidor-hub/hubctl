@@ -74,6 +74,9 @@ def _generate_dotenv(console, *, force: bool = False, dry_run: bool = False) -> 
     # HOST_UID : uid de l'utilisateur qui exécute hubctl (pour les volumes montés)
     host_uid = str(os.getuid()) if not dry_run else "1000"
 
+    # SA interne : secret pour le Service Account hub-internal (M2M HUB→lui-même)
+    sa_secret = _secrets.token_urlsafe(32) if not dry_run else "DRY_RUN_SA_SECRET"
+
     lines = f"""# Hub POULIDOR — généré automatiquement par hubctl init
 # {__import__('datetime').datetime.now().isoformat()}
 
@@ -145,6 +148,22 @@ PORT_SCAN_DOCKER_ENABLED=true
 # Divers
 FORCE_REPLACE_APP=false
 LEGACY_COMPAT_ENABLED=false
+
+# OIDC Provider (bridge OIDC pour apps externes)
+OIDC_ENABLED=true
+OIDC_ISSUER=http://{host_ip}:8000
+OIDC_EMAIL_TEMPLATE={{username}}@hub.internal
+OIDC_CODE_TTL_SECONDS=30
+OIDC_ID_TOKEN_TTL_MINUTES=10
+OIDC_ACCESS_TOKEN_TTL_MINUTES=15
+OIDC_REFRESH_TOKEN_DAYS=30
+OIDC_BACKCHANNEL_LOGOUT_ENABLED=true
+OIDC_SLO_ENABLED=false
+OIDC_SLO_IFRAME_TIMEOUT_MS=1500
+
+# Service Account interne du HUB (M2M)
+HUB_INTERNAL_SA_CLIENT_ID=hub-internal
+HUB_INTERNAL_SA_CLIENT_SECRET={sa_secret}
 """
 
     if not dry_run:
