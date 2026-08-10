@@ -1,5 +1,14 @@
 # Changelog — Hubctl
 
+## [0.3.1] — 10 août 2026
+
+### ⚡ Fix détection PARC_ROOT sur fresh clone sans APPS/
+
+- **Corrigé** : `_find_parc_root()` n'exige plus la présence du dossier `APPS/`
+  (seulement `manifest.json`). Sur un clone frais sans apps déployées, `APPS/`
+  n'existe pas — la détection retombait sur le fallback pointant vers `hubctl_src/`,
+  ce qui empêchait `make -C HUB_base up-prod` de trouver le Makefile.
+
 ## [0.3.0] — 10 août 2026
 
 ### ⚡ .env généré enrichi : variables OIDC + SLO + SA interne

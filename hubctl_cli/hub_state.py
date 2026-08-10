@@ -7,17 +7,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 def _find_parc_root() -> Path:
-    """Trouve la racine du parc POULIDOR en cherchant un dossier contenant
-    à la fois ``manifest.json`` et ``APPS/``.
+    """Trouve la racine du parc POULIDOR en cherchant le ``manifest.json``.
 
     On remonte depuis le fichier courant (qui peut être dans un sous-module
     via symlink) jusqu'à trouver la vraie racine du parc. Cela évite que
     ``Path(__file__).resolve()`` suive un symlink ``hubctl_cli → hubctl_src/hubctl_cli``
     et donne un PARC_ROOT incorrect.
+
+    On ne vérifie plus ``APPS/`` : sur un fresh clone sans apps déployées,
+    le dossier ``APPS/`` n'existe pas encore (Git ne tracke pas les dossiers
+    vides), ce qui faisait échouer la détection et retombait sur le fallback
+    pointant vers ``hubctl_src/`` au lieu de la racine POULIDOR.
     """
     current = Path(__file__).resolve()
     for _ in range(10):  # sécurité : 10 niveaux max
-        if (current / "manifest.json").exists() and (current / "APPS").is_dir():
+        if (current / "manifest.json").exists():
             return current
         parent = current.parent
         if parent == current:
