@@ -304,6 +304,7 @@ def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
     # 4. Lire le mot de passe + user du .env et sync via ALTER USER
     pg_password = _read_hub_env_value("POSTGRES_PASSWORD")
     pg_user = _read_hub_env_value("POSTGRES_USER", "hubadmin")
+    pg_db = _read_hub_env_value("POSTGRES_DB", "hub_auth")
     if not pg_password:
         con.print("[yellow]⚠ POSTGRES_PASSWORD introuvable dans le .env — sync annulée.[/yellow]")
         return
@@ -319,7 +320,7 @@ def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
         con.print(f"[yellow]⚠ {e} — sync du mot de passe annulée.[/yellow]")
         return
     result = subprocess.run(
-        ["docker", "exec", "-i", "hub-db", "psql", "-U", pg_user, "-d", pg_user],
+        ["docker", "exec", "-i", "hub-db", "psql", "-U", pg_user, "-d", pg_db],
         input=alter_sql, capture_output=True, text=True, timeout=15,
     )
     if result.returncode == 0:

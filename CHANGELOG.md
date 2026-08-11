@@ -1,5 +1,13 @@
 # Changelog — Hubctl
 
+## [0.3.2] — 11 août 2026
+
+### ⚡ Fix psql sync DB : utilisait le user comme nom de base
+
+- **Corrigé** : la commande `psql -d <user>` dans `_sync_db_password_if_needed()`
+  utilisait `POSTGRES_USER` comme nom de base (`-d hubadmin`), ce qui échouait
+  car la base s'appelle `POSTGRES_DB` (`hub_auth`). Corrigé en `-d <db>`.
+
 ## [0.3.1] — 10 août 2026
 
 ### ⚡ Fix détection PARC_ROOT sur fresh clone sans APPS/
