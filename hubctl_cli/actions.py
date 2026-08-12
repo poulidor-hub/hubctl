@@ -74,6 +74,21 @@ def _generate_dotenv(console, *, force: bool = False, dry_run: bool = False) -> 
     # HOST_UID : uid de l'utilisateur qui exécute hubctl (pour les volumes montés)
     host_uid = str(os.getuid()) if not dry_run else "1000"
 
+    # HOST_DOCKER_GID : gid du groupe docker sur l'hôte (pour le mount du socket
+    # docker sur hub-api). Détecté via getent ; fallback 128 (Linux Mint default)
+    # si le groupe docker n'existe pas encore (sera créé par install.sh plus tard).
+    if not dry_run:
+        try:
+            _getent = subprocess.run(
+                ["getent", "group", "docker"],
+                capture_output=True, text=True, check=True,
+            )
+            host_docker_gid = _getent.stdout.split(":")[2]
+        except (subprocess.CalledProcessError, IndexError, FileNotFoundError):
+            host_docker_gid = "128"
+    else:
+        host_docker_gid = "128"
+
     # SA interne : secret pour le Service Account hub-internal (M2M HUB→lui-même)
     sa_secret = _secrets.token_urlsafe(32) if not dry_run else "DRY_RUN_SA_SECRET"
 
@@ -114,6 +129,7 @@ SKIP_PASSWORD_CHECK=false
 DOCKER_SYNC_INTERVAL=300
 DOCKER_SCAN_ENABLED=false
 HOST_UID={host_uid}
+HOST_DOCKER_GID={host_docker_gid}
 
 # Audit
 AUDIT_SSE_COOLDOWN=5.0
@@ -331,6 +347,73 @@ def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
         con.print(f"[yellow]  docker volume rm {pg_volume_name}[/yellow]")
 
 
+def _install_shell_marker(console) -> None:
+    """Installe un marker shell portable pour le sourcing de .secrets.
+
+    Rend le sourcing indépendant du chemin absolu du parc (qui peut varier
+    d'une machine à l'autre). Stratégie :
+
+    1. Écrit ``~/.config/poulidor/parc.sh`` contenant ``source <PARC_ROOT>/.secrets``
+       (chemin absolu découvert via ``hub_state.PARC_ROOT``, robuste aux symlinks).
+    2. Ajoute idempotemment une ligne à ``~/.bashrc`` qui source ce marker s'il existe.
+
+    Le fichier ``~/.config/poulidor/parc.sh`` est réécrit à chaque ``hubctl init``
+    (gère le cas où le parc a déménagé). La ligne dans ``~/.bashrc`` n'est ajoutée
+    qu'une seule fois (idempotente sur la chaîne ``poulidor/parc.sh``).
+    """
+    con = console or _console
+    import os as _os
+    from pathlib import Path as _Path
+
+    parc_root = str(hub_state.PARC_ROOT.resolve())
+    config_dir = _Path(_os.path.expanduser("~/.config/poulidor"))
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        con.print(f"[yellow]⚠ Impossible de créer {config_dir} : {e}[/yellow]")
+        return
+
+    marker = config_dir / "parc.sh"
+    marker_content = (
+        "# Auto-généré par hubctl init — ne pas éditer manuellement\n"
+        f"# Source les secrets API IA + credentials MCP hub pour le parc POULIDOR\n"
+        f'# situé à : {parc_root}\n'
+        f'[ -f "{parc_root}/.secrets" ] && set -a && . "{parc_root}/.secrets" && set +a\n'
+    )
+    try:
+        marker.write_text(marker_content)
+        marker.chmod(0o600)
+    except OSError as e:
+        con.print(f"[yellow]⚠ Impossible d'écrire {marker} : {e}[/yellow]")
+        return
+
+    # Idempotemment ajouter la ligne à ~/.bashrc
+    bashrc = _Path(_os.path.expanduser("~/.bashrc"))
+    try:
+        bashrc.touch(exist_ok=True)
+        bashrc_content = bashrc.read_text()
+    except OSError as e:
+        con.print(f"[yellow]⚠ Impossible de lire {bashrc} : {e}[/yellow]")
+        return
+
+    if "poulidor/parc.sh" in bashrc_content:
+        con.print("[green]✓ ~/.bashrc source déjà ~/.config/poulidor/parc.sh[/green]")
+        return
+
+    marker_line = (
+        "\n# POULIDOR — sourcing portable (auto-installé par hubctl init)\n"
+        "[ -f ~/.config/poulidor/parc.sh ] && source ~/.config/poulidor/parc.sh\n"
+    )
+    try:
+        with bashrc.open("a") as f:
+            if bashrc_content and not bashrc_content.endswith("\n"):
+                f.write("\n")
+            f.write(marker_line)
+        con.print("[green]✓ Ligne de sourcing ajoutée à ~/.bashrc (ré-ouvre ton shell ou : source ~/.bashrc)[/green]")
+    except OSError as e:
+        con.print(f"[yellow]⚠ Impossible d'écrire dans {bashrc} : {e}[/yellow]")
+
+
 def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> int:
     """Bootstrap complet du Hub : .env → clés JWT → build+up → health → résumé.
 
@@ -338,7 +421,6 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     Retourne 0 si succès, 1 si échec.
     """
     con = console or _console
-
     # ── 1. Vérifier Docker ──
     if hub_state.check_docker() is False:
         con.print("[red]✗ Docker injoignable. Vérifiez que le daemon tourne.[/red]")
@@ -378,6 +460,10 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
         if not ok:
             con.print("[red]✗ Le Hub ne répond pas après démarrage. Vérifiez `docker compose logs`.[/red]")
             return 1
+
+    # ── 6b. Installer le marker shell portable (sourcing .secrets) ──
+    if not dry_run:
+        _install_shell_marker(con)
 
     # ── 7. Résumé ──
     admin_username = credentials["admin_username"]
@@ -1160,7 +1246,7 @@ def cleanup_orphan_tests(console=None) -> None:
     """Remove leftover -test docker-compose projects owned by hubctl.
 
     Ne nettoie QUE les projets {slug}-test où slug est le hub ou une app réelle
-    (APPS/ ou APP_Workshop/). Les projets -test étrangers (load-test,
+    (dans APPS/). Les projets -test étrangers (load-test,
     integration-test, etc.) sont préservés — la règle d'or du parc est
     « jamais docker compose down -v » hors de notre périmètre.
     """
@@ -1540,7 +1626,7 @@ def action_update_all(console=None, *, dry_run: bool = False) -> None:
 
 
 # ── Workshop (ateliers Docker Compose -p) ──
-# Au lieu de copier les dossiers vers APP_Workshop/, on lance une 2e instance
+# L'atelier tourne dans APPS/X via un 2e projet docker compose (-p X-ws)
 # Docker Compose du même dossier APPS/X/ avec un project name différent
 # (-p X-ws) et des variables d'environnement override (APP_SLUG, ports).
 # L'existence d'un atelier est matérialisée par un fichier .workshop.env

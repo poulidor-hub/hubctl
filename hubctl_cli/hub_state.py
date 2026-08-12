@@ -35,7 +35,6 @@ def _find_parc_root() -> Path:
 PARC_ROOT = _find_parc_root()
 HUB_DIR = PARC_ROOT / "HUB_base"
 APPS_DIR = PARC_ROOT / "APPS"
-WORKSHOP_DIR = PARC_ROOT / "APP_Workshop"
 
 _mode: str = "prod"
 
@@ -167,10 +166,9 @@ def get_apps() -> list[AppInfo]:
 
 def get_workshop_apps() -> list[AppInfo]:
     """Liste les apps de prod qui ont un atelier (.workshop.env).
-    
-    Les ateliers ne sont plus dans APP_Workshop/ : ils tournent via
-    docker compose -p X-ws depuis APPS/X/. On détecte leur existence
-    par la présence du fichier APPS/X/.workshop.env.
+
+    Les ateliers tournent via ``docker compose -p X-ws`` depuis ``APPS/X/``.
+    On détecte leur existence par la présence du fichier ``APPS/X/.workshop.env``.
     Le ``name`` retourné est le slug de base (ex: ``canari``), pas le
     slug atelier (``canari-ws``).
     """

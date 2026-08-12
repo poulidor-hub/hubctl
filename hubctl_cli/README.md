@@ -23,24 +23,27 @@ Update · Ajouter une app · Supprimer une app · Logs · **Atelier (workshop)**
 Réparer/Diagnostiquer · Start/Stop hub · Apps (vue + disque) · Quick setup · Réseau ·
 Admin · Coffre (secrets chiffrés) · Scénarios · Bascule DEV/PROD.
 
-<small>* L'atelier (mode DEV) permet de mettre en atelier, déployer, supprimer,
-avec **multi-sélection** et **suggestions automatiques** des dépendances inter-apps (🔗).</small>
+<small>* L'atelier (mode DEV) permet de mettre une app en atelier (clone DB) et
+de supprimer l'atelier.</small>
 
 ## Atelier (workshop)
 
 ```bash
-./hubctl work X             # mettre X en atelier (clone DB)
-./hubctl work X,Y,Z         # multi-slug : X, Y et Z en une passe
-./hubctl ship X             # déployer le code vers la prod (git pull, DB préservée)
-./hubctl ship X --copy-db   # avancé : écraser la DB prod (destructif)
+./hubctl atelier X           # mettre X en atelier (clone DB) — ou supprimer si déjà en atelier (toggle)
+./hubctl atelier X --dry-run # simuler sans rien exécuter
 ```
 
-Depuis le menu TUI (mode DEV) : **Apps → Atelier** avec options `[→]`, `[←]`, `[×]`,
-`[→→]` multi-sélection, `[→+]` ajout. Les apps déclarent leurs dépendances via un
-fichier `depends.yaml` (format YAML, un `depends_on: [{slug, note}]`).
+> **Note** : les anciennes docs référencent les commandes `work`, `ship`,
+> `deploy`, multi-slug et `--copy-db`. **Aucune de ces commandes n'est
+> exposée dans le parser actuel** — seul `atelier` l'est. Le déploiement
+> atelier → prod se fait manuellement (`cd APPS/X && git pull && make build && make up`).
+> Voir le skill `app-workshop-mover` pour le détail du cycle.
+
+Depuis le menu TUI (mode DEV) : **Apps → Atelier**.
 
 Les opérations s'appuient sur les `Makefile` du parc : `make -C HUB_base …`
-(hub central) et `make -C APPS/<nom> …` ou `make -C APP_Workshop/<nom>-ws …` (apps).
+(hub central) et `make -C APPS/<nom> …` (apps, y compris pour l'atelier qui
+tourne dans le même dossier via un 2e projet compose `-p X-ws`).
 
 Toutes les confirmations sont des **choix** (Oui/Non), pas de la saisie libre.
 

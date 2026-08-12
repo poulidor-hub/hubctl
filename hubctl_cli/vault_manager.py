@@ -71,9 +71,9 @@ class VaultManager:
                     rel = Path("HUB_base") / ".env"
                 elif entry.startswith("app:"):
                     rel = Path("APPS") / entry[4:] / ".env"
-                elif entry.startswith("ws:"):
-                    rel = Path("APP_Workshop") / entry[3:] / ".env"
                 else:
+                    # Les entrées legacy "ws:NAME" (schéma atelier historique abandonné
+                    # au profit de APPS/X/.workshop.env) ne sont plus restaurées.
                     continue
                 out = (dest / rel).resolve()
                 if not out.is_relative_to(dest.resolve()):
@@ -120,10 +120,6 @@ class VaultManager:
             for d in sorted(hub_state.APPS_DIR.iterdir()):
                 if d.is_dir() and not d.is_symlink() and not d.name.startswith(".") and (d / ".env").exists():
                     targets.append(f"app:{d.name}")
-        if hub_state.WORKSHOP_DIR.exists():
-            for d in sorted(hub_state.WORKSHOP_DIR.iterdir()):
-                if d.is_dir() and not d.is_symlink() and not d.name.startswith(".") and (d / ".env").exists():
-                    targets.append(f"ws:{d.name}")
         return targets
 
 

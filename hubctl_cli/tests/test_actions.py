@@ -615,7 +615,7 @@ def test_generate_dotenv_creates_env_from_template(monkeypatch, tmp_path):
         "SECRETS_ENCRYPTION_KEY=", "DATABASE_URL=",
         "HUB_API_PORT=", "HUB_FRONTEND_PORT=", "HUB_HTTPS_PORT=",
         "ALLOWED_ORIGINS=", "APP_WHITELIST_NETWORKS=",
-        "HOST_UID=",
+        "HOST_UID=", "HOST_DOCKER_GID=",
     ]
     for var in required_vars:
         assert var in content, f"Variable obligatoire manquante: {var}"
@@ -639,6 +639,8 @@ def _patch_bootstrap_mocks(monkeypatch, tmp_path):
     # Mock docker
     mock_docker_check = mock.Mock(return_value=True)
     monkeypatch.setattr(actions.hub_state, "check_docker", mock_docker_check)
+    # Ne pas écrire dans le vrai ~/.bashrc / ~/.config/poulidor/parc.sh du user
+    monkeypatch.setattr(actions, "_install_shell_marker", lambda *a, **kw: None)
     return hub_dir
 
 

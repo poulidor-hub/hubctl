@@ -52,4 +52,17 @@ if [ ! -f "$STAMP" ] || [ "$PKG_DIR/requirements.txt" -nt "$STAMP" ]; then
 fi
 
 cd "$ROOT_DIR"
+
+# Sourcer .secrets si présent (rend hubctl indépendant du shell appelant).
+# Couvre le cas : utilisateur lance ./hubctl sans que ~/.bashrc n'ait sourci
+# .secrets (machine où POULIDOR n'est pas dans le chemin canonique).
+# Idempotent : si une var est déjà dans l'env, .secrets ne l'écrasera qu'avec
+# la même valeur (puisqu'il est la source unique de vérité).
+if [ -f "$ROOT_DIR/.secrets" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$ROOT_DIR/.secrets"
+    set +a
+fi
+
 exec "$PY" -m hubctl_cli "$@"

@@ -25,12 +25,11 @@ def _park_root() -> Path:
 
 def _app_dir(app_slug: str) -> Path:
     root = _park_root()
-    for base in (root / "APPS", root / "APP_Workshop"):
-        candidate = base / app_slug
-        if candidate.exists():
-            return candidate
+    candidate = root / "APPS" / app_slug
+    if candidate.exists():
+        return candidate
     raise FileNotFoundError(
-        f"App '{app_slug}' introuvable dans APPS/ ou APP_Workshop/"
+        f"App '{app_slug}' introuvable dans APPS/"
     )
 
 

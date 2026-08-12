@@ -74,13 +74,13 @@ def _validate_readonly_query(query: str) -> str | None:
 
 def _app_dir(app_slug: str) -> Path:
     root = _park_root()
-    # Chercher dans APPS/ puis APP_Workshop/
-    for base in (root / "APPS", root / "APP_Workshop"):
-        candidate = base / app_slug
-        if candidate.exists():
-            return candidate
+    # Les apps vivent dans APPS/ (ateliers inclus — tournent via docker compose -p X-ws
+    # depuis APPS/X avec override .workshop.env).
+    candidate = root / "APPS" / app_slug
+    if candidate.exists():
+        return candidate
     raise FileNotFoundError(
-        f"App '{app_slug}' introuvable dans APPS/ ou APP_Workshop/"
+        f"App '{app_slug}' introuvable dans APPS/"
     )
 
 

@@ -324,11 +324,15 @@ def test_bootstrap_does_not_leak_password(monkeypatch, tmp_path):
     monkeypatch.setattr(hub_state, "HUB_DIR", hub)
     monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
     monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
-    monkeypatch.setattr(hub_state, "WORKSHOP_DIR", tmp_path / "APP_Workshop")
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path / "APPS")
     monkeypatch.setattr(actions, "hub_make", lambda *a, **kw: 0)
     monkeypatch.setattr(actions, "_health_check", lambda *a, **kw: True)
     monkeypatch.setattr(actions, "_sync_db_password_if_needed", lambda *a, **kw: None)
+    # Ne pas écrire dans le vrai ~/.bashrc du user qui lance les tests
+    monkeypatch.setattr(actions, "_install_shell_marker", lambda *a, **kw: None)
+    # Ne PAS détruire les conteneurs hub-* réels (force-remove par nom dans
+    # _cleanup_existing_hub_containers n'est pas isolée du HUB_DIR mocké).
+    monkeypatch.setattr(actions, "_cleanup_existing_hub_containers", lambda *a, **kw: None)
 
     out = io.StringIO()
     console = Console(file=out, width=120)

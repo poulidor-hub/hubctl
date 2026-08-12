@@ -174,14 +174,6 @@ class Vault:
                         key = f"app:{d.name}"
                         self._data[key] = env
                         current_entries.add(key)
-        if hub_state.WORKSHOP_DIR.exists():
-            for d in sorted(hub_state.WORKSHOP_DIR.iterdir()):
-                if d.is_dir() and not d.is_symlink() and not d.name.startswith("."):
-                    env = env_manager.read_env(d / ".env")
-                    if env:
-                        key = f"ws:{d.name}"
-                        self._data[key] = env
-                        current_entries.add(key)
         self._data["__apps__"] = []
         if hub_state.APPS_DIR.exists():
             apps_meta = []
