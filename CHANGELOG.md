@@ -1,5 +1,16 @@
 # Changelog — Hubctl
 
+## [0.4.0] — 12 août 2026
+
+### ⚡ Shell marker portable + auto-source .secrets + cleanup legacy ws
+
+- **Ajouté** : `_install_shell_marker()` dans `actions.py` — créer `~/.config/poulidor/parc.sh` et l'ajoute idempotemment à `~/.bashrc` pour un sourcing portable de `.secrets`.
+- **Ajouté** : le wrapper `hubctl` auto-source `.secrets` si présent (indépendance du shell appelant).
+- **Ajouté** : la variable `HOST_DOCKER_GID` est détectée et injectée dans le `.env` généré (mount socket Docker hub-api).
+- **Supprimé** : gestion legacy `APP_Workshop/` (`ws:` entries) dans `coffre.py` et `vault_manager.py`.
+- **Modifié** : `README.md` et `debug_agent` adaptés au nouveau schéma atelier.
+- **Tests** : synchronisés avec les changements de `coffre.py` et `vault_manager.py`.
+
 ## [0.3.2] — 11 août 2026
 
 ### ⚡ Fix psql sync DB : utilisait le user comme nom de base
