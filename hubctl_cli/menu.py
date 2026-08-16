@@ -3,11 +3,13 @@ import contextlib
 import sys
 import threading
 import time
+from pathlib import Path
 
 from rich.console import Console
 from rich.text import Text
 
 from hubctl_cli import actions, hub_state, keys, utils, widgets
+from hubctl_cli import pra_config, pra_replicate
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.vault_manager import VaultManager, restore_all
 
@@ -289,6 +291,14 @@ def _build_welcome() -> Text:
     header_text.stylize(badge_style, badge_start, badge_end)
 
     text.append(header_text)
+    pra = None
+    try:
+        pra = pra_config.staleness_badge()
+    except Exception:
+        pra = None
+    if pra:
+        text.append("\n")
+        text.append(pra, style="bold yellow")
     return text
 
 
@@ -536,7 +546,8 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
             if e.startswith("__"):
                 continue
             entries.append(e + (" [MODIFIÉ]" if e in divs else ""))
-        actions_lbl = ["💾 Sauvegarder maintenant", "⬇ Récupérer (export)", "🔑 Changer la passphrase", "← Retour"]
+        actions_lbl = ["💾 Sauvegarder maintenant", "⬇ Récupérer (export)",
+                       "🔄 Emplacement PRA", "🔑 Changer la passphrase", "← Retour"]
 
         with _modal(canvas):
             sel = widgets.select(canvas, "Coffre (sauvegarde) :", entries + actions_lbl)
@@ -577,6 +588,9 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
             except Exception as e:
                 pause(canvas, Text(f"✗ Erreur lors du changement de passphrase :\n{e}", style="red"))
             continue
+        if sel == "🔄 Emplacement PRA":
+            _pra_location_menu(canvas)
+            continue
         entry = sel.replace(" [MODIFIÉ]", "")
         with _modal(canvas):
             secrets = vault.reveal(entry)
@@ -590,6 +604,121 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
                 clear_lines = [Text(f"  {k} = {v}") for k, v in secrets.items()]
                 canvas.render(Text("\n").join(clear_lines))
                 pause(canvas)
+
+
+# ── Emplacement PRA (kit secondaire) ──
+
+def _pick_pra_location(canvas: Canvas, *, offer_decline: bool = False) -> Path | None | str:
+    """Sélecteur d'emplacement PRA : candidats détectés + saisie manuelle.
+    Retourne un Path (non validé — validation par l'appelant), None si annulé,
+    ou la chaîne 'DECLINE' si offer_decline et choix « Ne plus proposer »."""
+    cands = pra_config.scan_candidate_locations()
+    label_to_path: dict[str, Path] = {}
+    labels: list[str] = []
+    for c in cands:
+        free_gb = c["free_bytes"] / 1024 ** 3
+        mark = "✓" if c["status"] == "ok" else ("⚠" if c["status"] == "warn" else "✗")
+        lbl = f"{mark} {c['path']}  ({c['type']}, {free_gb:.0f} Go libres)"
+        labels.append(lbl)
+        label_to_path[lbl] = Path(c["path"])
+    labels.append("Saisir un autre chemin…")
+    if offer_decline:
+        labels.append("Ne plus proposer")
+    labels.append("← Annuler")
+    with _modal(canvas):
+        sel = widgets.select(canvas, "Emplacement PRA :", labels)
+    if sel is widgets.ESC or sel is None or sel == "← Annuler":
+        return None
+    if sel == "Ne plus proposer":
+        return "DECLINE"
+    if sel.startswith("Saisir"):
+        with _modal(canvas):
+            raw = widgets.text(canvas, "Chemin de l'emplacement PRA :")
+        if raw is widgets.ESC or raw is None or not raw.strip():
+            return None
+        return Path(raw.strip())
+    return label_to_path.get(sel)
+
+
+def _configure_pra(canvas: Canvas, path: Path) -> None:
+    """Valide (« ailleurs » à 2 niveaux) puis configure + première réplication."""
+    status, msg = pra_config.validate_location(path)
+    if status == "error":
+        pause(canvas, Text(f"✗ {msg}", style="red"))
+        return
+    if status == "warn":
+        with _modal(canvas):
+            confirmed = widgets.confirm(canvas, f"⚠ {msg}\nContinuer quand même ?",
+                                        default=False)
+        if confirmed is not True:
+            return
+    try:
+        ok, msg2 = pra_replicate.configure_location(path, label=str(path))
+    except Exception as e:
+        ok, msg2 = False, str(e)
+    pause(canvas, Text(f"{'✓' if ok else '⚠'} {msg2}", style="green" if ok else "yellow"))
+
+
+def _offer_pra_setup(canvas: Canvas) -> None:
+    """Phase « emplacement PRA » — proposée au démarrage tant qu'aucune config
+    (rappel récurrent), refusable définitivement (« Ne plus proposer »)."""
+    if not pra_config.should_offer_setup():
+        return
+    # La phase ne doit jamais casser le démarrage (stdin non interactif,
+    # scan impossible…) — même garde-fou que le badge dashboard.
+    try:
+        with _modal(canvas):
+            canvas.render(Text(
+                "📦 Emplacement PRA secondaire — recommandé\n\n"
+                "Copie du coffre + du dernier snapshot sur un emplacement hors de\n"
+                "ce disque (clé USB, 2e disque, montage réseau).", style="bold cyan"))
+        picked = _pick_pra_location(canvas, offer_decline=True)
+        if picked == "DECLINE":
+            pra_config.save_config({"declined": True})
+            pause(canvas, Text("Rappel PRA désactivé (réactivable : Coffre → Emplacement PRA).",
+                               style="yellow"))
+            return
+        if picked is None:
+            return  # « Plus tard »/annulé → rien persisté, rappel au prochain démarrage
+        _configure_pra(canvas, picked)
+    except Exception:
+        return  # jamais fatal — la phase se représentera au prochain démarrage
+
+
+def _pra_location_menu(canvas: Canvas) -> None:
+    """Sous-menu Coffre → Emplacement PRA : statut / changer / répliquer / retirer."""
+    while True:
+        cfg = pra_config.load_config()
+        if cfg and cfg.get("path"):
+            badge = pra_config.staleness_badge() or "✓ à jour"
+            with _modal(canvas):
+                canvas.render(Text(
+                    f"Emplacement : {cfg['path']}\n"
+                    f"Dernière synchro : {cfg.get('last_sync_at', 'jamais')}\n"
+                    f"Statut : {badge}"))
+            opts = ["🔄 Répliquer maintenant", "📍 Changer l'emplacement",
+                    "🗑 Retirer la config", "← Retour"]
+        else:
+            opts = ["📍 Changer l'emplacement", "← Retour"]
+        with _modal(canvas):
+            choice = widgets.select(canvas, "Emplacement PRA :", opts)
+        if choice is widgets.ESC or choice is None or choice == "← Retour":
+            return
+        if choice == "🔄 Répliquer maintenant":
+            result = pra_replicate.replicate()
+            style = "green" if result["status"] == "ok" else "yellow"
+            pause(canvas, Text(f"{result['status']} : "
+                               f"{result['message'] or 'kit synchronisé'}", style=style))
+        elif choice == "📍 Changer l'emplacement":
+            picked = _pick_pra_location(canvas)
+            if picked is not None:
+                _configure_pra(canvas, picked)
+        elif choice == "🗑 Retirer la config":
+            with _modal(canvas):
+                confirmed = widgets.confirm(canvas, "Retirer la config PRA ?", default=False)
+            if confirmed is True:
+                pra_replicate.remove_location()
+                pause(canvas, Text("Config PRA retirée.", style="yellow"))
 
 
 # ── Action executor ──
@@ -662,6 +791,7 @@ def _require_vault(canvas: Canvas, vault_mgr) -> None:
             f"✓ Coffre prêt — sauvegarde : {summary['env']} .env, {summary['files']} fichiers.",
             style="bold green"))
         pause(canvas)
+        _offer_pra_setup(canvas)
 
 
 @contextlib.contextmanager
