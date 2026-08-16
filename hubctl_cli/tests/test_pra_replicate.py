@@ -1,7 +1,15 @@
 """Tests pra_replicate — réplication coffre + snapshot vers l'emplacement PRA."""
 import json
+import os
+import time
 
 from hubctl_cli import hub_state, pra_config, pra_replicate
+
+
+def _age(path, seconds_ago=3600):
+    """Rend un fichier « ancien » (hors garde fraîcheur de 120 s)."""
+    old = time.time() - seconds_ago
+    os.utime(path, (old, old))
 
 
 def _setup(tmp_path, monkeypatch):
@@ -15,6 +23,7 @@ def _setup(tmp_path, monkeypatch):
     snaps = tmp_path / "HUB_base" / "storage" / "snapshots"
     snaps.mkdir(parents=True)
     (snaps / "snapshot_aa.tar.zst.enc").write_bytes(b"A" * 10)
+    _age(snaps / "snapshot_aa.tar.zst.enc")  # écriture terminée (pas frais)
     # emplacement PRA (simule un autre disque) : config + marqueur
     usb = tmp_path / "usb"
     usb.mkdir()
@@ -48,10 +57,54 @@ def test_replicate_copies_new_snapshot_and_purges_old(tmp_path, monkeypatch):
     vault, snaps, usb = _setup(tmp_path, monkeypatch)
     pra_replicate.replicate()
     (snaps / "snapshot_bb.tar.zst.enc").write_bytes(b"B" * 10)
+    _age(snaps / "snapshot_bb.tar.zst.enc")
     result = pra_replicate.replicate()
     assert "snapshot_bb.tar.zst.enc" in result["copied"]
     assert (usb / "snapshot_bb.tar.zst.enc").exists()
     assert not (usb / "snapshot_aa.tar.zst.enc").exists()  # purge anciens
+
+
+# ── Garde anti copie partielle ──
+
+def test_replicate_defers_fresh_snapshot(tmp_path, monkeypatch):
+    # Snapshot écrit à l'instant (mtime < 120 s) : écriture possiblement en
+    # cours côté HUB → ne PAS copier ce cycle, ne PAS poser last_snapshot_id.
+    vault, snaps, usb = _setup(tmp_path, monkeypatch)
+    fresh = snaps / "snapshot_bb.tar.zst.enc"
+    fresh.write_bytes(b"B" * 10)  # mtime = maintenant
+    logs = []
+    result = pra_replicate.replicate(on_log=logs.append)
+    assert result["status"] == "ok"  # cycle normal, pas d'échec
+    assert "snapshot_bb.tar.zst.enc" not in result["copied"]
+    assert not (usb / "snapshot_bb.tar.zst.enc").exists()
+    cfg = pra_config.load_config()
+    assert cfg.get("last_snapshot_id") is None  # jamais posé → retry prochain cycle
+    assert cfg["last_vault_sha256"]  # le coffre, lui, a bien été répliqué
+    assert any("réplication différée" in l for l in logs)
+
+
+def test_replicate_size_mismatch_returns_error_and_cleans_partial(tmp_path, monkeypatch):
+    # Taille divergente après copie → partiel supprimé, config NON sauvée
+    # (pas de last_snapshot_id) → le prochain cycle retentera.
+    vault, snaps, usb = _setup(tmp_path, monkeypatch)
+    real_copy = pra_replicate._copy_stream_atomic
+
+    def partial_copy(src, dst):
+        if "snapshot_" in src.name:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes()[:4])  # copie tronquée
+        else:
+            real_copy(src, dst)
+
+    monkeypatch.setattr(pra_replicate, "_copy_stream_atomic", partial_copy)
+    result = pra_replicate.replicate()
+    assert result["status"] == "error"
+    assert "incomplet" in result["message"]
+    assert result["copied"] == []
+    assert not (usb / "snapshot_aa.tar.zst.enc").exists()  # partiel supprimé
+    cfg = pra_config.load_config()
+    assert "last_snapshot_id" not in cfg
+    assert "last_sync_at" not in cfg  # aucun save_config sur ce chemin d'échec
 
 
 def test_replicate_missing_location_non_blocking(tmp_path, monkeypatch):

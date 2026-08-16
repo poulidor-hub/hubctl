@@ -1,5 +1,23 @@
 # Changelog — Hubctl
 
+## [0.5.1] — 16 août 2026
+
+### 🔧 Kit PRA — durcissements de la revue finale
+
+- **Corrigé** : le badge `⚠ PRA` était recalculé à chaque frame du dashboard
+  (scan des montages dans le thread de rendu) — un emplacement NFS mort gelait
+  l'UI. Le badge est désormais calculé par le poll worker (3 s) et lu depuis
+  le cache `_snap` ; le rendu ne touche plus au disque.
+- **Corrigé** : `pra-restore` vérifie Docker avant toute action (`preflight_docker` :
+  binaire présent + daemon joignable) — fini les `FileNotFoundError` bruts et les
+  faux « parc vierge » sur daemon down ; `build_stack` s'arrête proprement si
+  `make build`/`make up-prod` échoue.
+- **Corrigé** : la réplication ne copie plus un snapshot en cours d'écriture par
+  le HUB (garde fraîcheur mtime < 120 s) et vérifie la taille après copie —
+  un kit partiel ne peut plus être marqué synchronisé (retenté au cycle suivant).
+- **Tests** : +12 (badge/poll, preflight, garde fraîcheur/taille) — 408 au total.
+
+
 ## [0.5.0] — 16 août 2026
 
 ### ⚡ Kit PRA : emplacement secondaire automatique + assistant pra-restore
