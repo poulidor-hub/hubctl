@@ -112,7 +112,8 @@ def test_require_vault_offers_pra_setup_after_backup(tmp_path, monkeypatch):
 # ── Badge dashboard ──
 
 def _snap_with(monkeypatch, **overrides):
-    base = {"docker_ok": True, "services": [], "apps_count": (0, 0)}
+    base = {"docker_ok": True, "services": [], "apps_count": (0, 0),
+            "pra_badge": None}
     base.update(overrides)
     monkeypatch.setattr(menu, "_snap", base)
 
@@ -120,18 +121,66 @@ def _snap_with(monkeypatch, **overrides):
 def test_build_welcome_shows_pra_badge(monkeypatch):
     monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
     monkeypatch.setattr(menu.hub_state, "get_hub_version", lambda: "vX")
-    _snap_with(monkeypatch)
-    monkeypatch.setattr("hubctl_cli.pra_config.staleness_badge",
-                        lambda: "⚠ PRA : emplacement secondaire introuvable")
+    _snap_with(monkeypatch, pra_badge="⚠ PRA : emplacement secondaire introuvable")
     assert "PRA" in menu._build_welcome().plain
 
 
 def test_build_welcome_no_badge_when_fresh(monkeypatch):
     monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
     monkeypatch.setattr(menu.hub_state, "get_hub_version", lambda: "vX")
-    _snap_with(monkeypatch)
-    monkeypatch.setattr("hubctl_cli.pra_config.staleness_badge", lambda: None)
+    _snap_with(monkeypatch, pra_badge=None)
     assert "PRA" not in menu._build_welcome().plain
+
+
+def test_build_welcome_tolerates_missing_pra_badge_key(monkeypatch):
+    # Cache _snap sans la clé (ex: seed_state_snapshot initial) → rien d'affiché.
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
+    monkeypatch.setattr(menu.hub_state, "get_hub_version", lambda: "vX")
+    monkeypatch.setattr(menu, "_snap",
+                        {"docker_ok": None, "services": None, "apps_count": None})
+    assert "PRA" not in menu._build_welcome().plain
+
+
+def test_build_welcome_never_calls_staleness_badge(monkeypatch):
+    # Le badge est une E/S disque/réseau : JAMAIS sur le thread de rendu.
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
+    monkeypatch.setattr(menu.hub_state, "get_hub_version", lambda: "vX")
+    _snap_with(monkeypatch, pra_badge="⚠ PRA : jamais synchronisé")
+    called = []
+    monkeypatch.setattr("hubctl_cli.pra_config.staleness_badge",
+                        lambda: called.append(True))
+    text = menu._build_welcome().plain
+    assert called == []
+    assert "PRA" in text  # vient bien du cache, pas de l'appel direct
+
+
+def test_refresh_state_snapshot_populates_pra_badge(tmp_path, monkeypatch):
+    _patch_parc(tmp_path, monkeypatch)
+    monkeypatch.setattr(menu.hub_state, "check_docker", lambda: True)
+    monkeypatch.setattr(menu.hub_state, "get_hub_services", lambda: [])
+    monkeypatch.setattr(menu.hub_state, "get_active_apps", lambda: [])
+    monkeypatch.setattr("hubctl_cli.pra_config.staleness_badge",
+                        lambda: "⚠ PRA : dernière synchro il y a 12 j")
+    menu._refresh_state_snapshot()
+    assert menu._snap["pra_badge"] == "⚠ PRA : dernière synchro il y a 12 j"
+
+
+def test_refresh_state_snapshot_badge_error_tolerated(tmp_path, monkeypatch):
+    # Un montage NFS mort pendant le calcul du badge ne doit rien casser :
+    # pra_badge → None, le reste du snapshot reste peuplé.
+    _patch_parc(tmp_path, monkeypatch)
+    monkeypatch.setattr(menu.hub_state, "check_docker", lambda: True)
+    monkeypatch.setattr(menu.hub_state, "get_hub_services", lambda: [])
+    monkeypatch.setattr(menu.hub_state, "get_active_apps", lambda: [])
+
+    def boom():
+        raise OSError("NFS mort")
+
+    monkeypatch.setattr("hubctl_cli.pra_config.staleness_badge", boom)
+    menu._refresh_state_snapshot()
+    assert menu._snap["pra_badge"] is None
+    assert menu._snap["docker_ok"] is True
+    assert menu._snap["apps_count"] == (0, 0)
 
 
 # ── view_coffre : action Emplacement PRA ──

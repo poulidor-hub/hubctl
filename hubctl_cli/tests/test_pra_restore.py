@@ -84,6 +84,41 @@ def test_check_parc_empty_refuses_without_force(monkeypatch):
         pra_restore.check_parc_empty(False)
 
 
+# ── Étape 0 : preflight Docker ──
+
+class _Proc:
+    def __init__(self, code=0):
+        self.returncode = code
+        self.stdout = ""
+
+
+def test_preflight_docker_ok(monkeypatch):
+    import shutil
+    import subprocess as sp
+    monkeypatch.setattr(shutil, "which", lambda c: "/usr/bin/docker")
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: _Proc(0))
+    pra_restore.preflight_docker()  # ne lève pas
+
+
+def test_preflight_docker_missing_binary(monkeypatch):
+    import shutil
+    import subprocess as sp
+    monkeypatch.setattr(shutil, "which", lambda c: None)
+    with pytest.raises(SystemExit) as e:
+        pra_restore.preflight_docker()
+    assert "installé" in str(e.value)
+
+
+def test_preflight_docker_daemon_down(monkeypatch):
+    import shutil
+    import subprocess as sp
+    monkeypatch.setattr(shutil, "which", lambda c: "/usr/bin/docker")
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: _Proc(1))
+    with pytest.raises(SystemExit) as e:
+        pra_restore.preflight_docker()
+    assert "daemon docker injoignable" in str(e.value).lower()
+
+
 def test_check_parc_empty_passes_empty(monkeypatch):
     from hubctl_cli import park_restore
     monkeypatch.setattr(park_restore, "_check_hub_is_empty", lambda: True)
@@ -122,6 +157,30 @@ def test_build_stack_dry_run_no_subprocess(tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "run", lambda *a, **kw: called.append(a) or None)
     pra_restore.build_stack(None, dry_run=True)
     assert called == []  # dry-run : zéro subprocess
+
+
+def _hub_with_compose(tmp_path, monkeypatch):
+    _patch_parc(tmp_path, monkeypatch)
+    hub_state.HUB_DIR.mkdir(parents=True)
+    (hub_state.HUB_DIR / "docker-compose.yml").write_text("x: 1\n")
+
+
+def test_build_stack_build_failure_exits(tmp_path, monkeypatch):
+    _hub_with_compose(tmp_path, monkeypatch)
+    monkeypatch.setattr(pra_restore, "_run", lambda cmd, **kw: False)
+    with pytest.raises(SystemExit) as e:
+        pra_restore.build_stack(None, dry_run=False)
+    assert "make build" in str(e.value)
+
+
+def test_build_stack_up_prod_failure_exits(tmp_path, monkeypatch):
+    _hub_with_compose(tmp_path, monkeypatch)
+    # make build OK, make up-prod KO
+    monkeypatch.setattr(pra_restore, "_run",
+                        lambda cmd, **kw: cmd[1] == "build")
+    with pytest.raises(SystemExit) as e:
+        pra_restore.build_stack(None, dry_run=False)
+    assert "up-prod" in str(e.value)
 
 
 def test_wait_healthy_polls_docker_inspect(monkeypatch):
@@ -298,6 +357,8 @@ def test_run_pra_restore_dry_run_full_flow(tmp_path, monkeypatch):
     kit = _kit(tmp_path)
     steps = []
 
+    monkeypatch.setattr(pra_restore, "preflight_docker",
+                        lambda: steps.append("preflight"))
     monkeypatch.setattr(pra_restore, "check_parc_empty", lambda f: steps.append("check"))
     monkeypatch.setattr(pra_restore, "find_kit", lambda a: steps.append("kit") or kit)
     monkeypatch.setattr(pra_restore, "pick_snapshot",
@@ -312,7 +373,25 @@ def test_run_pra_restore_dry_run_full_flow(tmp_path, monkeypatch):
                         lambda c, dry_run=False: steps.append("restart"))
     code = pra_restore.run_pra_restore(str(kit), dry_run=True, yes=True, apps="none")
     assert code == 0
-    assert steps == ["check", "kit", "snap", "files", "stack", "inject", "restart"]
+    assert steps == ["preflight", "check", "kit", "snap", "files",
+                     "stack", "inject", "restart"]
+
+
+def test_run_pra_restore_preflight_before_parc_check(tmp_path, monkeypatch):
+    # Docker absent/daemon down → échec immédiat, même en dry-run, avant tout.
+    _patch_parc(tmp_path, monkeypatch)
+    called = []
+
+    def _boom():
+        called.append("preflight")
+        raise SystemExit("❌ Docker n'est pas installé")
+
+    monkeypatch.setattr(pra_restore, "preflight_docker", _boom)
+    monkeypatch.setattr(pra_restore, "check_parc_empty",
+                        lambda f: called.append("check"))
+    with pytest.raises(SystemExit):
+        pra_restore.run_pra_restore(dry_run=True, yes=True)
+    assert called == ["preflight"]
 
 
 def test_argparse_has_pra_restore():

@@ -6,6 +6,7 @@ après un crash à mi-parcours ne refait rien deux fois.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import time
@@ -37,6 +38,19 @@ def _run(cmd: list[str], *, cwd: Path | None = None, console=None,
 
 
 # ── Étape 0 : garde-fous ──
+
+def preflight_docker() -> None:
+    """Vérifie Docker installé + daemon joignable (spéc étape 0). Ne modifie
+    rien → appelé même en dry-run. Échec → SystemExit immédiat (sinon :
+    FileNotFoundError brut ou faux « parc vierge » + attente 300 s trompeuse)."""
+    if shutil.which("docker") is None:
+        raise SystemExit("❌ Docker n'est pas installé — installer Docker "
+                         "Engine + le plugin compose d'abord.")
+    r = subprocess.run(["docker", "info"], capture_output=True)
+    if r.returncode != 0:
+        raise SystemExit("❌ Daemon Docker injoignable (docker info) — "
+                         "démarrer Docker d'abord.")
+
 
 def check_parc_empty(force: bool) -> None:
     """Refuse un PRA sur un parc déjà initialisé (sauf --force)."""
@@ -125,8 +139,10 @@ def build_stack(console, *, dry_run: bool = False) -> None:
     if not (hub / "docker-compose.yml").exists():
         raise SystemExit(f"❌ {hub} incomplet — git clone du repo POULIDOR "
                          "requis d'abord.")
-    _run(["make", "build"], cwd=hub, console=console, dry_run=dry_run)
-    _run(["make", "up-prod"], cwd=hub, console=console, dry_run=dry_run)
+    if not _run(["make", "build"], cwd=hub, console=console, dry_run=dry_run):
+        raise SystemExit("❌ make build a échoué — voir logs ci-dessus")
+    if not _run(["make", "up-prod"], cwd=hub, console=console, dry_run=dry_run):
+        raise SystemExit("❌ make up-prod a échoué — voir logs ci-dessus")
 
 
 def wait_healthy(console, timeout_s: int = HEALTH_TIMEOUT_S) -> bool:
@@ -326,7 +342,8 @@ def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
     console = Console()
     console.rule("[bold cyan]PRA POULIDOR — restauration de secours")
 
-    # Étape 0 — garde-fous
+    # Étape 0 — garde-fous (preflight d'abord, même en dry-run : il ne modifie rien)
+    preflight_docker()
     check_parc_empty(force)
 
     # Étape 1 — kit + snapshot

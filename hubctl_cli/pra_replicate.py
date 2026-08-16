@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -124,17 +125,35 @@ def _replicate(*, on_log=None) -> dict:
         cfg["last_vault_sha256"] = digest
 
     # Snapshot : diff par nom + purge des anciens sur le kit.
+    # Le HUB écrit ses snapshots en copie NON atomique : différencier par le
+    # nom seul peut copier un fichier en cours d'écriture → kit corrompu et
+    # last_snapshot_id posé (jamais re-copié). D'où les 2 gardes ci-dessous.
     snap = latest_snapshot()
     if snap is not None and snap.name != cfg.get("last_snapshot_id"):
-        _copy_stream_atomic(snap, loc / snap.name)
-        for old in loc.glob(SNAPSHOT_GLOB):
-            if old.name != snap.name:
-                try:
-                    old.unlink()
-                except OSError:
-                    pass
-        copied.append(snap.name)
-        cfg["last_snapshot_id"] = snap.name
+        if time.time() - snap.stat().st_mtime < 120:
+            # Frais → écriture possiblement en cours : différer SANS poser
+            # last_snapshot_id (le cycle reste « ok », coffre déjà répliqué).
+            if on_log:
+                on_log(f"[pra] snapshot {snap.name} très récent "
+                       "(écriture en cours ?) — réplication différée au prochain cycle")
+        else:
+            dst = loc / snap.name
+            _copy_stream_atomic(snap, dst)
+            if snap.stat().st_size != dst.stat().st_size:
+                # Copie partielle (source modifiée pendant la copie) : on
+                # supprime le partiel et on NE sauve pas la config → le
+                # prochain cycle retentera la copie.
+                dst.unlink(missing_ok=True)
+                return {"status": "error", "copied": [],
+                        "message": "Snapshot copié incomplet (taille divergente) — réessayer"}
+            for old in loc.glob(SNAPSHOT_GLOB):
+                if old.name != snap.name:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+            copied.append(snap.name)
+            cfg["last_snapshot_id"] = snap.name
 
     # Marqueur + README toujours rafraîchis (copie pas chère).
     _write_marker(loc, {

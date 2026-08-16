@@ -33,6 +33,8 @@ _snap: dict = {
     "docker_ok": None,     # bool | None  (None = pas encore calculé)
     "services": None,      # list[ServiceInfo] | None
     "apps_count": None,    # tuple[int, int] = (total, legacy) | None
+    "pra_badge": None,     # str | None — badge staleness PRA (I/O disque/réseau,
+                           # calculé par le poll worker, jamais sur le thread rendu)
 }
 
 
@@ -45,10 +47,17 @@ def _refresh_state_snapshot() -> None:
         services = hub_state.get_hub_services() if docker_ok else []
         apps = hub_state.get_active_apps()
         legacy = sum(1 for a in apps if getattr(a, "legacy", False))
+        # Badge PRA : scan disque/réseau (find_kit_location) — bloquant, donc
+        # ici et pas dans _build_welcome. Erreur → None (badge masqué).
+        try:
+            pra_badge = pra_config.staleness_badge()
+        except Exception:
+            pra_badge = None
         with _state_lock:
             _snap["docker_ok"] = docker_ok
             _snap["services"] = services
             _snap["apps_count"] = (len(apps), legacy)
+            _snap["pra_badge"] = pra_badge
     except Exception:
         # Best-effort : on garde le précédent snapshot si l'appel échoue.
         pass
@@ -291,11 +300,11 @@ def _build_welcome() -> Text:
     header_text.stylize(badge_style, badge_start, badge_end)
 
     text.append(header_text)
-    pra = None
-    try:
-        pra = pra_config.staleness_badge()
-    except Exception:
-        pra = None
+    # Badge PRA : lu depuis le cache _snap (pattern _build_services) — JAMAIS
+    # d'appel direct à pra_config.staleness_badge() ici : c'est une E/S
+    # disque/réseau qui gèlerait le thread de rendu (montage NFS mort).
+    with _state_lock:
+        pra = _snap.get("pra_badge")
     if pra:
         text.append("\n")
         text.append(pra, style="bold yellow")
