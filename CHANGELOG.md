@@ -1,5 +1,29 @@
 # Changelog — Hubctl
 
+## [0.5.0] — 16 août 2026
+
+### ⚡ Kit PRA : emplacement secondaire automatique + assistant pra-restore
+
+- **Ajouté** : réplication automatique du coffre (`parc.vault.enc` + `.bak`) et du
+  dernier snapshot du HUB vers l'emplacement PRA à chaque sauvegarde du coffre —
+  diff checksum, copie atomique, non-bloquant, clé `pra` dans le résumé `backup_all`.
+- **Ajouté** : emplacement générique (clé USB, 2e disque, montage réseau) avec
+  validation « ailleurs » en 2 niveaux (refus du disque serveur) et marqueur
+  `HUB-PRA-KIT.json` ; le kit embarque aussi `PRA-README.txt`.
+- **Ajouté** : phase de setup initial récurrente au 1er lancement de hubctl
+  (configurer / plus tard / refus définitif), action **Coffre → 🔄 Emplacement PRA**
+  (statut, changer, répliquer, retirer) et badge `⚠ PRA` sur le dashboard si
+  l'emplacement est absent ou non synchronisé depuis 7+ jours.
+- **Ajouté** : assistant `python -m hubctl_cli pra-restore` — localisation du kit,
+  coffre restauré depuis le kit, build & start de la stack, injection du snapshot,
+  attente du restore interne, sélection des apps à rebuilder/réinjecter.
+  Idempotent/resumable ; arguments `kit` (positionnel, scan auto si omis) et
+  fanions `--snapshot`, `--apps all|none|a,b`, `--admin-user`, `--yes`,
+  `--force` (garde-fou parc non vide), `--dry-run`.
+- **Ajouté** : section PRA dans `hubctl_cli/README.md`.
+- **Tests** : `test_pra_config` (24), `test_pra_replicate` (9), `test_pra_restore`
+  (29), `test_setup_phase` (10), +2 hooks `vault_manager` — 396 au total.
+
 ## [0.4.0] — 12 août 2026
 
 ### ⚡ Shell marker portable + auto-source .secrets + cleanup legacy ws

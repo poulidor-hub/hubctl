@@ -105,3 +105,30 @@ Animations fournies : `hub-ascii` (défaut), `fly-to-flock`.
 hubctl_cli/.venv/bin/pip install pytest
 hubctl_cli/.venv/bin/python -m pytest hubctl_cli/tests/ -v
 ```
+
+## PRA — Kit de secours et restauration
+
+Le coffre et le dernier snapshot du HUB sont répliqués automatiquement vers un
+**emplacement secondaire** (clé USB, 2e disque, montage réseau) à chaque
+sauvegarde du coffre — l'emplacement doit être **hors du disque serveur**
+(validé automatiquement). Configuration : au premier lancement de hubctl, ou
+dans **Coffre → 🔄 Emplacement PRA** (statut, changer, répliquer, retirer).
+
+Contenu du kit : `parc.vault.enc` (+ `.bak`), le dernier
+`snapshot_*.tar.zst.enc`, `HUB-PRA-KIT.json` (marqueur) et `PRA-README.txt`.
+Le dashboard affiche `⚠ PRA` si l'emplacement est absent ou non synchronisé
+depuis 7+ jours.
+
+### Restaurer sur un serveur neuf
+
+```bash
+git clone <repo POULIDOR> && cd POULIDOR
+pip install -r hubctl_cli/requirements.txt
+python -m hubctl_cli pra-restore          # assistant interactif
+```
+
+L'assistant : détecte le kit branché → passphrase du coffre → restaure
+secrets/.env → build & start de la stack → injection du snapshot →
+attente du restore interne → sélection des apps à rebuilder/réinjecter.
+Arguments : `kit` (positionnel, scan auto si omis) ; fanions `--snapshot`,
+`--apps all|none|a,b`, `--admin-user`, `--yes`, `--force`, `--dry-run`.
