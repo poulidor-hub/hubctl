@@ -157,3 +157,278 @@ def _env_lookup(key: str) -> str | None:
 
 def _api_base_url() -> str:
     return f"http://localhost:{_env_lookup('HUB_API_PORT') or '8000'}"
+
+
+# ── Étape 4 : injection du snapshot ──
+
+def snapshot_id_from(filename: str) -> str:
+    """'snapshot_<uuid>.tar.zst.enc' → '<uuid>'."""
+    return filename[len("snapshot_"):-len(".tar.zst.enc")]
+
+
+def _psql(sql: str, *, tty_out: bool = False) -> subprocess.CompletedProcess:
+    """docker compose exec db psql (retourne CompletedProcess)."""
+    cmd = ["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
+           "-d", "hub_auth"]
+    if tty_out:
+        cmd += ["-t", "-A", "-F", "|"]
+    cmd += ["-c", sql]
+    return subprocess.run(cmd, cwd=str(hub_state.HUB_DIR), capture_output=True, text=True)
+
+
+def inject_snapshot(kit: Path, snap: Path, console, *, dry_run: bool = False) -> str:
+    """Copie l'archive, crée la ligne hub_snapshots si absente, écrit
+    pending_restore.txt. Retourne le snapshot_id."""
+    import shutil
+    snap_id = snapshot_id_from(snap.name)
+    if dry_run:
+        if console:
+            console.print(f"[dim]dry-run : copie {snap.name} + INSERT + pending_restore[/dim]")
+        return snap_id
+    dest_dir = hub_state.HUB_DIR / "storage" / "snapshots"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(snap, dest_dir / snap.name)
+
+    exists = _psql(f"SELECT 1 FROM hub_snapshots WHERE snapshot_id = '{snap_id}'")
+    if exists.returncode == 0 and exists.stdout.strip():
+        if console:
+            console.print(f"• Ligne hub_snapshots déjà présente ({snap_id})")
+    else:
+        _run(["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
+              "-d", "hub_auth", "-c",
+              f"INSERT INTO hub_snapshots (snapshot_id, status, created_by, created_at, local_path) "
+              f"VALUES ('{snap_id}', 'success', 'pra', now(), "
+              f"'/code/storage/snapshots/{snap.name}')"],
+              cwd=hub_state.HUB_DIR, console=console)
+    # pending_restore.txt vit dans le conteneur (pas de montage hôte) :
+    # écriture via docker exec, comme dans BACKUP.md.
+    _run(["docker", "exec", HUB_API_CONTAINER, "sh", "-c",
+          f"echo '{snap_id}' > /code/storage/pending_restore.txt"], console=console)
+    return snap_id
+
+
+def restart_hub_api(console, *, dry_run: bool = False) -> None:
+    _run(["docker", "compose", "restart", HUB_API_CONTAINER],
+         cwd=hub_state.HUB_DIR, console=console, dry_run=dry_run)
+
+
+# ── Étape 5 : attente du restore ──
+
+def wait_restore_done(snap_id: str, console, timeout_s: int = RESTORE_TIMEOUT_S) -> bool:
+    """True quand pending_restore.txt a disparu (restore terminé)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        r = subprocess.run(
+            ["docker", "exec", HUB_API_CONTAINER, "sh", "-c",
+             "test -f /code/storage/pending_restore.txt"], capture_output=True)
+        if r.returncode != 0:
+            return True
+        time.sleep(5)
+    return False
+
+
+def count_apps() -> int:
+    r = _psql("SELECT count(*) FROM applications", tty_out=True)
+    try:
+        return int(r.stdout.strip() or 0)
+    except ValueError:
+        return 0
+
+
+# ── Étape 6 : apps ──
+
+def list_apps_with_backups() -> list[dict]:
+    sql = ("SELECT a.slug, b.backup_id FROM applications a "
+           "LEFT JOIN LATERAL (SELECT backup_id FROM app_backups "
+           "WHERE app_slug = a.slug ORDER BY created_at DESC LIMIT 1) b ON true "
+           "WHERE a.is_active = true ORDER BY a.slug")
+    r = _psql(sql, tty_out=True)
+    apps: list[dict] = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        slug, backup_id = line.split("|", 1)
+        apps.append({"slug": slug, "backup_id": backup_id or None})
+    return apps
+
+
+def parse_selection(raw: str | None, slugs: list[str]) -> list[str]:
+    """'1,3' / 'all' / 'none' / 'slug1,slug2' → liste de slugs valides."""
+    raw = (raw or "").strip().lower()
+    if not raw or raw == "none":
+        return []
+    if raw == "all":
+        return list(slugs)
+    picked: list[str] = []
+    for part in raw.replace(" ", "").split(","):
+        if part.isdigit():
+            i = int(part) - 1
+            if 0 <= i < len(slugs) and slugs[i] not in picked:
+                picked.append(slugs[i])
+        elif part in slugs and part not in picked:
+            picked.append(part)
+    return picked
+
+
+def admin_login(base_url: str, username: str, password: str) -> str:
+    """POST /api/token (form password grant) → access_token. urllib stdlib."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    data = urllib.parse.urlencode({"username": username, "password": password,
+                                   "grant_type": "password"}).encode()
+    req = urllib.request.Request(
+        base_url + "/api/token", data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = _json.loads(resp.read())
+    token = payload.get("access_token")
+    if not token:
+        raise ValueError("Réponse login sans access_token")
+    return token
+
+
+def restore_app_data(base_url: str, token: str, slug: str, backup_id: str,
+                     *, timeout_s: int = 300) -> bool:
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        f"{base_url}/api/apps/{slug}/backup/{backup_id}/restore",
+        data=b"{}", method="POST",
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError:
+        return False
+
+
+def rebuild_app(slug: str, console, *, dry_run: bool = False) -> bool:
+    app_dir = hub_state.APPS_DIR / slug
+    if not (app_dir / "Makefile").exists():
+        console.print(f"[yellow]⚠ {slug} : pas de Makefile — rebuild ignoré[/yellow]")
+        return False
+    ok_build = _run(["make", "build"], cwd=app_dir, console=console, dry_run=dry_run)
+    ok_up = _run(["make", "up"], cwd=app_dir, console=console, dry_run=dry_run)
+    return ok_build and ok_up
+
+
+# ── Flux complet ──
+
+def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
+                    apps: str | None = None, admin_user: str | None = None,
+                    yes: bool = False, force: bool = False,
+                    dry_run: bool = False) -> int:
+    import getpass
+    import os
+    console = Console()
+    console.rule("[bold cyan]PRA POULIDOR — restauration de secours")
+
+    # Étape 0 — garde-fous
+    check_parc_empty(force)
+
+    # Étape 1 — kit + snapshot
+    kit_path = find_kit(kit)
+    console.print(f"📦 Kit : {kit_path}")
+    snap = pick_snapshot(kit_path, snapshot)
+    console.print(f"🧩 Snapshot : {snap.name}")
+
+    # Étape 2 — passphrase + fichiers (secrets/.env)
+    restore_files_from_kit(kit_path, console, dry_run=dry_run)
+
+    # Étape 3 — stack vierge
+    if not yes:
+        try:
+            input("↵ pour builder et démarrer la stack (Ctrl-C pour annuler) ")
+        except EOFError:
+            pass
+    build_stack(console, dry_run=dry_run)
+    if not dry_run:
+        if not wait_healthy(console):
+            _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
+            raise SystemExit("❌ hub-api pas healthy après démarrage — voir logs ci-dessus")
+        console.print("✓ hub-api healthy")
+
+    # Étape 4 — injection + restart
+    snap_id = inject_snapshot(kit_path, snap, console, dry_run=dry_run)
+    restart_hub_api(console, dry_run=dry_run)
+
+    # Étape 5 — attente du restore interne
+    if not dry_run:
+        if not wait_restore_done(snap_id, console):
+            _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
+            raise SystemExit("❌ Restore non terminé (pending_restore.txt toujours présent)")
+        if not wait_healthy(console):
+            raise SystemExit("❌ hub-api pas healthy après restore")
+        n = count_apps()
+        console.print(f"✓ Restore terminé — {n} app(s) en base")
+
+    # Étape 6 — apps : liste + sélection + rebuild + réinjection
+    all_apps = [] if dry_run else list_apps_with_backups()
+    slugs = [a["slug"] for a in all_apps]
+    if apps is not None:
+        selection = parse_selection(apps, slugs)
+    elif not all_apps:
+        console.print("Aucune app active en base — étape apps ignorée.")
+        selection = []
+    else:
+        console.print("Apps actives (dernier backup) :")
+        for i, a in enumerate(all_apps, 1):
+            backup_info = f"backup {a['backup_id'][:8]}…" if a["backup_id"] else "aucun backup"
+            console.print(f"  {i}. {a['slug']}  ({backup_info})")
+        try:
+            raw = input("Apps à restaurer (ex: 1,3 | all | none) : ")
+        except EOFError:
+            raw = "none"
+        selection = parse_selection(raw, slugs)
+
+    todo = [a for a in all_apps if a["slug"] in selection]
+    token: str | None = None
+    if todo and not dry_run:
+        username = (admin_user or os.environ.get("ADMIN_USERNAME")
+                    or _env_lookup("ADMIN_USERNAME") or "admin")
+        pw = os.environ.get("ADMIN_PASSWORD") or getpass.getpass(
+            f"Mot de passe admin ({username}) : ")
+        token = admin_login(_api_base_url(), username, pw)
+        console.print("✓ Token admin obtenu")
+
+    results: dict[str, str] = {}
+    for a in todo:
+        slug = a["slug"]
+        if dry_run:
+            console.print(f"[dim]dry-run : rebuild + restore {slug}[/dim]")
+            continue
+        ok_build = rebuild_app(slug, console)
+        if a["backup_id"] and token:
+            ok_data = restore_app_data(_api_base_url(), token, slug, a["backup_id"])
+            results[slug] = ("✓ restaurée (data réinjectée)" if ok_build and ok_data
+                             else "⚠ rebuild ok, réinjection échouée" if ok_build
+                             else "✗ rebuild échoué")
+        else:
+            results[slug] = "✓ rebuildée (pas de backup)" if ok_build else "✗ rebuild échoué"
+    if results:
+        console.rule("Récap apps")
+        for slug, status in results.items():
+            console.print(f"  {slug}: {status}")
+
+    console.print("[bold green]PRA terminé.[/bold green]")
+    return 0
+
+
+if __name__ == "__main__":
+    import argparse
+    _p = argparse.ArgumentParser(prog="pra-restore",
+                                 description="Restauration PRA depuis un kit POULIDOR")
+    _p.add_argument("kit", nargs="?", default=None, help="Chemin du kit PRA (scan auto si omis)")
+    _p.add_argument("--snapshot", default=None)
+    _p.add_argument("--apps", default=None, help="all | none | slugs séparés par virgule")
+    _p.add_argument("--admin-user", default=None)
+    _p.add_argument("--yes", action="store_true")
+    _p.add_argument("--force", action="store_true")
+    _p.add_argument("--dry-run", action="store_true")
+    _a = _p.parse_args()
+    raise SystemExit(run_pra_restore(
+        _a.kit, snapshot=_a.snapshot, apps=_a.apps, admin_user=_a.admin_user,
+        yes=_a.yes, force=_a.force, dry_run=_a.dry_run))
