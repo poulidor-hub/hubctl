@@ -71,6 +71,23 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("--passphrase-stdin", action="store_true",
                                 help="Lire la passphrase d'archive depuis stdin (CI/DR)")
 
+    # pra-restore — assistant PRA
+    pra_parser = sub.add_parser(
+        "pra-restore",
+        help="Restauration PRA depuis un kit (coffre + dernier snapshot)")
+    pra_parser.add_argument("kit", nargs="?", default=None,
+                            help="Chemin du kit PRA (scan auto si omis)")
+    pra_parser.add_argument("--snapshot", default=None,
+                            help="Nom ou chemin du snapshot à restaurer (défaut: plus récent du kit)")
+    pra_parser.add_argument("--apps", default=None,
+                            help="all | none | slugs séparés par virgule (défaut: interactif)")
+    pra_parser.add_argument("--admin-user", default=None)
+    pra_parser.add_argument("--yes", action="store_true", help="Saute les confirmations")
+    pra_parser.add_argument("--force", action="store_true",
+                            help="Autoriser même sur un parc non vide")
+    pra_parser.add_argument("--dry-run", action="store_true",
+                            help="Afficher le plan sans rien exécuter")
+
     # debug
     debug_parser = sub.add_parser("debug", help="Agent de debug Granite/Ollama")
     debug_parser.add_argument("app", nargs="?", default=None, help="Application cible")
@@ -189,6 +206,24 @@ def _run(args) -> int:
             return 0 if restore_park(args.archive, passphrase=passphrase) else 1
         except Exception as e:
             print(f"❌ restore a échoué : {e}")
+            return 1
+
+    if args.command == "pra-restore":
+        from hubctl_cli import pra_restore
+        try:
+            return pra_restore.run_pra_restore(
+                kit=args.kit, snapshot=args.snapshot, apps=args.apps,
+                admin_user=args.admin_user, yes=args.yes,
+                force=args.force, dry_run=args.dry_run or global_dry_run)
+        except SystemExit as e:
+            if isinstance(e.code, str):
+                print(e.code)
+            return e.code if isinstance(e.code, int) else 1
+        except KeyboardInterrupt:
+            print("\n❌ Interrompu.")
+            return 130
+        except Exception as e:
+            print(f"❌ pra-restore a échoué : {e}")
             return 1
 
     if args.command == "debug":

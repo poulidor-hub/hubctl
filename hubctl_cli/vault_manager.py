@@ -53,8 +53,18 @@ class VaultManager:
         # Backup DB : utilisateurs, apps, service accounts, settings
         db_ok = _backup_db(self.vault, on_log=on_log)
         self.vault.save()
+        # Réplication PRA (couche non-bloquante : un échec n'empêche jamais
+        # la sauvegarde de réussir — cf. pra_replicate.replicate, ne lève jamais,
+        # double filet try/except par prudence).
+        pra = None
+        try:
+            from hubctl_cli import pra_replicate
+            pra = pra_replicate.replicate(on_log=on_log)
+        except Exception as e:
+            if on_log:
+                on_log(f"[pra] réplication ignorée : {e}")
         env_count = sum(1 for k in self.vault.list_entries() if not k.startswith("__"))
-        return {"env": env_count, "files": files, "db": db_ok}
+        return {"env": env_count, "files": files, "db": db_ok, "pra": pra}
 
     def export_recovery(self) -> "Path":
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")

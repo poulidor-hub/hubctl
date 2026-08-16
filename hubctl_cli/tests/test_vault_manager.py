@@ -242,3 +242,30 @@ def test_restore_db_success_takes_snapshot(monkeypatch):
     assert any("pg_dump" in " ".join(str(x) for x in c["cmd"]) for c in calls)
     # pas de rollback : le snapshot n'est jamais rejoué en psql
     assert not any(c["input"] == _SNAPSHOT for c in calls)
+
+
+# ── Hook réplication PRA ──
+
+
+def test_backup_all_triggers_pra_replicate(tmp_path, monkeypatch):
+    mgr = _setup(tmp_path, monkeypatch)
+    from hubctl_cli import pra_replicate
+    calls = []
+    monkeypatch.setattr(pra_replicate, "replicate",
+                        lambda **kw: calls.append(kw) or {"status": "ok", "copied": [], "message": ""})
+    summary = mgr.backup_all()
+    assert calls, "backup_all doit appeler pra_replicate.replicate"
+    assert summary["pra"]["status"] == "ok"
+
+
+def test_backup_all_survives_replicate_crash(tmp_path, monkeypatch):
+    mgr = _setup(tmp_path, monkeypatch)
+    from hubctl_cli import pra_replicate
+
+    def boom(**kw):
+        raise RuntimeError("usb arrachée")
+
+    monkeypatch.setattr(pra_replicate, "replicate", boom)
+    summary = mgr.backup_all()
+    assert summary["env"] >= 1          # la sauvegarde a réussi quand même
+    assert summary["pra"] is None       # la réplication a échoué silencieusement
