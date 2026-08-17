@@ -1,5 +1,13 @@
 # Changelog — Hubctl
 
+## [0.5.2] — 17 août 2026
+
+### ⚡ init — whitelist réseau réelle + résumé exact
+
+- **Corrigé** : `APP_WHITELIST_NETWORKS` était généré en dur (`10.42.0.0/16,192.168.1.0/24`) — sur tout serveur hors `192.168.1.0/24`, `allocate-ports` et l'auto-enregistrement des apps renvoyaient 403 dès l'installation. Le `/24` du subnet LAN détecté est désormais inclus (fallback legacy si IP loopback). Constaté en test fresh-install Debian 12 (VM QEMU).
+- **Corrigé** : le résumé de `hubctl init` affichait l'API en `https://…:8000` alors qu'elle écoute en HTTP — aligné sur `http://`.
+- **Tests** : 2 nouveaux (`whitelist inclut le subnet détecté`, `fallback loopback`) — 410 passed.
+
 ## [0.5.1] — 16 août 2026
 
 ### 🔧 Kit PRA — durcissements de la revue finale
