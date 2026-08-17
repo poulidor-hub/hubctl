@@ -619,6 +619,35 @@ def test_generate_dotenv_creates_env_from_template(monkeypatch, tmp_path):
     ]
     for var in required_vars:
         assert var in content, f"Variable obligatoire manquante: {var}"
+
+def test_generate_dotenv_whitelist_includes_host_subnet(monkeypatch, tmp_path):
+    """La whitelist générée inclut le /24 du subnet détecté de l'hôte.
+
+    Avant : APP_WHITELIST_NETWORKS était en dur (10.42.0.0/16,192.168.1.0/24)
+    → allocate-ports/auto-enregistrement en 403 sur toute machine hors
+    192.168.1.0/24 (constaté fresh-install Debian, subnet 10.0.2.0/24).
+    """
+    hub_dir = _mock_env_path(monkeypatch, tmp_path, exists=False)
+    console = _mock_console()
+    monkeypatch.setattr(actions, "_detect_host_ip", lambda: "10.0.2.15")
+    result = actions._generate_dotenv(console, force=False, dry_run=False)
+    assert result is not None
+    content = (hub_dir / ".env").read_text()
+    assert "APP_WHITELIST_NETWORKS=10.42.0.0/16,10.0.2.0/24" in content
+    # Le subnet magique legacy ne doit plus apparaître quand le subnet réel
+    # est détecté
+    assert "192.168.1.0/24" not in content
+
+def test_generate_dotenv_whitelist_fallback_loopback(monkeypatch, tmp_path):
+    """Sans réseau détecté (IP loopback), la whitelist legacy est conservée."""
+    hub_dir = _mock_env_path(monkeypatch, tmp_path, exists=False)
+    console = _mock_console()
+    monkeypatch.setattr(actions, "_detect_host_ip", lambda: "127.0.0.1")
+    result = actions._generate_dotenv(console, force=False, dry_run=False)
+    assert result is not None
+    content = (hub_dir / ".env").read_text()
+    assert "APP_WHITELIST_NETWORKS=10.42.0.0/16,192.168.1.0/24" in content
+
     # Fernet key doit être valide
     import re
     fkey_match = re.search(r"SECRETS_ENCRYPTION_KEY=(\S+)", content)

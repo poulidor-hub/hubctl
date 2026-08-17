@@ -30,6 +30,22 @@ def _detect_host_ip() -> str:
         return "127.0.0.1"
 
 
+def _lan_cidr_from_ip(ip: str) -> str | None:
+    """Déduit le CIDR /24 du subnet LAN de l'IP hôte détectée.
+
+    Retourne None si l'IP est loopback/IPv6/invalide (aucun LAN exploitable
+    → l'appelant conserve la whitelist legacy).
+    """
+    import ipaddress as _ipaddress
+    try:
+        addr = _ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if addr.is_loopback or addr.version != 4:
+        return None
+    return str(_ipaddress.ip_network(f"{ip}/24", strict=False))
+
+
 def _generate_dotenv(console, *, force: bool = False, dry_run: bool = False) -> dict | None:
     """Génère HUB_base/.env avec des secrets aléatoires.
 
@@ -67,6 +83,13 @@ def _generate_dotenv(console, *, force: bool = False, dry_run: bool = False) -> 
 
     import socket as _socket
     host_ip = _detect_host_ip()
+
+    # APP_WHITELIST_NETWORKS : inclure le subnet LAN réel de l'hôte (le /24
+    # de l'IP détectée) pour que allocate-ports / l'auto-enregistrement des
+    # apps fonctionnent dès l'installation, quel que soit le réseau du
+    # serveur. Fallback legacy si aucun réseau exploitable (IP loopback).
+    _lan_cidr = _lan_cidr_from_ip(host_ip)
+    app_whitelist = f"10.42.0.0/16,{_lan_cidr}" if _lan_cidr else "10.42.0.0/16,192.168.1.0/24"
     # Générer la Fernet key pour le chiffrement des secrets
     from cryptography.fernet import Fernet as _Fernet
     fernet_key = _Fernet.generate_key().decode() if not dry_run else "DRY_RUN_FERNET_KEY"
@@ -142,7 +165,7 @@ ALLOWED_ORIGINS=https://hub.local,https://{host_ip}
 ALLOWED_ORIGIN_REGEX=
 
 # Whitelist réseaux
-APP_WHITELIST_NETWORKS=10.42.0.0/16,192.168.1.0/24
+APP_WHITELIST_NETWORKS={app_whitelist}
 
 # PKI / HTTPS
 HUB_HTTPS_ENABLED=true
@@ -477,7 +500,8 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     t.add_column("URL")
     t.add_row("Hub (HTTPS)", f"https://{host_ip}")
     t.add_row("Hub (HTTP)", f"http://{host_ip}:80")
-    t.add_row("API", f"https://{host_ip}:8000")
+    # L'API écoute en HTTP sur ce port (HTTPS est servi par le frontend 443)
+    t.add_row("API", f"http://{host_ip}:8000")
     con.print(t)
     con.print("")
     con.print(f"[bold]Login :[/bold] {admin_username}")
