@@ -153,6 +153,46 @@ def test_require_vault_create_autogenerates_without_prompt(monkeypatch):
     vault_mgr.backup_all.assert_called_once()
 
 
+# ── _unlock_vault_cli (hubctl vault …) ──
+
+
+def test_unlock_vault_cli_already_unlocked(monkeypatch):
+    vault = mock.Mock()
+    vault.is_locked = False
+    assert m._unlock_vault_cli(vault, mock.Mock()) is True
+
+
+def test_unlock_vault_cli_stored_key_skips_prompt(monkeypatch):
+    vault = mock.Mock()
+    vault.is_locked = True
+    vault.unlock_stored.return_value = True
+    prompted = []
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: prompted.append(1) or "x")
+    assert m._unlock_vault_cli(vault, mock.Mock()) is True
+    assert prompted == []
+
+
+def test_unlock_vault_cli_manual_then_migration(monkeypatch):
+    vault = mock.Mock()
+    vault.is_locked = True
+    vault.unlock_stored.return_value = False
+    vault.unlock.side_effect = [False, True]
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: "manual")
+    console = mock.Mock()
+    assert m._unlock_vault_cli(vault, console) is True
+    vault.store_passphrase.assert_called_once_with("manual")
+
+
+def test_unlock_vault_cli_three_failures_returns_false(monkeypatch):
+    vault = mock.Mock()
+    vault.is_locked = True
+    vault.unlock_stored.return_value = False
+    vault.unlock.return_value = False
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: "bad")
+    console = mock.Mock()
+    assert m._unlock_vault_cli(vault, console) is False
+
+
 # ── Parser: new simplified subcommands ──
 
 def test_parser_start():
