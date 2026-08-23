@@ -1,5 +1,19 @@
 # Changelog — Hubctl
 
+## [0.6.1] — 23 août 2026
+
+### ⚡ Revue finale — sûreté dry-run + garde-fous
+
+- **Corrigé** : Ctrl-C pendant un `--maj`/`--prod` en dry-run déclenchait un rollback RÉEL
+  (rebuild/up docker) — `dry_run` désormais propagé aux rollbacks des deux séquences.
+- **Sécurisé** : `_ws_worktree_clean` fail-closed sans upstream (repli `origin/<branche>`,
+  refus si irrésolvable) — un repo non-tracking avec commits non poussés ne passe plus.
+- **Corrigé** : échec d'une commande SYNC du ship (ex. reset KO) restaure désormais le repo
+  (`_ws_git_restore`) au lieu de laisser un tree orphelin sur main.
+- **Corrigé** : `_find_free_subnet` parse les CIDRs par élément — un CIDR malformé ne
+  discarde plus la totalité des subnets utilisés (risque d'allocation en overlap).
+- **Tests** : +6 (464 passed).
+
 ## [0.6.0] — 23 août 2026
 
 ### 🚀 Atelier — test de mise à jour (`--maj`) et déploiement prod (`--prod`)
