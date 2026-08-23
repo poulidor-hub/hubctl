@@ -1750,11 +1750,15 @@ def _ws_worktree_clean(app_dir: Path) -> bool:
 
     Exigé avant --maj/--prod : l'atelier et la prod partagent APPS/X/,
     un pull/checkout ne doit jamais écraser ou fusionner du travail local.
+    ``.workshop.env`` est l'état interne de hubctl (non suivi dans les dépôts
+    du parc réel) : il ne rend pas le tree sale.
     """
     try:
         st = subprocess.run(["git", "-C", str(app_dir), "status", "--porcelain"],
                             capture_output=True, text=True, timeout=15)
-        if st.returncode != 0 or st.stdout.strip():
+        dirty = [line for line in st.stdout.splitlines()
+                 if line[3:] != ".workshop.env"]
+        if st.returncode != 0 or dirty:
             return False
         ahead = subprocess.run(["git", "-C", str(app_dir), "log", "--oneline", "@{u}..HEAD"],
                                capture_output=True, text=True, timeout=15)
@@ -1798,6 +1802,150 @@ def _ws_git_restore(console, app_dir: Path, prev_branch: str | None,
     if prev_branch and prev_branch != "HEAD":
         utils.run_shell(["git", "-C", str(app_dir), "reset", "--hard", prev_commit],
                         dry_run=dry_run, console=con, timeout=30)
+
+
+def _update_workshop(console, app_slug: str, ref: str = "main", *, dry_run: bool = False) -> bool:
+    """Met à jour l'atelier : fetch + checkout du ref + rebuild du projet -ws.
+
+    Le clone de DB rejoue les migrations au boot — chemin réel de montée de
+    version testé sans toucher à la prod. Retourne True si l'atelier est à
+    jour sur <ref> après l'appel (y compris « déjà à jour »).
+    """
+    con = console or _console
+    ws_slug = _ws_project(app_slug)
+    app_dir = hub_state.APPS_DIR / app_slug
+    compose_file = app_dir / "docker-compose.yml"
+    ws_env = _ws_read_env(app_slug)
+
+    # ── Pré-checks ──
+    if not ws_env:
+        con.print(f"[red]✗ Atelier « {ws_slug} » inexistant — créez-le d'abord : ./hubctl atelier {app_slug}[/red]")
+        return False
+    if not hub_state.check_docker():
+        con.print("[red]✗ Docker inaccessible.[/red]")
+        return False
+    git_state = _ws_git_state(app_dir)
+    if not git_state["ok"]:
+        con.print(f"[red]✗ {app_dir} n'est pas un repo git avec remote origin — mise à jour d'atelier impossible.[/red]")
+        return False
+    if ws_env.get("WS_REF", "n/a") == "n/a":
+        con.print("[red]✗ Atelier créé sans support git (WS_REF=n/a) — supprimez et recréez l'atelier.[/red]")
+        return False
+    if not _ws_worktree_clean(app_dir):
+        con.print(f"[red]✗ Working tree de {app_dir} sale (modifications locales ou commits non poussés) — commit/push ou stash avant --maj.[/red]")
+        return False
+
+    prev_commit = git_state["head"]
+    prev_branch = git_state["branch"]
+
+    try:
+        # 1-2. FETCH + résolution du ref demandé
+        con.print(f"[bold]→ Récupération du code ({ref})…[/bold]")
+        rc = utils.run_shell(["git", "-C", str(app_dir), "fetch", "--quiet", "origin", "--tags"],
+                             dry_run=dry_run, console=con, timeout=60)
+        if rc != 0:
+            con.print("[red]✗ git fetch échoué (remote accessible ?).[/red]")
+            return False
+        target_commit = _ws_resolve_ref(app_dir, ref) if not dry_run else ws_env.get("WS_COMMIT", "dryrun")
+        if not dry_run and target_commit is None:
+            con.print(f"[red]✗ Réf « {ref} » introuvable (essayée : origin/{ref}, {ref}).[/red]")
+            return False
+
+        # Idempotence : même ref, même commit déjà testé → rien à faire
+        if not dry_run and ref == ws_env.get("WS_REF") and target_commit == ws_env.get("WS_COMMIT"):
+            con.print(f"[green]✓ Atelier déjà à jour sur {ref} @ {target_commit[:8]}.[/green]")
+            return True
+
+        # Aperçu du delta testé
+        if prev_commit:
+            delta = subprocess.run(
+                ["git", "-C", str(app_dir), "log", "--oneline", f"{prev_commit}..{target_commit}"],
+                capture_output=True, text=True, timeout=15)
+            for line in (delta.stdout.strip().splitlines() if delta.returncode == 0 else [])[:10]:
+                con.print(f"[dim]  {line}[/dim]")
+
+        # 3. CHECKOUT du commit cible (detached : on teste un état exact)
+        rc = utils.run_shell(["git", "-C", str(app_dir), "checkout", "--quiet", target_commit],
+                             dry_run=dry_run, console=con, timeout=30)
+        if rc != 0:
+            con.print(f"[red]✗ checkout {target_commit[:8]} échoué.[/red]")
+            return False
+
+        # 4. BUILD avec APP_VERSION injectée depuis le VERSION du tree
+        #    (hubctl bypass make sync-env → sans ça, l'atelier afficherait
+        #     la version périmée du .env prod)
+        compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+        version_file = app_dir / "VERSION"
+        if version_file.exists():
+            compose_env["APP_VERSION"] = version_file.read_text().strip()
+        con.print(f"[bold]→ Build {ws_slug} sur {ref} @ {target_commit[:8]}…[/bold]")
+        rc = utils.run_shell(
+            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "build"],
+            cwd=str(app_dir), dry_run=dry_run, console=con, timeout=600, env=compose_env)
+        if rc != 0:
+            return _ws_update_rollback(con, app_slug, prev_branch, prev_commit,
+                                       reason="Build échoué", dry_run=dry_run)
+
+        # 5. UP (les migrations rejouent sur le volume cloné au boot)
+        rc = utils.run_shell(
+            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "up", "-d"],
+            cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
+        if rc != 0:
+            return _ws_update_rollback(con, app_slug, prev_branch, prev_commit,
+                                       reason="up échoué", dry_run=dry_run)
+
+        # 6. HEALTH
+        con.print(f"[bold]→ Santé atelier (port {ws_env.get('API_PORT')}, timeout 60s)…[/bold]")
+        healthy = True if dry_run else _health_check(
+            ws_env.get("APP_SLUG", ws_slug), console=con, timeout=60,
+            port_override=ws_env.get("API_PORT"))
+        if not healthy:
+            return _ws_update_rollback(con, app_slug, prev_branch, prev_commit,
+                                       reason="Health échoué", dry_run=dry_run)
+
+        # 7. PERSIST + retour propre sur la branche si ref == main
+        if not dry_run:
+            env_manager.write_env(_ws_env_path(app_slug),
+                                  {"WS_REF": ref, "WS_COMMIT": target_commit})
+            if ref == "main":
+                utils.run_shell(["git", "-C", str(app_dir), "checkout", "--quiet", "main"],
+                                dry_run=False, console=con, timeout=30)
+                utils.run_shell(["git", "-C", str(app_dir), "reset", "--hard", target_commit],
+                                dry_run=False, console=con, timeout=30)
+        prod_version = env_manager.read_env(app_dir / ".env").get("APP_VERSION", "?")
+        tested_version = compose_env.get("APP_VERSION", "?")
+        con.print(f"[green]✓ Atelier « {ws_slug} » à jour : {ref} @ {target_commit[:8]} — testé {tested_version} (prod : {prod_version})[/green]")
+        con.print("[dim]  La DB du clone a rejoué les migrations — validez l'app sur les ports atelier.[/dim]")
+        return True
+    except KeyboardInterrupt:
+        con.print("\n[yellow]⚠ Interrompu — rollback git best-effort.[/yellow]")
+        _ws_update_rollback(con, app_slug, prev_branch, prev_commit,
+                            reason="Interrompu", dry_run=False)
+        return False
+
+
+def _ws_update_rollback(console, app_slug: str, prev_branch: str | None,
+                        prev_commit: str | None, *, reason: str, dry_run: bool) -> bool:
+    """Rollback d'un --maj échoué : git restauré + rebuild atelier best-effort."""
+    con = console or _console
+    app_dir = hub_state.APPS_DIR / app_slug
+    compose_file = app_dir / "docker-compose.yml"
+    con.print(f"[red]✗ {reason}. ROLLBACK git.[/red]")
+    _ws_git_restore(con, app_dir, prev_branch, prev_commit, dry_run=dry_run)
+    if not dry_run:
+        compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+        version_file = app_dir / "VERSION"
+        if version_file.exists():
+            compose_env["APP_VERSION"] = version_file.read_text().strip()
+        utils.run_shell(
+            ["docker", "compose", "-p", _ws_project(app_slug), "-f", str(compose_file), "build"],
+            cwd=str(app_dir), dry_run=False, console=con, timeout=600, env=compose_env)
+        utils.run_shell(
+            ["docker", "compose", "-p", _ws_project(app_slug), "-f", str(compose_file), "up", "-d"],
+            cwd=str(app_dir), dry_run=False, console=con, timeout=60, env=compose_env)
+    con.print("[yellow]⚠ DB du clone possiblement migrée — pour repartir d'un clone propre : ./hubctl atelier "
+              f"{app_slug} (supprimer) puis recréer.[/yellow]")
+    return False
 
 
 def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:

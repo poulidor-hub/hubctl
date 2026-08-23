@@ -257,6 +257,12 @@ class TestWsWorktreeClean:
         _git(git_app, "commit", "-qm", "local ahead")
         assert _ws_worktree_clean(git_app) is False
 
+    def test_clean_avec_workshop_env_non_suivi(self, git_app):
+        # .workshop.env = état interne hubctl, pas du travail local (parc réel :
+        # non suivi et non ignoré dans les dépôts APPS/X)
+        (git_app / ".workshop.env").write_text("APP_SLUG=wstest-ws\nWS_REF=main\n")
+        assert _ws_worktree_clean(git_app) is True
+
 
 class TestWsResolveRef:
     def test_main_resout_origin_main(self, git_app):
@@ -295,3 +301,143 @@ class TestWsGitRestore:
         prev_commit = _git(git_app, "rev-parse", "HEAD").stdout.strip()
         _ws_git_restore(None, git_app, "HEAD", prev_commit, dry_run=False)
         assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev_commit
+
+
+# ── _update_workshop (--maj) ──
+
+from hubctl_cli import actions as actions_mod
+from hubctl_cli import env_manager
+from hubctl_cli.actions import _update_workshop
+
+# Pattern des tests --maj/--prod : GIT RÉEL (repo tmp_path, commandes réellement
+# exécutées → rev-parse vérifiable), DOCKER SIMULÉ (aucun conteneur lancé).
+_real_run_shell = actions_mod.utils.run_shell
+
+
+def _docker_ok(cmd, **kwargs):
+    """run_shell side-effect : commandes docker simulées OK, git réellement exécuté."""
+    if cmd[:1] == ["docker"]:
+        return 0
+    return _real_run_shell(cmd, **kwargs)
+
+
+def _docker_build_ko(cmd, **kwargs):
+    """run_shell side-effect : build docker KO, reste identique à _docker_ok."""
+    if cmd[:2] == ["docker", "compose"] and "build" in cmd:
+        return 1
+    return _docker_ok(cmd, **kwargs)
+
+
+def _ws_setup(git_app: Path, monkeypatch, *, ws_ref="main", ws_commit=None):
+    """Prépare .workshop.env + patche hub_state.APPS_DIR vers le tmp_path."""
+    apps_root = git_app.parent
+    if ws_commit is None:
+        ws_commit = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+    (git_app / ".workshop.env").write_text(
+        f"APP_SLUG=wstest-ws\nAPI_PORT=10000\nFRONTEND_PORT=5200\n"
+        f"FRONTEND_HTTPS_PORT=5201\nWS_REF={ws_ref}\nWS_COMMIT={ws_commit}\n"
+    )
+    monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", apps_root)
+    monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+
+
+class TestUpdateWorkshopPrechecks:
+    def test_refuse_atelier_inexistant(self, tmp_path, monkeypatch):
+        apps = tmp_path / "APPS"; apps.mkdir()
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", apps)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        assert _update_workshop(None, "wstest") is False
+
+    def test_refuse_app_sans_remote(self, tmp_path, monkeypatch):
+        app = tmp_path / "APPS" / "wstest"; app.mkdir(parents=True)
+        (app / ".workshop.env").write_text("APP_SLUG=wstest-ws\nWS_REF=n/a\nWS_COMMIT=n/a\n")
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", tmp_path / "APPS")
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        assert _update_workshop(None, "wstest") is False
+
+    def test_refuse_worktree_sale(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        (git_app / "f.txt").write_text("sale\n")
+        assert _update_workshop(None, "wstest") is False
+
+    def test_idempotent_sans_rebuild(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)  # WS_COMMIT == HEAD == origin/main
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok) as rs:
+            assert _update_workshop(None, "wstest", "main") is True
+        docker_calls = [c for c in rs.call_args_list
+                        if c.args and c.args[0][:1] == ["docker"]]
+        assert docker_calls == []  # rien à faire : aucun build/up
+
+
+class TestUpdateWorkshopNominal:
+    def test_maj_complete_et_persiste(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        new_sha = _origin_commit(git_app, "v2 maj atelier")
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True) as hc:
+            assert _update_workshop(None, "wstest", "main") is True
+        # git RÉEL : retour propre sur main au commit testé
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == new_sha
+        assert _git(git_app, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+        # .workshop.env mis à jour
+        ws = env_manager.read_env(git_app / ".workshop.env")
+        assert ws["WS_REF"] == "main" and ws["WS_COMMIT"] == new_sha
+        # health appelé sur le port atelier
+        assert hc.call_args.kwargs.get("port_override") == "10000"
+        # build avec slug -ws dans l'env compose
+        build_calls = [c for c in rs.call_args_list
+                       if c.args and c.args[0][:2] == ["docker", "compose"]
+                       and "build" in c.args[0]]
+        assert build_calls
+        assert build_calls[0].kwargs.get("env", {}).get("APP_SLUG") == "wstest-ws"
+
+    def test_maj_sur_branche_laisse_detached(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        # pousser feat/y sur origin
+        work = git_app.parent / "work-feat"
+        subprocess.run(["git", "clone", "-q", str(git_app.parent / "origin.git"), str(work)],
+                       capture_output=True, timeout=15)
+        _git(work, "config", "user.email", "t@t"); _git(work, "config", "user.name", "t")
+        _git(work, "checkout", "-q", "-b", "feat/y")
+        (work / "f.txt").write_text("feat\n"); _git(work, "add", "-A"); _git(work, "commit", "-qm", "feat y")
+        _git(work, "push", "-q", "origin", "feat/y")
+        feat_sha = _git(work, "rev-parse", "HEAD").stdout.strip()
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok), \
+             patch.object(actions_mod, "_health_check", return_value=True):
+            assert _update_workshop(None, "wstest", "feat/y") is True
+        # detached sur le commit testé (pas de retour branche pour ref != main)
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == feat_sha
+        assert _git(git_app, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "HEAD"
+        ws = env_manager.read_env(git_app / ".workshop.env")
+        assert ws["WS_REF"] == "feat/y" and ws["WS_COMMIT"] == feat_sha
+
+    def test_ref_introuvable_ne_touche_rien(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        prev = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok):
+            assert _update_workshop(None, "wstest", "branche/fantome") is False
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
+
+
+class TestUpdateWorkshopRollback:
+    def test_echec_build_rollback_git(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        prev = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        _origin_commit(git_app, "v2 casse build")
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_build_ko):
+            assert _update_workshop(None, "wstest", "main") is False
+        # git RÉEL restauré sur main@prev (le rollback checkout/reset est réel)
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
+        assert _git(git_app, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+        # .workshop.env NON mis à jour (WS_COMMIT == prev)
+        ws = env_manager.read_env(git_app / ".workshop.env")
+        assert ws["WS_COMMIT"] == prev
+
+    def test_echec_health_rollback_git(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        prev = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        _origin_commit(git_app, "v2 casse health")
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok), \
+             patch.object(actions_mod, "_health_check", return_value=False):
+            assert _update_workshop(None, "wstest", "main") is False
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
