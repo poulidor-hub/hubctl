@@ -402,3 +402,44 @@ def test_argparse_has_pra_restore():
     assert args.command == "pra-restore"
     assert args.kit == "/mnt/kit" and args.snapshot == "s.tar.zst.enc"
     assert args.apps == "all" and args.yes and args.force and args.dry_run
+
+
+# ── restore_files_from_kit : clé du kit d'abord ──
+
+
+def _kit_with_real_vault(tmp_path, monkeypatch, *, with_key: bool):
+    _patch_parc(tmp_path, monkeypatch)
+    from hubctl_cli.coffre import Vault
+    kit = tmp_path / "usb"
+    kit.mkdir(exist_ok=True)
+    (tmp_path / "HUB_base").mkdir(exist_ok=True)
+    v = Vault(kit / pra_config.VAULT_FILENAME)
+    v.unlock("kit-passphrase")
+    v.set_entry("hub", {"POSTGRES_PASSWORD": "restored"})
+    v.save()
+    if with_key:
+        v.store_passphrase("kit-passphrase")
+    return kit
+
+
+def test_restore_files_uses_kit_key_without_prompt(tmp_path, monkeypatch):
+    """Clé du kit présente et valide → aucun prompt getpass."""
+    kit = _kit_with_real_vault(tmp_path, monkeypatch, with_key=True)
+
+    def _no_prompt(*a, **k):
+        raise AssertionError("getpass ne doit pas être appelé (clé du kit valide)")
+    monkeypatch.setattr("getpass.getpass", _no_prompt)
+
+    from rich.console import Console
+    pra_restore.restore_files_from_kit(kit, Console())
+    assert (tmp_path / "HUB_base" / ".env").exists()
+
+
+def test_restore_files_kit_without_key_prompts(tmp_path, monkeypatch):
+    """Kit sans clé (kit ancien) → repli sur la saisie manuelle."""
+    kit = _kit_with_real_vault(tmp_path, monkeypatch, with_key=False)
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: "kit-passphrase")
+
+    from rich.console import Console
+    pra_restore.restore_files_from_kit(kit, Console())
+    assert (tmp_path / "HUB_base" / ".env").exists()

@@ -118,13 +118,15 @@ def restore_files_from_kit(kit: Path, console, *, dry_run: bool = False) -> None
     appliqué : le snapshot (pg_restore full) est l'unique source pour la DB."""
     import getpass
     vault = Vault(kit / VAULT_FILENAME)
-    for _attempt in range(3):
-        pw = getpass.getpass("🔐 Passphrase du coffre : ")
-        if pw and vault.unlock(pw):
-            break
-        console.print("[red]Passphrase incorrecte.[/red]")
-    else:
-        raise SystemExit("❌ 3 tentatives échouées.")
+    # Clé du kit d'abord (kits récents : parc.vault.key répliqué avec le coffre).
+    if not vault.unlock_stored():
+        for _attempt in range(3):
+            pw = getpass.getpass("🔐 Passphrase du coffre : ")
+            if pw and vault.unlock(pw):
+                break
+            console.print("[red]Passphrase incorrecte.[/red]")
+        else:
+            raise SystemExit("❌ 3 tentatives échouées.")
     if dry_run:
         console.print("[dim]dry-run : restauration des fichiers ignorée[/dim]")
         return
