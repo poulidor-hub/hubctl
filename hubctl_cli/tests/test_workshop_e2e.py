@@ -8,6 +8,7 @@ Vérifie que :
 5. _ws_compose_env fusionne os.environ + .workshop.env
 6. _ws_used_ports collecte les ports occupés
 """
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -24,6 +25,8 @@ from hubctl_cli.actions import (
     _ws_read_env,
     _ws_compose_env,
     _ws_used_ports,
+    _ws_used_subnets,
+    _find_free_subnet,
     _ws_session_ports,
     _ws_git_state,
     _ws_worktree_clean,
@@ -161,6 +164,71 @@ class TestWsUsedPorts:
         assert 5202 in used
         assert 5201 in used  # HTTPS port (5200 + 1)
         assert 5203 in used  # HTTPS port (5202 + 1)
+
+
+class TestFindFreeSubnet:
+    """Allocation d'un /24 dans le pool atelier (10.210.0.0/24 …)."""
+
+    def test_first_free(self):
+        assert _find_free_subnet(set()) == "10.210.0.0/24"
+
+    def test_skips_used(self):
+        used = {"10.210.0.0/24", "10.210.1.0/24"}
+        assert _find_free_subnet(used) == "10.210.2.0/24"
+
+    def test_skips_broad_overlap(self):
+        # Un CIDR large qui recouvre tout le pool (10.0.0.0/8 ⊇ 10.210.x)
+        # → aucun candidat, même si 10.210.x n'est pas listé littéralement.
+        assert _find_free_subnet({"10.0.0.0/8"}) is None
+
+    def test_exhausted_returns_none(self):
+        used = {f"10.210.{i}.0/24" for i in range(64)}
+        assert _find_free_subnet(used) is None
+
+
+class TestWsUsedSubnets:
+    """Collecte des subnets déjà pris (réseaux docker + APP_SUBNET des ateliers)."""
+
+    def test_collects_docker_and_workshops(self, tmp_path, monkeypatch):
+        app = tmp_path / "canari"
+        app.mkdir()
+        (app / ".workshop.env").write_text(
+            "APP_SLUG=canari-ws\nAPI_PORT=10000\nAPP_SUBNET=10.210.5.0/24\n"
+        )
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        monkeypatch.setattr(hub_state, "get_apps", lambda: [
+            type("A", (), {"name": "canari"})(),
+        ])
+
+        def fake_run(cmd, *args, **kwargs):
+            m = mock.Mock(returncode=0)
+            if cmd[:3] == ["docker", "network", "ls"]:
+                m.stdout = "netid1\nnetid2\n"
+                return m
+            if cmd[:3] == ["docker", "network", "inspect"]:
+                m.stdout = json.dumps([
+                    {"Name": "bridge", "IPAM": {"Config": [{"Subnet": "172.17.0.0/16"}]}},
+                    {"Name": "x_default", "IPAM": {"Config": [{"Subnet": "172.18.0.0/16"}]}},
+                ])
+                return m
+            return mock.Mock(returncode=1)
+
+        with patch.object(subprocess, "run", side_effect=fake_run):
+            used = _ws_used_subnets()
+        assert "172.17.0.0/16" in used   # réseaux docker existants
+        assert "172.18.0.0/16" in used
+        assert "10.210.5.0/24" in used   # APP_SUBNET d'un atelier existant
+
+    def test_docker_indisponible_retourne_workshops_seulement(self, tmp_path, monkeypatch):
+        app = tmp_path / "canari"
+        app.mkdir()
+        (app / ".workshop.env").write_text("APP_SLUG=canari-ws\nAPP_SUBNET=10.210.7.0/24\n")
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        monkeypatch.setattr(hub_state, "get_apps", lambda: [
+            type("A", (), {"name": "canari"})(),
+        ])
+        with patch.object(subprocess, "run", return_value=mock.Mock(returncode=1)):
+            assert _ws_used_subnets() == {"10.210.7.0/24"}
 
 
 class TestWsSessionPorts:
@@ -548,7 +616,11 @@ class TestCreateWorkshopTracing:
         monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
         head = _git(git_app, "rev-parse", "HEAD").stdout.strip()
         (git_app / "VERSION").write_text("0.2.0\n")
+        # _find_free_subnet/_ws_used_subnets patchés : herméticité (pas de
+        # docker network ls réel ni lecture du parc)
         with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value="10.210.0.0/24"), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
              patch.object(actions_mod.utils, "run_shell", return_value=0) as rs, \
              patch.object(actions_mod, "_health_check", return_value=True), \
              patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
@@ -574,13 +646,56 @@ class TestCreateWorkshopTracing:
         # _ws_git_state passeraient et head/branch seraient des Mocks → WS_REF
         # ne vaudrait jamais "n/a". Il faut un returncode non nul pour le
         # chemin « pas un repo git ».
+        # _find_free_subnet/_ws_used_subnets patchés : herméticité (get_apps
+        # sinon lirait le parc réel de la machine).
         with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value="10.210.0.0/24"), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
              patch.object(actions_mod.utils, "run_shell", return_value=0), \
              patch.object(actions_mod, "_health_check", return_value=True), \
              patch.object(actions_mod.subprocess, "run", return_value=mock.Mock(returncode=1)):
             assert _create_workshop(None, "noapp") is True
         ws = env_manager.read_env(app / ".workshop.env")
         assert ws["WS_REF"] == "n/a" and ws["WS_COMMIT"] == "n/a"
+
+    def test_create_persiste_app_subnet_dedie(self, git_app, monkeypatch):
+        """Subnet atelier dédié alloué, persisté et injecté dans l'env compose.
+
+        Fix « Pool overlaps » : les apps template récent épinglent APP_SUBNET
+        (mandatory) dans docker-compose.yml — sans override, l'atelier
+        réutilise le subnet prod et le up échoue quand la prod tourne.
+        """
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value="10.210.9.0/24"), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(None, "wstest") is True
+        ws = env_manager.read_env(git_app / ".workshop.env")
+        assert ws["APP_SUBNET"] == "10.210.9.0/24"
+        # APP_SUBNET override le .env prod dans chaque appel compose -ws
+        build_calls = [c for c in rs.call_args_list
+                       if c.args and c.args[0][:2] == ["docker", "compose"]
+                       and "build" in c.args[0]]
+        assert build_calls
+        assert build_calls[0].kwargs.get("env", {}).get("APP_SUBNET") == "10.210.9.0/24"
+
+    def test_create_sans_subnet_libre_omet_cle(self, git_app, monkeypatch):
+        """Pool atelier épuisé → pas de APP_SUBNET (fallback subnet prod + warning)."""
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value=None), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0), \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(None, "wstest") is True
+        ws = env_manager.read_env(git_app / ".workshop.env")
+        assert "APP_SUBNET" not in ws
 
 
 # ── action_atelier : dispatch flags ──

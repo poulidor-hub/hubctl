@@ -1,5 +1,6 @@
 from __future__ import annotations
 import datetime
+import ipaddress
 import json
 import os
 import re
@@ -1663,6 +1664,11 @@ _WS_API_PORT_END = 10499
 _WS_FE_PORT_START = 5200
 _WS_FE_PORT_END = 5699
 
+# Pool de subnets atelier (/24) — disjoint des plages prod usuelles (10.42/10.44/10.90…),
+# la vérification d'overlap reste le vrai garde-fou.
+_WS_SUBNET_BASE = "10.210"      # → 10.210.0.0/24 … 10.210.255.0/24
+_WS_SUBNET_COUNT = 64           # 64 ateliers simultanés max, largement suffisant
+
 # Ports alloués pendant la session courante (pour dry-run où les .workshop.env
 # ne sont pas écrits sur disque, il faut tracker en mémoire).
 _ws_session_ports: set[int] = set()
@@ -1715,6 +1721,45 @@ def _ws_used_ports() -> set[int]:
                     except ValueError:
                         pass
     return used
+
+
+def _ws_used_subnets() -> set[str]:
+    """Subnets déjà pris : tous les réseaux docker existants + APP_SUBNET des ateliers."""
+    used: set[str] = set()
+    try:
+        ids = subprocess.run(["docker", "network", "ls", "-q"],
+                             capture_output=True, text=True, timeout=10)
+        if ids.returncode == 0 and ids.stdout.strip():
+            nets = subprocess.run(
+                ["docker", "network", "inspect", *ids.stdout.split()],
+                capture_output=True, text=True, timeout=15)
+            if nets.returncode == 0 and nets.stdout.strip():
+                for net in json.loads(nets.stdout):
+                    for cfg in net.get("IPAM", {}).get("Config", []):
+                        s = cfg.get("Subnet")
+                        if s:
+                            used.add(s)
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
+    for app in hub_state.get_apps():
+        if _ws_exists(app.name):
+            s = _ws_read_env(app.name).get("APP_SUBNET")
+            if s:
+                used.add(s)
+    return used
+
+
+def _find_free_subnet(used_cidrs: set[str]) -> str | None:
+    """Premier /24 libre du pool atelier (aucun overlap avec les CIDR existants)."""
+    try:
+        taken = [ipaddress.ip_network(c) for c in used_cidrs if c.strip()]
+    except ValueError:
+        taken = []
+    for i in range(_WS_SUBNET_COUNT):
+        cand = ipaddress.ip_network(f"{_WS_SUBNET_BASE}.{i}.0/24")
+        if not any(cand.overlaps(t) for t in taken):
+            return str(cand)
+    return None
 
 
 # ── Helpers git du cycle atelier (--maj / --prod) ──
@@ -2110,6 +2155,14 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
         # Tracker les ports alloués (pour dry-run et allocations consécutives)
         _ws_session_ports.update({ws_api, ws_fe, ws_fe + 1})
 
+        # Subnet dédié : les apps template récent épinglent APP_SUBNET (mandatory)
+        # dans docker-compose.yml — sans override, l'atelier réutilise le subnet
+        # prod interpolé depuis .env → « Pool overlaps » quand la prod tourne.
+        ws_subnet = _find_free_subnet(_ws_used_subnets())
+        if not ws_subnet:
+            con.print("[yellow]⚠ Plus de subnet libre pour l'atelier — le subnet prod sera réutilisé "
+                      "(risque de conflit si la prod tourne avec un subnet épinglé).[/yellow]")
+
         ws_config = {
             "APP_SLUG": ws_slug,
             "API_PORT": str(ws_api),
@@ -2119,10 +2172,13 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             "WS_REF": git_state["branch"] if git_state["ok"] else "n/a",
             "WS_COMMIT": git_state["head"] if git_state["ok"] else "n/a",
         }
+        if ws_subnet:
+            ws_config["APP_SUBNET"] = ws_subnet
 
         # 2. Écrire .workshop.env
         env_path = _ws_env_path(app_slug)
-        con.print(f"[bold]→ Config atelier : ports {ws_api}/{ws_fe}[/bold]")
+        subnet_info = f", subnet {ws_subnet}" if ws_subnet else ""
+        con.print(f"[bold]→ Config atelier : ports {ws_api}/{ws_fe}{subnet_info}[/bold]")
         if not dry_run:
             env_manager.write_env(env_path, ws_config)
 
@@ -2150,7 +2206,7 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
         con.print(f"[bold]→ Build & démarrage de {ws_slug}…[/bold]")
         rc = utils.run_shell(
             ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "build"],
-            cwd=str(app_dir), dry_run=dry_run, console=con, timeout=120, env=compose_env)
+            cwd=str(app_dir), dry_run=dry_run, console=con, timeout=600, env=compose_env)
         if not dry_run and rc != 0:
             con.print(f"[red]✗ Build échoué. ROLLBACK : suppression .workshop.env + volume.[/red]")
             env_path.unlink(missing_ok=True)
