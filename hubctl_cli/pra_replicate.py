@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from hubctl_cli import hub_state, pra_config
+from hubctl_cli import coffre, hub_state, pra_config
 
 SNAPSHOT_GLOB = "snapshot_*.tar.zst.enc"
 
@@ -121,6 +121,11 @@ def _replicate(*, on_log=None) -> dict:
         bak = vp.with_name(pra_config.VAULT_FILENAME + ".bak")
         if bak.exists():
             _copy_stream_atomic(bak, loc / (pra_config.VAULT_FILENAME + ".bak"))
+        # La clé suit le coffre : sans elle, le kit est indéchiffrable
+        # (passphrase auto-générée inconnue de l'utilisateur).
+        key = vp.with_suffix(".key")
+        if key.exists():
+            _copy_stream_atomic(key, loc / coffre.VAULT_KEY_FILENAME)
         copied.append(pra_config.VAULT_FILENAME)
         cfg["last_vault_sha256"] = digest
 

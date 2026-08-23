@@ -165,3 +165,17 @@ def test_remove_location_clears_path(tmp_path, monkeypatch):
     cfg = pra_config.load_config()
     assert "path" not in cfg and "kit_id" not in cfg
     assert pra_config.should_offer_setup() is True
+
+
+def test_replicate_copies_vault_key_with_vault(tmp_path, monkeypatch):
+    """La clé parc.vault.key suit le coffre — sans elle le kit est indéchiffrable."""
+    vault, snaps, usb = _setup(tmp_path, monkeypatch)
+    key = vault.with_suffix(".key")
+    key.write_text("passphrase-auto\n")
+    result = pra_replicate.replicate()
+    assert result["status"] == "ok"
+    assert (usb / pra_config.VAULT_FILENAME).exists()
+    assert (usb / "parc.vault.key").read_text() == "passphrase-auto\n"
+    # 2e run : rien n'a changé → aucune recopie (préservation flash USB)
+    result2 = pra_replicate.replicate()
+    assert result2["status"] == "ok" and result2["copied"] == []
