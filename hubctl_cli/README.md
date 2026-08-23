@@ -23,20 +23,27 @@ Update · Ajouter une app · Supprimer une app · Logs · **Atelier (workshop)**
 Réparer/Diagnostiquer · Start/Stop hub · Apps (vue + disque) · Quick setup · Réseau ·
 Admin · Coffre (secrets chiffrés) · Scénarios · Bascule DEV/PROD.
 
-<small>* L'atelier (mode DEV) permet de mettre une app en atelier (clone DB) et
-de supprimer l'atelier.</small>
+<small>* L'atelier (mode DEV) permet de mettre une app en atelier (clone DB), de
+tester une montée de version (`--maj`) et de déployer en prod (`--prod`).</small>
 
 ## Atelier (workshop)
 
 ```bash
-./hubctl atelier X           # mettre X en atelier (clone DB) — ou supprimer si déjà en atelier (toggle)
-./hubctl atelier X --dry-run # simuler sans rien exécuter
+./hubctl atelier <app>                  # créer l'atelier, ou menu 4 choix s'il existe
+./hubctl atelier <app> --maj            # MAJ atelier : git fetch + checkout origin/main + rebuild -ws
+./hubctl atelier <app> --maj --ref R    # idem sur une branche/tag (défaut: main)
+./hubctl atelier <app> --prod           # déployer origin/main validé en prod + supprimer l'atelier
+./hubctl --dry-run atelier <app> --maj  # simuler — --dry-run est un flag GLOBAL (avant le subcommand)
 ```
+
+- L'atelier teste les montées de version sur le clone de DB (migrations rejouées au boot).
+- `--prod` exige que l'atelier ait testé `main` au commit courant d'`origin/main`.
+- Rollback git automatique en cas d'échec ; atelier conservé si le déploiement prod échoue.
 
 > **Note** : les anciennes docs référencent les commandes `work`, `ship`,
 > `deploy`, multi-slug et `--copy-db`. **Aucune de ces commandes n'est
-> exposée dans le parser actuel** — seul `atelier` l'est. Le déploiement
-> atelier → prod se fait manuellement (`cd APPS/X && git pull && make build && make up`).
+> exposée dans le parser actuel** — le cycle complet (création, MAJ,
+> déploiement prod, suppression) est porté par `atelier` et ses flags.
 > Voir le skill `app-workshop-mover` pour le détail du cycle.
 
 Depuis le menu TUI (mode DEV) : **Apps → Atelier**.
