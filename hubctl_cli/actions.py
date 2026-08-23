@@ -1666,7 +1666,7 @@ _WS_FE_PORT_END = 5699
 
 # Pool de subnets atelier (/24) — disjoint des plages prod usuelles (10.42/10.44/10.90…),
 # la vérification d'overlap reste le vrai garde-fou.
-_WS_SUBNET_BASE = "10.210"      # → 10.210.0.0/24 … 10.210.255.0/24
+_WS_SUBNET_BASE = "10.210"      # → 10.210.0.0/24 … 10.210.63.0/24 (_WS_SUBNET_COUNT=64)
 _WS_SUBNET_COUNT = 64           # 64 ateliers simultanés max, largement suffisant
 
 # Ports alloués pendant la session courante (pour dry-run où les .workshop.env
@@ -1751,10 +1751,17 @@ def _ws_used_subnets() -> set[str]:
 
 def _find_free_subnet(used_cidrs: set[str]) -> str | None:
     """Premier /24 libre du pool atelier (aucun overlap avec les CIDR existants)."""
-    try:
-        taken = [ipaddress.ip_network(c) for c in used_cidrs if c.strip()]
-    except ValueError:
-        taken = []
+    taken = []
+    for c in used_cidrs:
+        c = c.strip()
+        if not c:
+            continue
+        try:
+            taken.append(ipaddress.ip_network(c, strict=False))
+        except ValueError:
+            # CIDR malformé : ignoré individuellement — il ne doit pas masquer
+            # les CIDR valides (sinon allocation en overlap possible).
+            continue
     for i in range(_WS_SUBNET_COUNT):
         cand = ipaddress.ip_network(f"{_WS_SUBNET_BASE}.{i}.0/24")
         if not any(cand.overlaps(t) for t in taken):
@@ -1807,7 +1814,23 @@ def _ws_worktree_clean(app_dir: Path) -> bool:
             return False
         ahead = subprocess.run(["git", "-C", str(app_dir), "log", "--oneline", "@{u}..HEAD"],
                                capture_output=True, text=True, timeout=15)
-        if ahead.returncode == 0 and ahead.stdout.strip():
+        if ahead.returncode != 0:
+            # Pas d'upstream tracking → repli sur origin/<branche courante> ;
+            # si ce ref n'existe pas non plus, on refuse l'opération
+            # (fail-closed : jamais de fail-open, un commit non poussé ne
+            # doit pas pouvoir être écrasé par un pull/checkout d'atelier).
+            branch = subprocess.run(
+                ["git", "-C", str(app_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=15)
+            if branch.returncode != 0:
+                return False
+            ahead = subprocess.run(
+                ["git", "-C", str(app_dir), "log", "--oneline",
+                 f"origin/{branch.stdout.strip()}..HEAD"],
+                capture_output=True, text=True, timeout=15)
+            if ahead.returncode != 0:
+                return False
+        if ahead.stdout.strip():
             return False
         return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -1965,7 +1988,7 @@ def _update_workshop(console, app_slug: str, ref: str = "main", *, dry_run: bool
     except KeyboardInterrupt:
         con.print("\n[yellow]⚠ Interrompu — rollback git best-effort.[/yellow]")
         _ws_update_rollback(con, app_slug, prev_branch, prev_commit,
-                            reason="Interrompu", dry_run=False)
+                            reason="Interrompu", dry_run=dry_run)
         return False
 
 
@@ -2048,6 +2071,7 @@ def _ship_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
                                  dry_run=dry_run, console=con, timeout=60)
             if rc != 0:
                 con.print(f"[red]✗ git {' '.join(git_cmd)} échoué.[/red]")
+                _ws_git_restore(con, app_dir, prev_branch, prev_commit, dry_run=dry_run)
                 return False
 
         # 3. Garde-fou commit : la prod reçoit EXACTEMENT le commit testé
@@ -2090,7 +2114,7 @@ def _ship_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     except KeyboardInterrupt:
         con.print("\n[yellow]⚠ Interrompu — rollback prod best-effort.[/yellow]")
         _ship_rollback(con, app_slug, prev_branch, prev_commit,
-                       reason="Interrompu", dry_run=False)
+                       reason="Interrompu", dry_run=dry_run)
         return False
 
 

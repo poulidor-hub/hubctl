@@ -185,6 +185,12 @@ class TestFindFreeSubnet:
         used = {f"10.210.{i}.0/24" for i in range(64)}
         assert _find_free_subnet(used) is None
 
+    def test_skips_malformed_cidr_garde_les_valides(self):
+        # Fix D : un CIDR malformé est ignoré élément par élément, les valides
+        # restent honorés (avant : une seule valeur boguée vidait tout `taken`
+        # → allocation en overlap possible).
+        assert _find_free_subnet({"bogus", "10.210.0.0/24"}) == "10.210.1.0/24"
+
 
 class TestWsUsedSubnets:
     """Collecte des subnets déjà pris (réseaux docker + APP_SUBNET des ateliers)."""
@@ -331,6 +337,28 @@ class TestWsWorktreeClean:
         # non suivi et non ignoré dans les dépôts APPS/X)
         (git_app / ".workshop.env").write_text("APP_SLUG=wstest-ws\nWS_REF=main\n")
         assert _ws_worktree_clean(git_app) is True
+
+    def test_sale_si_sans_upstream_commit_non_pousse_vs_origin(self, git_app):
+        # Fix B : branche sans tracking (@{u} irrésolvable) → repli sur
+        # origin/<branche> ; un commit non poussé doit quand même bloquer.
+        _git(git_app, "branch", "--unset-upstream")
+        (git_app / "g.txt").write_text("new\n")
+        _git(git_app, "add", "-A")
+        _git(git_app, "commit", "-qm", "local ahead sans tracking")
+        assert _ws_worktree_clean(git_app) is False
+
+    def test_clean_sans_upstream_sync_avec_origin_branche(self, git_app):
+        # Fix B (compagnon du précédent, pince le chemin positif du repli) :
+        # sans tracking mais sync avec origin/<branche> → clean.
+        _git(git_app, "branch", "--unset-upstream")
+        assert _ws_worktree_clean(git_app) is True
+
+    def test_refuse_si_ni_upstream_ni_origin_branche(self, git_app):
+        # Fix B : fail-closed — ni @{u} ni origin/<branche> résolvables →
+        # on refuse l'opération (l'opérateur corrige le tracking), on ne
+        # fail-open PAS.
+        _git(git_app, "checkout", "-q", "-b", "orpheline")  # jamais poussée
+        assert _ws_worktree_clean(git_app) is False
 
 
 class TestWsResolveRef:
@@ -511,6 +539,29 @@ class TestUpdateWorkshopRollback:
             assert _update_workshop(None, "wstest", "main") is False
         assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
 
+    def test_ctrl_c_pendant_maj_dry_run_rollback_en_dry_run(self, git_app, monkeypatch):
+        """Fix A : Ctrl-C pendant un --maj --dry-run ne doit JAMAIS déclencher
+        un vrai rebuild/up (le rollback Ctrl-C codait dry_run=False en dur →
+        prod reconstruite pour un simple aperçu interrompu)."""
+        _ws_setup(git_app, monkeypatch)
+        interrupted = {"done": False}
+
+        def ki_on_first_docker(cmd, **kwargs):
+            if cmd[:1] == ["docker"]:
+                if not interrupted["done"]:
+                    interrupted["done"] = True
+                    raise KeyboardInterrupt
+                return 0
+            return _real_run_shell(cmd, **kwargs)
+
+        with patch.object(actions_mod.utils, "run_shell", side_effect=ki_on_first_docker) as rs:
+            assert _update_workshop(None, "wstest", "main", dry_run=True) is False
+        assert interrupted["done"]  # le build (dry-run) a bien été interrompu
+        # Tout appel run_shell de l'exécution (rollback compris) doit porter
+        # dry_run=True : aucun docker/git du rollback ne tourne pour de vrai.
+        assert rs.call_args_list
+        assert all(c.kwargs.get("dry_run") is True for c in rs.call_args_list)
+
 
 # ── _ship_workshop (--prod) ──
 
@@ -593,6 +644,32 @@ class TestShipNominal:
         assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
         # atelier conservé
         assert (git_app / ".workshop.env").exists()
+
+    def test_ship_echec_sync_git_restore(self, git_app, monkeypatch):
+        """Fix C : échec git en plein SYNC (fetch ok, checkout ok, reset ko) →
+        _ws_git_restore doit rejouer — sinon le tree reste sur main alors que
+        .workshop.env trace un autre ref."""
+        _ws_setup(git_app, monkeypatch)
+        # départ sur une branche propre distincte de main (poussée + tracking)
+        _git(git_app, "checkout", "-q", "-b", "integration")
+        _git(git_app, "push", "-q", "-u", "origin", "integration")
+        prev = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+
+        def sync_reset_ko(cmd, **kwargs):
+            # le reset --hard origin/main du SYNC échoue ; tout le reste est
+            # réel (git) ou simulé OK (docker)
+            if cmd[:1] == ["git"] and cmd[-3:] == ["reset", "--hard", "origin/main"]:
+                return 1
+            return _docker_ok(cmd, **kwargs)
+
+        with patch.object(actions_mod.utils, "run_shell", side_effect=sync_reset_ko), \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod, "app_make") as am:
+            assert _ship_workshop(None, "wstest") is False
+        am.assert_not_called()  # on n'atteint jamais le build prod
+        # le restore a bien rejoué : retour sur la branche/commit d'avant
+        assert _git(git_app, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "integration"
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
 
 
 # ── _create_workshop : traçage WS_REF/WS_COMMIT + APP_VERSION ──
