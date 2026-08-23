@@ -1,5 +1,34 @@
 # Changelog — Hubctl
 
+## [0.6.0] — 23 août 2026
+
+### 🚀 Atelier — test de mise à jour (`--maj`) et déploiement prod (`--prod`)
+
+- **Ajouté** : `./hubctl atelier X --maj [--ref R]` — l'atelier récupère la nouvelle version du code
+  (git fetch + checkout, `origin/main` par défaut, branche/tag via `--ref`) et la rebuild sur le clone
+  de DB : les migrations sont rejouées au boot, la montée de version est testée sur le chemin réel
+  sans risque prod. Idempotent (« déjà à jour » sans rebuild), aperçu des commits récupérés, rollback
+  git automatique sur échec (build/up/health, Ctrl-C) avec hint « DB du clone possiblement migrée ».
+- **Ajouté** : `./hubctl atelier X --prod` — déploie `origin/main` en prod une fois validé en atelier
+  (garde-fous : atelier sain, ref `main`, commit testé == `origin/main`), puis supprime l'atelier
+  (ports + disque + subnet libérés). Échec prod → rollback, atelier conservé pour diagnostic.
+- **Ajouté** : menu interactif 4 choix (mettre à jour / déployer / supprimer / annuler) avec ligne
+  d'état (`WS_REF @ WS_COMMIT`, version testée vs prod).
+- **Ajouté** : subnet dédié au projet atelier — allocation d'un /24 dans le pool `10.210.0.0/24` –
+  `10.210.63.0/24` (overlap vérifié contre les réseaux docker existants et les autres ateliers),
+  persisté dans `APP_SUBNET` de `.workshop.env`. Corrige l'impossibilité de coexister prod + atelier
+  sur les apps du template actuel (subnet épinglé → `Pool overlaps`).
+- **Ajouté** : tracing `WS_REF`/`WS_COMMIT` dans `.workshop.env` ; injection `APP_VERSION` au build
+  atelier (corrigeait une version affichée périmée — hubctl bypassait `make sync-env`).
+- **Sécurisé** : pré-checks d'hygiène git (working tree propre hors `.workshop.env`, commits poussés)
+  avant toute opération `--maj`/`--prod`.
+- **Corrigé** : timeout du build de création d'atelier 120 s → 600 s (build template à froid > 120 s
+  → création rollbackée).
+- **Tests** : ~48 nouveaux (helpers git, `_update_workshop`, `_ship_workshop`, tracing création,
+  dispatch + parser, subnet) — 458 passed. Validé E2E sur parc réel (app jetable template v2.16.0) :
+  8/8 scénarios (refus sans remote / tree sale, idempotence, maj nominale, échec build + rollback,
+  ship nominal + suppression atelier, garde-fous ref et commit, échec ship + atelier conservé).
+
 ## [0.5.2] — 17 août 2026
 
 ### ⚡ init — whitelist réseau réelle + résumé exact
