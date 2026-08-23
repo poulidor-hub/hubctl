@@ -1717,6 +1717,89 @@ def _ws_used_ports() -> set[int]:
     return used
 
 
+# ── Helpers git du cycle atelier (--maj / --prod) ──
+# L'atelier et la prod partagent le working tree APPS/X/ : toute opération git
+# est donc tracée (WS_REF/WS_COMMIT dans .workshop.env) et réversible
+# (_ws_git_restore), avec exigence d'un working tree propre en pré-check.
+
+
+def _ws_git_state(app_dir: Path) -> dict:
+    """État git de APPS/X pour le cycle atelier.
+
+    Retourne {"ok": bool, "branch": str | None, "head": str | None}.
+    ok=False si APPS/X n'est pas un repo git ou n'a pas de remote ``origin``
+    (cas dégénéré : --maj/--prod refusés, atelier marqué WS_REF=n/a).
+    """
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(app_dir), *args],
+                              capture_output=True, text=True, timeout=15)
+    try:
+        if _git("rev-parse", "--git-dir").returncode != 0:
+            return {"ok": False, "branch": None, "head": None}
+        if _git("remote", "get-url", "origin").returncode != 0:
+            return {"ok": False, "branch": None, "head": None}
+        head = _git("rev-parse", "HEAD").stdout.strip() or None
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or None
+        return {"ok": True, "branch": branch, "head": head}
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {"ok": False, "branch": None, "head": None}
+
+
+def _ws_worktree_clean(app_dir: Path) -> bool:
+    """True si le working tree est propre ET sans commits locaux non poussés.
+
+    Exigé avant --maj/--prod : l'atelier et la prod partagent APPS/X/,
+    un pull/checkout ne doit jamais écraser ou fusionner du travail local.
+    """
+    try:
+        st = subprocess.run(["git", "-C", str(app_dir), "status", "--porcelain"],
+                            capture_output=True, text=True, timeout=15)
+        if st.returncode != 0 or st.stdout.strip():
+            return False
+        ahead = subprocess.run(["git", "-C", str(app_dir), "log", "--oneline", "@{u}..HEAD"],
+                               capture_output=True, text=True, timeout=15)
+        if ahead.returncode == 0 and ahead.stdout.strip():
+            return False
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def _ws_resolve_ref(app_dir: Path, ref: str) -> str | None:
+    """Résout un ref demandé en commit sha (après fetch).
+
+    "main" → origin/main uniquement. Autre branche → origin/<branche> puis
+    <branche> locale. Un tag est résolu par son nom (auto-follow au fetch).
+    """
+    candidates = [f"origin/{ref}"] if ref == "main" else [f"origin/{ref}", ref]
+    for cand in candidates:
+        r = subprocess.run(["git", "-C", str(app_dir), "rev-parse", "--verify", cand],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    return None
+
+
+def _ws_git_restore(console, app_dir: Path, prev_branch: str | None,
+                    prev_commit: str | None, *, dry_run: bool) -> None:
+    """Restaure l'état git d'avant opération (rollback / refus de garde-fou).
+
+    Si une branche était checkoutée, on y revient (le working tree était propre,
+    sans commits d'avance : la branche pointe sur prev_commit). Sinon (detached),
+    on re-checkout prev_commit.
+    """
+    con = console or _console
+    if not prev_commit:
+        return
+    target = prev_branch if (prev_branch and prev_branch != "HEAD") else prev_commit
+    con.print(f"[bold]→ Rollback git : {target} @ {prev_commit[:8]}[/bold]")
+    utils.run_shell(["git", "-C", str(app_dir), "checkout", "--quiet", target],
+                    dry_run=dry_run, console=con, timeout=30)
+    if prev_branch and prev_branch != "HEAD":
+        utils.run_shell(["git", "-C", str(app_dir), "reset", "--hard", prev_commit],
+                        dry_run=dry_run, console=con, timeout=30)
+
+
 def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     """Crée l'atelier d'une app : clone DB + 2e instance Docker Compose.
 

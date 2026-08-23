@@ -9,6 +9,7 @@ Vérifie que :
 6. _ws_used_ports collecte les ports occupés
 """
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,10 @@ from hubctl_cli.actions import (
     _ws_compose_env,
     _ws_used_ports,
     _ws_session_ports,
+    _ws_git_state,
+    _ws_worktree_clean,
+    _ws_resolve_ref,
+    _ws_git_restore,
 )
 
 
@@ -167,3 +172,126 @@ class TestWsSessionPorts:
         _ws_session_ports.add(9999)
         _ws_session_ports.clear()
         assert len(_ws_session_ports) == 0
+
+
+# ── Helpers git du cycle atelier (--maj / --prod) ──
+
+
+def _git(app: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(app), *args],
+                          capture_output=True, text=True, timeout=15)
+
+
+@pytest.fixture()
+def git_app(tmp_path):
+    """Mini-repo git réaliste : APPS/wstest cloné depuis un bare origin (1 commit)."""
+    apps = tmp_path / "APPS"
+    apps.mkdir()
+    app = apps / "wstest"
+    app.mkdir()
+    (app / "docker-compose.yml").write_text("services: {}\n")
+    (app / ".env").write_text("API_PORT=9000\nFRONTEND_PORT=4200\nAPP_VERSION=0.1.0\n")
+    _git(app, "init", "-q", "-b", "main")
+    _git(app, "config", "user.email", "test@example.com")
+    _git(app, "config", "user.name", "test")
+    (app / "f.txt").write_text("v1\n")
+    _git(app, "add", "-A")
+    _git(app, "commit", "-qm", "v1")
+    # origin.git vit dans APPS/ : c'est là que _origin_commit / test_branche_distante
+    # le cherchent (git_app.parent / "origin.git")
+    origin = apps / "origin.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(app), str(origin)],
+                   capture_output=True, timeout=15)
+    _git(app, "remote", "add", "origin", str(origin))
+    _git(app, "fetch", "-q", "origin")
+    _git(app, "branch", "--set-upstream-to=origin/main", "main")
+    return app
+
+
+def _origin_commit(git_app: Path, message: str) -> str:
+    """Pousse un commit supplémentaire sur origin (depuis un clone jetable), retourne son sha."""
+    work = git_app.parent / f"work-{message.replace(' ', '')}"
+    subprocess.run(["git", "clone", "-q", str(git_app.parent / "origin.git"), str(work)],
+                   capture_output=True, timeout=15)
+    _git(work, "config", "user.email", "test@example.com")
+    _git(work, "config", "user.name", "test")
+    (work / "f.txt").write_text(f"{message}\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", message)
+    _git(work, "push", "-q", "origin", "main")
+    # _ws_resolve_ref lit origin/main côté git_app : il faut le rafraîchir
+    # (dans le vrai flow, hubctl fetch avant de résoudre)
+    _git(git_app, "fetch", "-q", "origin")
+    sha = _git(work, "rev-parse", "HEAD").stdout.strip()
+    return sha
+
+
+class TestWsGitState:
+    def test_ok_sur_repo_avec_origin(self, git_app):
+        st = _ws_git_state(git_app)
+        assert st["ok"] is True
+        assert st["branch"] == "main"
+        assert st["head"] and len(st["head"]) >= 7
+
+    def test_ko_sans_remote(self, git_app):
+        _git(git_app, "remote", "remove", "origin")
+        assert _ws_git_state(git_app)["ok"] is False
+
+    def test_ko_pas_un_repo(self, tmp_path):
+        d = tmp_path / "pasunrepo"
+        d.mkdir()
+        assert _ws_git_state(d)["ok"] is False
+
+
+class TestWsWorktreeClean:
+    def test_clean_apres_clone(self, git_app):
+        assert _ws_worktree_clean(git_app) is True
+
+    def test_sale_si_fichier_modifie(self, git_app):
+        (git_app / "f.txt").write_text("modif locale\n")
+        assert _ws_worktree_clean(git_app) is False
+
+    def test_sale_si_commit_non_pousse(self, git_app):
+        (git_app / "g.txt").write_text("new\n")
+        _git(git_app, "add", "-A")
+        _git(git_app, "commit", "-qm", "local ahead")
+        assert _ws_worktree_clean(git_app) is False
+
+
+class TestWsResolveRef:
+    def test_main_resout_origin_main(self, git_app):
+        new_sha = _origin_commit(git_app, "v2")
+        assert _ws_resolve_ref(git_app, "main") == new_sha
+
+    def test_branche_distante(self, git_app):
+        work = git_app.parent / "work-branch"
+        subprocess.run(["git", "clone", "-q", str(git_app.parent / "origin.git"), str(work)],
+                       capture_output=True, timeout=15)
+        _git(work, "config", "user.email", "test@example.com")
+        _git(work, "config", "user.name", "test")
+        _git(work, "checkout", "-q", "-b", "feat/x")
+        (work / "f.txt").write_text("feat\n")
+        _git(work, "add", "-A")
+        _git(work, "commit", "-qm", "feat commit")
+        _git(work, "push", "-q", "origin", "feat/x")
+        _git(git_app, "fetch", "-q", "origin")
+        sha = _git(work, "rev-parse", "HEAD").stdout.strip()
+        assert _ws_resolve_ref(git_app, "feat/x") == sha
+
+    def test_ref_introuvable(self, git_app):
+        assert _ws_resolve_ref(git_app, "nexiste_pas") is None
+
+
+class TestWsGitRestore:
+    def test_restaure_branche_et_commit(self, git_app):
+        prev_commit = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        # partir en detached sur un autre commit
+        _git(git_app, "checkout", "-q", "--detach", "HEAD~0")
+        _ws_git_restore(None, git_app, "main", prev_commit, dry_run=False)
+        assert _git(git_app, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev_commit
+
+    def test_restaure_detached_si_branche_head(self, git_app):
+        prev_commit = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        _ws_git_restore(None, git_app, "HEAD", prev_commit, dry_run=False)
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev_commit
