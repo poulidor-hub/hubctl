@@ -1948,6 +1948,125 @@ def _ws_update_rollback(console, app_slug: str, prev_branch: str | None,
     return False
 
 
+def _ship_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
+    """Déploie origin/main en prod après validation atelier, puis supprime l'atelier.
+
+    Garde-fous : l'atelier doit être sain, avoir testé « main », et origin/main
+    ne doit pas avoir avancé depuis le test (HEAD == WS_COMMIT après sync).
+    En cas d'échec prod : rollback (atelier conservé pour diagnostic).
+    """
+    con = console or _console
+    ws_slug = _ws_project(app_slug)
+    app_dir = hub_state.APPS_DIR / app_slug
+    ws_env = _ws_read_env(app_slug)
+
+    # ── Pré-checks ──
+    if not ws_env:
+        con.print(f"[red]✗ Atelier « {ws_slug} » inexistant — créez-le d'abord : ./hubctl atelier {app_slug}[/red]")
+        return False
+    if not hub_state.check_docker():
+        con.print("[red]✗ Docker inaccessible.[/red]")
+        return False
+    git_state = _ws_git_state(app_dir)
+    if not git_state["ok"]:
+        con.print(f"[red]✗ {app_dir} n'est pas un repo git avec remote origin — ship impossible.[/red]")
+        return False
+    ws_ref = ws_env.get("WS_REF", "n/a")
+    ws_commit = ws_env.get("WS_COMMIT", "")
+    if ws_ref != "main" or not ws_commit:
+        con.print(f"[red]✗ L'atelier teste « {ws_ref} » — le ship déploie uniquement origin/main.[/red]")
+        con.print(f"[dim]  Mergez vers main (release-on-main : bump + CHANGELOG), puis : "
+                  f"./hubctl atelier {app_slug} --maj && ./hubctl atelier {app_slug} --prod[/dim]")
+        return False
+    if not _ws_worktree_clean(app_dir):
+        con.print(f"[red]✗ Working tree de {app_dir} sale — commit/push ou stash avant --prod.[/red]")
+        return False
+    con.print("[bold]→ Santé atelier avant ship…[/bold]")
+    healthy = True if dry_run else _health_check(
+        ws_env.get("APP_SLUG", ws_slug), console=con, timeout=30,
+        port_override=ws_env.get("API_PORT"))
+    if not healthy:
+        con.print("[red]✗ L'atelier n'est pas sain — on ne déploie pas. Diagnostiquez puis relancez.[/red]")
+        return False
+
+    prev_commit = git_state["head"]
+    prev_branch = git_state["branch"]
+    prev_version = env_manager.read_env(app_dir / ".env").get("APP_VERSION", "?")
+
+    try:
+        # 2. SYNC sur origin/main
+        con.print("[bold]→ Synchronisation sur origin/main…[/bold]")
+        for git_cmd in (["fetch", "--quiet", "origin"],
+                        ["checkout", "--quiet", "main"],
+                        ["reset", "--hard", "origin/main"]):
+            rc = utils.run_shell(["git", "-C", str(app_dir), *git_cmd],
+                                 dry_run=dry_run, console=con, timeout=60)
+            if rc != 0:
+                con.print(f"[red]✗ git {' '.join(git_cmd)} échoué.[/red]")
+                return False
+
+        # 3. Garde-fou commit : la prod reçoit EXACTEMENT le commit testé
+        head = ws_commit if dry_run else _git_previous_commit(app_dir)
+        if head != ws_commit:
+            con.print(f"[red]✗ main a avancé depuis le test atelier (testé {ws_commit[:8]}, main {str(head)[:8]}).[/red]")
+            con.print(f"[dim]  Relancez ./hubctl atelier {app_slug} --maj puis revalidez avant --prod.[/dim]")
+            _ws_git_restore(con, app_dir, prev_branch, prev_commit, dry_run=dry_run)
+            return False
+
+        # 4-5. BUILD + UP prod (via make : sync-env injecte APP_VERSION)
+        con.print(f"[bold]→ Build prod « {app_slug} » (main @ {ws_commit[:8]})…[/bold]")
+        rc = app_make(app_slug, "build", dry_run=dry_run, console=con, timeout=600)
+        if rc != 0:
+            return _ship_rollback(con, app_slug, prev_branch, prev_commit,
+                                  reason="Build prod échoué", dry_run=dry_run)
+        con.print(f"[bold]→ Démarrage prod « {app_slug} »…[/bold]")
+        rc = app_make(app_slug, "up", dry_run=dry_run, console=con, timeout=120)
+        if rc != 0:
+            return _ship_rollback(con, app_slug, prev_branch, prev_commit,
+                                  reason="up prod échoué", dry_run=dry_run)
+
+        # 6. HEALTH prod
+        con.print("[bold]→ Santé prod (timeout 60s)…[/bold]")
+        healthy = True if dry_run else _health_check(app_slug, console=con, timeout=60)
+        if not healthy:
+            return _ship_rollback(con, app_slug, prev_branch, prev_commit,
+                                  reason="Health prod échoué", dry_run=dry_run)
+
+        # 7. CLEANUP atelier (down -v + .workshop.env — seul usage légitime de -v)
+        con.print(f"[bold]→ Suppression de l'atelier « {ws_slug} » (ports + disque libérés)…[/bold]")
+        _remove_workshop(con, app_slug, dry_run=dry_run)
+
+        # 8. BILAN
+        version_file = app_dir / "VERSION"
+        new_version = version_file.read_text().strip() if version_file.exists() else "?"
+        con.print(f"[green]✓ Prod « {app_slug} » déployée : {prev_version} → {new_version} (main @ {ws_commit[:8]}).[/green]")
+        con.print(f"[green]✓ Atelier « {ws_slug} » supprimé.[/green]")
+        return True
+    except KeyboardInterrupt:
+        con.print("\n[yellow]⚠ Interrompu — rollback prod best-effort.[/yellow]")
+        _ship_rollback(con, app_slug, prev_branch, prev_commit,
+                       reason="Interrompu", dry_run=False)
+        return False
+
+
+def _ship_rollback(console, app_slug: str, prev_branch: str | None,
+                   prev_commit: str | None, *, reason: str, dry_run: bool) -> bool:
+    """Rollback d'un --prod échoué : git restauré + rebuild prod best-effort.
+
+    L'atelier est TOUJOURS conservé (diagnostic / nouvelle tentative).
+    """
+    con = console or _console
+    app_dir = hub_state.APPS_DIR / app_slug
+    con.print(f"[red]✗ {reason}. ROLLBACK prod (atelier conservé).[/red]")
+    _ws_git_restore(con, app_dir, prev_branch, prev_commit, dry_run=dry_run)
+    if not dry_run:
+        app_make(app_slug, "build", dry_run=False, console=con, timeout=600)
+        app_make(app_slug, "up", dry_run=False, console=con, timeout=120)
+        _health_check(app_slug, console=con, timeout=60)
+    con.print("[yellow]⚠ Atelier conservé pour diagnostic — retentez --prod ou diagnostiquez dessus.[/yellow]")
+    return False
+
+
 def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     """Crée l'atelier d'une app : clone DB + 2e instance Docker Compose.
 

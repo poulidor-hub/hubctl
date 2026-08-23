@@ -441,3 +441,86 @@ class TestUpdateWorkshopRollback:
              patch.object(actions_mod, "_health_check", return_value=False):
             assert _update_workshop(None, "wstest", "main") is False
         assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
+
+
+# ── _ship_workshop (--prod) ──
+
+from hubctl_cli.actions import _ship_workshop
+
+
+class TestShipPrechecks:
+    def test_refuse_atelier_inexistant(self, tmp_path, monkeypatch):
+        apps = tmp_path / "APPS"; apps.mkdir()
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", apps)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        assert _ship_workshop(None, "wstest") is False
+
+    def test_refuse_ref_non_main(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch, ws_ref="feat/x")
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok) as rs, \
+             patch.object(actions_mod, "app_make") as am:
+            assert _ship_workshop(None, "wstest") is False
+        rs.assert_not_called()
+        am.assert_not_called()
+
+    def test_refuse_worktree_sale(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        (git_app / "f.txt").write_text("sale\n")
+        with patch.object(actions_mod, "app_make"):
+            assert _ship_workshop(None, "wstest") is False
+
+    def test_refuse_atelier_pas_sain(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        with patch.object(actions_mod, "_health_check", return_value=False), \
+             patch.object(actions_mod, "app_make") as am:
+            assert _ship_workshop(None, "wstest") is False
+        am.assert_not_called()
+
+    def test_refuse_main_avance_depuis_test(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)  # WS_COMMIT = HEAD actuel
+        new_sha = _origin_commit(git_app, "main a avance")  # origin/main avance
+        prev = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok), \
+             patch.object(actions_mod, "app_make") as am, \
+             patch.object(actions_mod, "_health_check", return_value=True):
+            assert _ship_workshop(None, "wstest") is False
+        am.assert_not_called()
+        # git RÉEL : fetch/checkout/reset réels (side_effect laisse passer git),
+        # garde-fou déclenché (origin/main != WS_COMMIT), puis git restauré à prev
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
+        assert _git(git_app, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+
+
+class TestShipNominal:
+    def test_ship_succes_supprime_atelier(self, git_app, monkeypatch):
+        # VERSION trackée sur main avant setup (bilan : 0.1.0 → 0.2.0) — laissée
+        # non suivie, elle rendrait le worktree sale au pré-check --prod
+        (git_app / "VERSION").write_text("0.2.0\n")
+        _git(git_app, "add", "-A")
+        _git(git_app, "commit", "-qm", "VERSION 0.2.0")
+        _git(git_app, "push", "-q", "origin", "main")
+        _ws_setup(git_app, monkeypatch)  # atelier testant main@HEAD, origin/main == HEAD
+        prev = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok), \
+             patch.object(actions_mod, "app_make", return_value=0) as am, \
+             patch.object(actions_mod, "_health_check", return_value=True):
+            assert _ship_workshop(None, "wstest") is True
+        # build + up prod via make, dans cet ordre
+        targets = [c.args[1] for c in am.call_args_list]
+        assert targets == ["build", "up"]
+        # atelier supprimé : plus de .workshop.env (unlink RÉEL dans tmp_path ;
+        # le down -v est simulé par _docker_ok)
+        assert not (git_app / ".workshop.env").exists()
+        # git toujours sur main@commit testé
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
+
+    def test_ship_echec_build_rollback_et_atelier_conserve(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        prev = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok), \
+             patch.object(actions_mod, "app_make", return_value=1), \
+             patch.object(actions_mod, "_health_check", return_value=True):
+            assert _ship_workshop(None, "wstest") is False
+        assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
+        # atelier conservé
+        assert (git_app / ".workshop.env").exists()
