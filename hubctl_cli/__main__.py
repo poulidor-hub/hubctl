@@ -49,8 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("update", help="Mise a jour du Hub et de toutes les apps (git pull + rebuild)")
 
     # atelier
-    atelier_parser = sub.add_parser("atelier", help="Creer, deployer ou supprimer l'atelier d'une app")
+    atelier_parser = sub.add_parser(
+        "atelier", help="Creer, mettre a jour, deployer en prod ou supprimer l'atelier d'une app")
     atelier_parser.add_argument("app", help="Slug de l'app")
+    majprod = atelier_parser.add_mutually_exclusive_group()
+    majprod.add_argument("--maj", action="store_true", dest="atelier_maj", default=False,
+                         help="Mettre a jour l'atelier : git fetch + checkout + rebuild -ws")
+    majprod.add_argument("--prod", action="store_true", dest="atelier_prod", default=False,
+                         help="Deployer origin/main en prod puis supprimer l'atelier")
+    atelier_parser.add_argument("--ref", default=None, metavar="REF",
+                                help="Branche ou tag a tester avec --maj (defaut: main)")
 
     # init — bootstrap
     init_parser = sub.add_parser("init", help="Bootstrap automatique du Hub (genere .env, demarre, verifie la sante)")
@@ -277,7 +285,8 @@ def _run(args) -> int:
         console = RichConsole()
         _resolve_mode(args)
         try:
-            action_atelier(console=console, app_slug=args.app, dry_run=global_dry_run)
+            action_atelier(console=console, app_slug=args.app, dry_run=global_dry_run,
+                           maj=args.atelier_maj, prod=args.atelier_prod, ref=args.ref)
             return 0
         except Exception as e:
             print(f"❌ atelier a echoue : {e}")

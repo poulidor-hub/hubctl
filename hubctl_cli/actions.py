@@ -2262,11 +2262,14 @@ def _remove_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     return True
 
 
-def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
-    """Atelier simplifié : crée ou supprime l'atelier d'une app.
+def action_atelier(console, app_slug: str, *, dry_run: bool = False,
+                   maj: bool = False, prod: bool = False, ref: str | None = None) -> None:
+    """Atelier d'une app : créer / mettre à jour (--maj) / déployer en prod (--prod) / supprimer.
 
-    - Si l'atelier n'existe pas (pas de .workshop.env) → création (clone DB + 2e instance Compose)
-    - Si l'atelier existe déjà → prompt 2 choix (supprimer / annuler)
+    - Atelier inexistant, sans flags → création (clone DB + 2e instance Compose)
+    - --maj [--ref R] → _update_workshop (test d'une montée de version sur le clone)
+    - --prod → _ship_workshop (déploie origin/main validé, puis supprime l'atelier)
+    - Sinon (interactif, TTY requis) → menu 4 choix
     """
     con = console or _console
     import sys as _sys
@@ -2282,27 +2285,57 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False) -> None:
         con.print(f"[red]✗ docker-compose.yml introuvable dans {app_dir}[/red]")
         return
 
+    if ref is not None and not maj:
+        con.print("[red]✗ --ref n'est utilisable qu'avec --maj.[/red]")
+        return
+    if maj and prod:
+        con.print("[red]✗ --maj et --prod sont mutuellement exclusifs.[/red]")
+        return
+
+    # ── FLAGS (scriptables, non interactifs) ──
+    # NB : le refus « atelier inexistant » est logé dans _update_workshop /
+    # _ship_workshop eux-mêmes (préchecks Task 2/3) — on route donc vers eux
+    # sans vérifier _ws_exists au préalable.
+    if maj:
+        _update_workshop(con, app_slug, ref or "main", dry_run=dry_run)
+        return
+    if prod:
+        _ship_workshop(con, app_slug, dry_run=dry_run)
+        return
+
     # ── CRÉATION (atelier inexistant) ──
     if not _ws_exists(app_slug):
         _create_workshop(con, app_slug, dry_run=dry_run)
         return
 
-    # ── ATELIER EXISTANT ──
-    con.print(f"[yellow]⚠ Atelier « {ws_slug} » déjà existant.[/yellow]")
-    con.print("   1) [bold]supprimer[/bold] — down -v + suppression config")
-    con.print("   2) [bold]annuler[/bold]")
+    # ── MENU INTERACTIF (atelier existant) ──
+    ws = _ws_read_env(app_slug)
+    ws_ref = ws.get("WS_REF", "?")
+    ws_commit = (ws.get("WS_COMMIT") or "")[:8] or "?"
+    version_file = app_dir / "VERSION"
+    version = version_file.read_text().strip() if version_file.exists() else "?"
+    con.print(f"[yellow]⚠ Atelier « {ws.get('APP_SLUG', ws_slug)} » actif — "
+              f"teste {ws_ref} @ {ws_commit} (code {version})[/yellow]")
+    con.print("   1) [bold]mettre à jour[/bold] — fetch + rebuild sur origin/main")
+    con.print("   2) [bold]déployer en prod[/bold] — origin/main validé puis suppression de l'atelier")
+    con.print("   3) [bold]supprimer[/bold] — down -v + suppression config")
+    con.print("   4) [bold]annuler[/bold]")
 
     if not _sys.stdin.isatty():
-        con.print("[dim]Mode non interactif — annulation.[/dim]")
+        con.print("[dim]Mode non interactif — annulation. (Utilisez --maj / --prod pour scripter.)[/dim]")
         return
 
     try:
-        choice = input("   Choix [1/2] : ").strip()
+        choice = input("   Choix [1-4] : ").strip()
     except (EOFError, KeyboardInterrupt):
         con.print("[dim]Annulé.[/dim]")
         return
 
     if choice == "1":
+        _update_workshop(con, app_slug, "main", dry_run=dry_run)
+    elif choice == "2":
+        _ship_workshop(con, app_slug, dry_run=dry_run)
+    elif choice == "3":
         _remove_workshop(con, app_slug, dry_run=dry_run)
     else:
         con.print("[dim]Annulé.[/dim]")

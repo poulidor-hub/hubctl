@@ -581,3 +581,49 @@ class TestCreateWorkshopTracing:
             assert _create_workshop(None, "noapp") is True
         ws = env_manager.read_env(app / ".workshop.env")
         assert ws["WS_REF"] == "n/a" and ws["WS_COMMIT"] == "n/a"
+
+
+# ── action_atelier : dispatch flags ──
+
+from hubctl_cli.actions import action_atelier
+
+
+class TestActionAtelierDispatch:
+    def test_ref_sans_maj_refuse(self, tmp_path, monkeypatch):
+        app = tmp_path / "APPS" / "wstest"; app.mkdir(parents=True)
+        (app / "docker-compose.yml").write_text("services: {}\n")
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", tmp_path / "APPS")
+        with patch.object(actions_mod, "_update_workshop") as uw:
+            action_atelier(None, "wstest", ref="feat/x")
+        uw.assert_not_called()
+
+    def test_maj_sur_atelier_inexistant_appelle_update_qui_refuse(self, tmp_path, monkeypatch):
+        app = tmp_path / "APPS" / "wstest"; app.mkdir(parents=True)
+        (app / "docker-compose.yml").write_text("services: {}\n")
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", tmp_path / "APPS")
+        with patch.object(actions_mod, "_create_workshop") as cw, \
+             patch.object(actions_mod, "_update_workshop", return_value=False) as uw:
+            action_atelier(None, "wstest", maj=True)
+        cw.assert_not_called()
+        uw.assert_called_once()
+
+    def test_maj_atelier_existant_route_vers_update(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        with patch.object(actions_mod, "_update_workshop", return_value=True) as uw:
+            action_atelier(None, "wstest", maj=True, ref="feat/x")
+        uw.assert_called_once()
+        assert uw.call_args.args[2] == "feat/x"  # positionnel ref après (console, slug)
+
+    def test_prod_atelier_existant_route_vers_ship(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        with patch.object(actions_mod, "_ship_workshop", return_value=True) as sw:
+            action_atelier(None, "wstest", prod=True)
+        sw.assert_called_once()
+
+    def test_menu_non_tty_annule(self, git_app, monkeypatch):
+        _ws_setup(git_app, monkeypatch)
+        with patch("sys.stdin") as stdin, \
+             patch.object(actions_mod, "_remove_workshop") as rw:
+            stdin.isatty.return_value = False
+            action_atelier(None, "wstest")  # pas de flags → menu
+        rw.assert_not_called()

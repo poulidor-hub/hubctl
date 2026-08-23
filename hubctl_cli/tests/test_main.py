@@ -1,4 +1,7 @@
 from unittest import mock
+
+import pytest
+
 from hubctl_cli.__main__ import build_parser
 from hubctl_cli import __main__ as m
 
@@ -15,6 +18,28 @@ def test_parser_defaults():
     args = p.parse_args([])
     assert args.no_anim is False
     assert args.global_dry_run is False
+
+
+class TestAtelierFlags:
+    def test_maj(self):
+        a = build_parser().parse_args(["atelier", "X", "--maj"])
+        assert a.atelier_maj is True and a.atelier_prod is False and a.ref is None
+
+    def test_maj_ref(self):
+        a = build_parser().parse_args(["atelier", "X", "--maj", "--ref", "feat/x"])
+        assert a.atelier_maj is True and a.ref == "feat/x"
+
+    def test_prod(self):
+        a = build_parser().parse_args(["atelier", "X", "--prod"])
+        assert a.atelier_prod is True and a.atelier_maj is False
+
+    def test_maj_prod_exclusifs(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["atelier", "X", "--maj", "--prod"])
+
+    def test_prod_global_pas_ecrase(self):
+        a = build_parser().parse_args(["--prod", "atelier", "X"])
+        assert a.prod is True and a.atelier_prod is False
 
 
 def test_non_interactive_exits_cleanly_without_menu(monkeypatch):
