@@ -126,6 +126,7 @@ def _replicate(*, on_log=None) -> dict:
         key = vp.with_suffix(".key")
         if key.exists():
             _copy_stream_atomic(key, loc / coffre.VAULT_KEY_FILENAME)
+            copied.append(coffre.VAULT_KEY_FILENAME)
         copied.append(pra_config.VAULT_FILENAME)
         cfg["last_vault_sha256"] = digest
 

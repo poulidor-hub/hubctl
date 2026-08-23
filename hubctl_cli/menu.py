@@ -598,10 +598,15 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
             try:
                 vault.change_passphrase(pw1)
                 vault.save()
-                vault.store_passphrase(pw1)
-                pause(canvas, Text("✓ Passphrase changée.", style="green"))
             except Exception as e:
                 pause(canvas, Text(f"✗ Erreur lors du changement de passphrase :\n{e}", style="red"))
+                continue
+            # Resynchroniser la clé locale (non bloquant : la saisie restera proposée si échec)
+            try:
+                vault.store_passphrase(pw1)
+            except OSError:
+                pass
+            pause(canvas, Text("✓ Passphrase changée.", style="green"))
             continue
         if sel == "🔄 Emplacement PRA":
             _pra_location_menu(canvas)
