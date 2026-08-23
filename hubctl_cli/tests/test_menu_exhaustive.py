@@ -276,3 +276,39 @@ def test_view_coffre_change_passphrase(monkeypatch):
     menu.view_coffre(mock.Mock(), vault_mgr)
     vault.change_passphrase.assert_called_once_with("newpass")
     vault.save.assert_called()
+    vault.store_passphrase.assert_called_once_with("newpass")  # la clé suit le coffre
+
+
+def test_view_coffre_locked_autounlock_without_prompt(monkeypatch):
+    """Coffre verrouillé + clé valide → déverrouillé sans saisie."""
+    vault = mock.Mock()
+    vault.is_locked = True
+    vault.unlock_stored.return_value = True
+    vault.list_entries.return_value = ["hub"]
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.check_divergence.return_value = {}
+    seq = iter(["← Retour"])
+    prompted = []
+    monkeypatch.setattr(menu.widgets, "select", lambda *a, **k: next(seq))
+    monkeypatch.setattr(menu.widgets, "password",
+                        lambda *a, **k: prompted.append(1) or "x")
+    monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
+    menu.view_coffre(mock.Mock(), vault_mgr)
+    assert prompted == []
+
+
+def test_view_coffre_locked_manual_then_migration(monkeypatch):
+    """Pas de clé → saisie, puis écriture de la clé (migration)."""
+    vault = mock.Mock()
+    vault.is_locked = True
+    vault.unlock_stored.return_value = False
+    vault.unlock.return_value = True
+    vault.list_entries.return_value = ["hub"]
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.check_divergence.return_value = {}
+    seq = iter(["← Retour"])
+    monkeypatch.setattr(menu.widgets, "select", lambda *a, **k: next(seq))
+    monkeypatch.setattr(menu.widgets, "password", lambda *a, **k: "manual")
+    monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
+    menu.view_coffre(mock.Mock(), vault_mgr)
+    vault.store_passphrase.assert_called_once_with("manual")

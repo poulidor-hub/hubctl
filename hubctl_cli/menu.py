@@ -542,11 +542,16 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
         pause(canvas, Text("Coffre indisponible.", style="yellow"))
         return
     with _modal(canvas):
-        if vault.is_locked:
+        if vault.is_locked and not vault.unlock_stored():
             pw = widgets.password(canvas, "Passphrase du coffre :")
             if pw is widgets.ESC or pw is None or not pw or not vault.unlock(pw):
                 pause(canvas, Text("Coffre verrouillé.", style="red"))
                 return
+            # Migration : mémoriser la passphrase pour les prochains accès.
+            try:
+                vault.store_passphrase(pw)
+            except OSError:
+                pass  # non bloquant : la saisie restera proposée
 
     while True:
         divs = vault_mgr.check_divergence() if vault_mgr else {}
@@ -593,6 +598,7 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
             try:
                 vault.change_passphrase(pw1)
                 vault.save()
+                vault.store_passphrase(pw1)
                 pause(canvas, Text("✓ Passphrase changée.", style="green"))
             except Exception as e:
                 pause(canvas, Text(f"✗ Erreur lors du changement de passphrase :\n{e}", style="red"))
