@@ -258,3 +258,67 @@ def test_validate_git_url_rejects_file_and_local_paths():
         "",
     ]:
         assert _validate_git_url(bad) is not None, f"{bad!r} devrait être rejeté"
+
+
+# ── Passphrase auto-générée (parc.vault.key) ──
+
+
+def test_generate_passphrase_strong_and_unique():
+    from hubctl_cli import coffre
+    a = coffre.generate_passphrase()
+    b = coffre.generate_passphrase()
+    assert len(a) >= 32
+    assert a != b
+
+
+def test_key_path_sibling_of_vault(tmp_path):
+    from hubctl_cli.coffre import Vault
+    v = Vault(tmp_path / "parc.vault.enc")
+    assert v.key_path == tmp_path / "parc.vault.key"
+
+
+def test_store_load_passphrase_roundtrip(tmp_path):
+    import os
+    from hubctl_cli.coffre import Vault
+    v = Vault(tmp_path / "parc.vault.enc")
+    v.store_passphrase("s3cr3t-key")
+    assert v.load_passphrase() == "s3cr3t-key"
+    assert os.stat(v.key_path).st_mode & 0o777 == 0o600
+
+
+def test_load_passphrase_absent_returns_none(tmp_path):
+    from hubctl_cli.coffre import Vault
+    v = Vault(tmp_path / "parc.vault.enc")
+    assert v.load_passphrase() is None
+
+
+def test_load_passphrase_empty_file_returns_none(tmp_path):
+    from hubctl_cli.coffre import Vault
+    v = Vault(tmp_path / "parc.vault.enc")
+    v.key_path.write_text("\n")
+    assert v.load_passphrase() is None
+
+
+def test_unlock_stored_roundtrip(tmp_path):
+    from hubctl_cli.coffre import Vault
+    p = tmp_path / "parc.vault.enc"
+    v = Vault(p)
+    v.unlock("master")
+    v.save()
+    v.store_passphrase("master")
+    v2 = Vault(p)
+    assert v2.is_locked is True
+    assert v2.unlock_stored() is True
+    assert v2.is_locked is False
+
+
+def test_unlock_stored_wrong_key_returns_false(tmp_path):
+    from hubctl_cli.coffre import Vault
+    p = tmp_path / "parc.vault.enc"
+    v = Vault(p)
+    v.unlock("master")
+    v.save()
+    v.store_passphrase("autre-chose")
+    v2 = Vault(p)
+    assert v2.unlock_stored() is False
+    assert v2.is_locked is True

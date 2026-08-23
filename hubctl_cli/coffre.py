@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,6 +13,16 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from hubctl_cli import env_manager, hub_state
 
 MAGIC = b"HUBCTLV1"
+
+# Fichier clé voisin du coffre : contient la passphrase en clair (chmod 0600).
+# Rôle « sauvegarde » du coffre (lecture seule disque) : les .env protégés sont
+# déjà en clair sur le disque serveur — la clé côte-à-côte est assumée (cf. spec).
+VAULT_KEY_FILENAME = "parc.vault.key"
+
+
+def generate_passphrase() -> str:
+    """Passphrase forte pour le coffre (~43 caractères urlsafe)."""
+    return secrets.token_urlsafe(32)
 
 
 def _atomic_write_bytes(path: Path, blob: bytes) -> None:
@@ -120,6 +131,31 @@ class Vault:
     def lock(self) -> None:
         self._fernet = None
         self._data = None
+
+    # ── Passphrase stockée localement (parc.vault.key) ──
+
+    @property
+    def key_path(self) -> Path:
+        return self.path.with_suffix(".key")
+
+    def load_passphrase(self) -> str | None:
+        """Lit la passphrase depuis le fichier clé. None si absente/vide/illisible."""
+        try:
+            raw = self.key_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return raw.strip() or None
+
+    def store_passphrase(self, pw: str) -> None:
+        """Écrit la passphrase dans le fichier clé (atomique, chmod 0600)."""
+        _atomic_write_bytes(self.key_path, pw.encode("utf-8"))
+
+    def unlock_stored(self) -> bool:
+        """Tente le déverrouillage via la clé locale. False si absente/invalide."""
+        stored = self.load_passphrase()
+        if not stored:
+            return False
+        return self.unlock(stored)
 
     def get_entry(self, key: str) -> dict:
         assert self._data is not None, "vault verrouillé"
