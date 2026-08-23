@@ -2090,6 +2090,8 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
         con.print(f"[dim]  Atelier « {ws_slug} » déjà existant.[/dim]")
         return False
 
+    git_state = _ws_git_state(app_dir)
+
     con.print(f"[bold]→ Création de l'atelier « {ws_slug} »…[/bold]")
 
     try:
@@ -2113,6 +2115,9 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             "API_PORT": str(ws_api),
             "FRONTEND_PORT": str(ws_fe),
             "FRONTEND_HTTPS_PORT": str(ws_fe + 1),
+            # Tracing du code testé en atelier (cycle --maj/--prod)
+            "WS_REF": git_state["branch"] if git_state["ok"] else "n/a",
+            "WS_COMMIT": git_state["head"] if git_state["ok"] else "n/a",
         }
 
         # 2. Écrire .workshop.env
@@ -2137,6 +2142,11 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
 
         # 4. docker compose -p X-ws build + up
         compose_env = {**os.environ, **ws_config}
+        version_file = app_dir / "VERSION"
+        if version_file.exists():
+            # hubctl bypass make sync-env : sans ça, l'atelier afficherait
+            # la version périmée du .env prod.
+            compose_env["APP_VERSION"] = version_file.read_text().strip()
         con.print(f"[bold]→ Build & démarrage de {ws_slug}…[/bold]")
         rc = utils.run_shell(
             ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "build"],

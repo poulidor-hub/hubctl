@@ -11,6 +11,7 @@ Vérifie que :
 import os
 import subprocess
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 import pytest
@@ -524,3 +525,59 @@ class TestShipNominal:
         assert _git(git_app, "rev-parse", "HEAD").stdout.strip() == prev
         # atelier conservé
         assert (git_app / ".workshop.env").exists()
+
+
+# ── _create_workshop : traçage WS_REF/WS_COMMIT + APP_VERSION ──
+
+from hubctl_cli.actions import _create_workshop
+
+_real_subprocess_run = subprocess.run
+
+
+def _sub_docker_ok(cmd, *args, **kwargs):
+    """subprocess.run side-effect : docker simulé (aucun volume créé sur
+    l'hôte), git réellement exécuté — pendant subprocess de _docker_ok."""
+    if cmd[:1] == ["docker"]:
+        return mock.Mock(returncode=0)
+    return _real_subprocess_run(cmd, *args, **kwargs)
+
+
+class TestCreateWorkshopTracing:
+    def test_create_ecrit_ws_ref_commit_et_app_version(self, git_app, monkeypatch):
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        head = _git(git_app, "rev-parse", "HEAD").stdout.strip()
+        (git_app / "VERSION").write_text("0.2.0\n")
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(None, "wstest") is True
+        ws = env_manager.read_env(git_app / ".workshop.env")
+        assert ws["WS_REF"] == "main"
+        assert ws["WS_COMMIT"] == head
+        # APP_VERSION injectée dans l'env du build atelier
+        # (filtre traduit : la cmd réelle est ["docker","compose","-p",…,"build"],
+        #  le filtre du brief [:3]==["docker","compose","build"] ne matchait jamais)
+        build_calls = [c for c in rs.call_args_list
+                       if c.args and c.args[0][:2] == ["docker", "compose"]
+                       and "build" in c.args[0]]
+        assert build_calls
+        assert build_calls[0].kwargs.get("env", {}).get("APP_VERSION") == "0.2.0"
+
+    def test_create_sans_git_ecrit_na(self, tmp_path, monkeypatch):
+        app = tmp_path / "APPS" / "noapp"; app.mkdir(parents=True)
+        (app / "docker-compose.yml").write_text("services: {}\n")
+        (app / ".env").write_text("API_PORT=9000\nFRONTEND_PORT=4200\n")
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", tmp_path / "APPS")
+        # returncode=1 (et non 0 comme dans le brief) : avec 0 les checks git de
+        # _ws_git_state passeraient et head/branch seraient des Mocks → WS_REF
+        # ne vaudrait jamais "n/a". Il faut un returncode non nul pour le
+        # chemin « pas un repo git ».
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0), \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", return_value=mock.Mock(returncode=1)):
+            assert _create_workshop(None, "noapp") is True
+        ws = env_manager.read_env(app / ".workshop.env")
+        assert ws["WS_REF"] == "n/a" and ws["WS_COMMIT"] == "n/a"
