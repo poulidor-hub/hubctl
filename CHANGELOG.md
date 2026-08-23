@@ -1,5 +1,22 @@
 # Changelog — Hubctl
 
+## [0.7.0] — 24 août 2026
+
+### 🔐 Coffre — passphrase auto-générée (fin de la saisie manuelle)
+
+- **Ajouté** : à la création du coffre, la passphrase est générée automatiquement
+  (`secrets.token_urlsafe`) et conservée dans `hubctl_cli/vault/parc.vault.key`
+  (chmod 0600, gitignoré) — zéro saisie, déverrouillage silencieux à chaque démarrage
+  (TUI, sous-menu Coffre, `hubctl vault …`).
+- **Ajouté** : migration douce des coffres existants — la passphrase est demandée une
+  dernière fois puis mémorisée ; « 🔑 Changer la passphrase » resynchronise la clé.
+- **Ajouté** : kit PRA — `parc.vault.key` est répliqué avec le coffre (sans elle le kit
+  serait indéchiffrable) ; `pra-restore` lit la clé du kit (repli saisie pour les kits
+  anciens).
+- **Sécurité (assumée)** : la clé vit en clair à côté du coffre — le coffre est une
+  sauvegarde lecture-seule, pas une frontière (les `.env` sont déjà en clair sur disque).
+- **Tests** : +19 (4 remplacés — 479 passed).
+
 ## [0.6.1] — 23 août 2026
 
 ### ⚡ Revue finale — sûreté dry-run + garde-fous
