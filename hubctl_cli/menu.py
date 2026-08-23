@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.text import Text
 
 from hubctl_cli import actions, hub_state, keys, utils, widgets
-from hubctl_cli import pra_config, pra_replicate
+from hubctl_cli import coffre, pra_config, pra_replicate
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.vault_manager import VaultManager, restore_all
 
@@ -760,40 +760,34 @@ def _require_vault(canvas: Canvas, vault_mgr) -> None:
         return
     with _modal(canvas):
         if vault.path.exists():
-            canvas.render(Text("🔐 Coffre — passphrase obligatoire.", style="bold cyan"))
-            while True:
-                pw = widgets.password(canvas, "Passphrase du coffre :")
-                if pw is widgets.ESC or pw is None:
-                    canvas.render(Text("À bientôt.", style="bold"))
-                    raise SystemExit(0)
-                if pw and vault.unlock(pw):
-                    break
-                canvas.render(Text("Passphrase incorrecte.", style="red"))
-                pause(canvas)
+            if vault.unlock_stored():
+                pass  # déverrouillage silencieux via parc.vault.key
+            else:
+                canvas.render(Text("🔐 Coffre — passphrase obligatoire.", style="bold cyan"))
+                while True:
+                    pw = widgets.password(canvas, "Passphrase du coffre :")
+                    if pw is widgets.ESC or pw is None:
+                        canvas.render(Text("À bientôt.", style="bold"))
+                        raise SystemExit(0)
+                    if pw and vault.unlock(pw):
+                        break
+                    canvas.render(Text("Passphrase incorrecte.", style="red"))
+                    pause(canvas)
+                # Migration : mémoriser la passphrase → prochains démarrages silencieux.
+                try:
+                    vault.store_passphrase(pw)
+                except OSError:
+                    pass  # non bloquant : la saisie restera proposée
         else:
             canvas.render(Text(
                 "🔐 Création du coffre (obligatoire)\n\n"
-                "Cette passphrase protège et sauvegarde tous les secrets du parc.\n"
-                "⚠️  IRRÉCUPÉRABLE SI PERDUE.", style="bold cyan"))
-            while True:
-                pw = widgets.password(canvas, "Nouvelle passphrase du coffre :")
-                if pw is widgets.ESC or pw is None:
-                    canvas.render(Text("À bientôt.", style="bold"))
-                    raise SystemExit(0)
-                if not pw:
-                    canvas.render(Text("Passphrase vide — recommence.", style="red"))
-                    pause(canvas)
-                    continue
-                pw2 = widgets.password(canvas, "Confirmer la passphrase :")
-                if pw2 is widgets.ESC or pw2 is None:
-                    canvas.render(Text("À bientôt.", style="bold"))
-                    raise SystemExit(0)
-                if pw != pw2:
-                    canvas.render(Text("Les passphrases ne correspondent pas — recommence.", style="red"))
-                    pause(canvas)
-                    continue
-                vault.unlock(pw)
-                break
+                "Passphrase générée automatiquement — aucune saisie nécessaire.\n"
+                "Conservée à côté du coffre (parc.vault.key, chmod 0600) et\n"
+                "répliquée sur le kit PRA.", style="bold cyan"))
+            pw = coffre.generate_passphrase()
+            vault.unlock(pw)
+            vault.store_passphrase(pw)
+            pause(canvas)
     if vault_mgr:
         summary = vault_mgr.backup_all()
         canvas.render(Text(

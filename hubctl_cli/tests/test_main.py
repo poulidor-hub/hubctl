@@ -91,66 +91,66 @@ def test_layout_installed_before_choose_mode():
     assert order.index("layout") < order.index("mode")
 
 
-def test_require_vault_existing_prompts_and_backs_up(monkeypatch):
-    from unittest import mock
+# ── _require_vault : déverrouillage / création du coffre ──
+
+
+def test_require_vault_autounlock_with_stored_key(monkeypatch):
+    """Clé locale valide → déverrouillage silencieux, aucune saisie."""
     from hubctl_cli import menu
     canvas = mock.Mock()
     vault = mock.Mock()
     vault.path.exists.return_value = True
+    vault.unlock_stored.return_value = True
+    vault_mgr = mock.Mock(vault=vault)
+    vault_mgr.backup_all.return_value = {"env": 1, "files": 1}
+    prompted = []
+    monkeypatch.setattr(menu.widgets, "password",
+                        lambda *a, **k: prompted.append(1) or "pw")
+    monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
+    monkeypatch.setattr(menu, "_offer_pra_setup", lambda c: None)
+    menu._require_vault(canvas, vault_mgr)
+    assert prompted == []  # aucune saisie
+    vault_mgr.backup_all.assert_called_once()
+
+
+def test_require_vault_existing_prompts_and_backs_up(monkeypatch):
+    """Pas de clé → saisie manuelle, puis migration (écriture de la clé)."""
+    from hubctl_cli import menu
+    canvas = mock.Mock()
+    vault = mock.Mock()
+    vault.path.exists.return_value = True
+    vault.unlock_stored.return_value = False
     vault.unlock.return_value = True
     vault_mgr = mock.Mock(vault=vault)
     vault_mgr.backup_all.return_value = {"env": 1, "files": 1}
     monkeypatch.setattr(menu.widgets, "password", lambda *a, **k: "pw")
     monkeypatch.setattr(menu, "pause", lambda c: None)
+    monkeypatch.setattr(menu, "_offer_pra_setup", lambda c: None)
     menu._require_vault(canvas, vault_mgr)
     vault.unlock.assert_called_once_with("pw")
+    vault.store_passphrase.assert_called_once_with("pw")  # migration
     vault_mgr.backup_all.assert_called_once()
 
 
-def test_require_vault_creates_when_absent(monkeypatch):
-    from unittest import mock
+def test_require_vault_create_autogenerates_without_prompt(monkeypatch):
+    """Création : passphrase générée + stockée, zéro interaction."""
     from hubctl_cli import menu
     canvas = mock.Mock()
     vault = mock.Mock()
     vault.path.exists.return_value = False
     vault_mgr = mock.Mock(vault=vault)
     vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
-    monkeypatch.setattr(menu.widgets, "password", lambda *a, **k: "newpw")
-    monkeypatch.setattr(menu, "pause", lambda c: None)
-    menu._require_vault(canvas, vault_mgr)
-    vault.unlock.assert_called_once_with("newpw")
-    vault_mgr.backup_all.assert_called_once()
-
-
-def test_require_vault_create_confirms_and_rejects_mismatch(monkeypatch):
-    from unittest import mock
-    from hubctl_cli import menu
-    canvas = mock.Mock()
-    vault = mock.Mock()
-    vault.path.exists.return_value = False
-    vault_mgr = mock.Mock(vault=vault)
-    vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
+    prompted = []
     monkeypatch.setattr(menu.widgets, "password",
-                        mock.Mock(side_effect=["aaa", "bbb", "good", "good"]))
+                        lambda *a, **k: prompted.append(1) or "x")
     monkeypatch.setattr(menu, "pause", lambda c: None)
+    monkeypatch.setattr(menu, "_offer_pra_setup", lambda c: None)
     menu._require_vault(canvas, vault_mgr)
-    vault.unlock.assert_called_once_with("good")
+    assert prompted == []
+    pw = vault.unlock.call_args[0][0]
+    assert len(pw) >= 32  # token_urlsafe(32) ≈ 43 caractères
+    vault.store_passphrase.assert_called_once_with(pw)
     vault_mgr.backup_all.assert_called_once()
-
-
-def test_require_vault_create_empty_then_valid(monkeypatch):
-    from unittest import mock
-    from hubctl_cli import menu
-    canvas = mock.Mock()
-    vault = mock.Mock()
-    vault.path.exists.return_value = False
-    vault_mgr = mock.Mock(vault=vault)
-    vault_mgr.backup_all.return_value = {"env": 0, "files": 0}
-    monkeypatch.setattr(menu.widgets, "password",
-                        mock.Mock(side_effect=["", "x", "x"]))
-    monkeypatch.setattr(menu, "pause", lambda c: None)
-    menu._require_vault(canvas, vault_mgr)
-    vault.unlock.assert_called_once_with("x")
 
 
 # ── Parser: new simplified subcommands ──
