@@ -1,5 +1,18 @@
 # Changelog — Hubctl
 
+## [0.7.1] — 31 août 2026
+
+### 🔧 Ports réels dans l'outillage
+
+- **Corrigé** : `OIDC_ISSUER` est réécrit automatiquement quand `setup_wizard`
+  change `HUB_API_PORT` (si auto-généré ; un issuer personnalisé n'est jamais
+  touché) — le template initial reste cohérent (`http://{host}:{port}`).
+- **Corrigé** : le résumé post-init affiche les URLs avec les ports réels du
+  `.env` (`HUB_FRONTEND_PORT`/`HUB_HTTPS_PORT`/`HUB_API_PORT`) au lieu de
+  `:80`/`:8000` en dur.
+- **Tests** : +4 (résumé avec/sans env, cohérence issuer/port, réécriture wizard
+  + préservation d'un issuer personnalisé).
+
 ## [0.7.0] — 24 août 2026
 
 ### 🔐 Coffre — passphrase auto-générée (fin de la saisie manuelle)
