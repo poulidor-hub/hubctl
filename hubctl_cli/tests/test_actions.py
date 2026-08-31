@@ -1400,3 +1400,53 @@ def test_action_seed_export_default_filename(tmp_path, monkeypatch):
     assert len(exports) == 1
     assert exports[0].name.startswith("seed-export-")
     assert exports[0].name.endswith(".yaml")
+
+
+# ── Task 6 : ports réels dans résumé + OIDC_ISSUER (correctif changement de port) ──
+
+
+def test_summary_urls_uses_configured_ports(tmp_path, monkeypatch):
+    """Le résumé affiche les ports du .env, pas 80/8000 en dur."""
+    env_dir = tmp_path / "HUB_base"
+    env_dir.mkdir()
+    (env_dir / ".env").write_text(
+        "HUB_FRONTEND_PORT=18080\nHUB_HTTPS_PORT=18443\nHUB_API_PORT=18000\n")
+    # HUB_DIR = dossier contenant le .env (cf. _mock_env_path)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", env_dir)
+    urls = dict(actions._summary_urls("192.0.2.7"))
+    assert urls["Hub (HTTPS)"] == "https://192.0.2.7:18443"
+    assert urls["Hub (HTTP)"] == "http://192.0.2.7:18080"
+    assert urls["API"] == "http://192.0.2.7:18000"
+
+
+def test_summary_urls_defaults_when_env_empty(tmp_path, monkeypatch):
+    """Sans .env renseigné : https sans :443, API sur :8000."""
+    env_dir = tmp_path / "HUB_base"
+    env_dir.mkdir()
+    (env_dir / ".env").write_text("")
+    # HUB_DIR = dossier contenant le .env (cf. _mock_env_path)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", env_dir)
+    urls = dict(actions._summary_urls("192.0.2.7"))
+    assert urls["Hub (HTTPS)"] == "https://192.0.2.7"
+    # Défaut 80 → port implicite (http sans port), cf. spec _summary_urls
+    assert urls["Hub (HTTP)"] == "http://192.0.2.7"
+    assert urls["API"] == "http://192.0.2.7:8000"
+
+
+def test_generate_dotenv_issuer_matches_api_port(monkeypatch, tmp_path):
+    """OIDC_ISSUER du template = http://{host_ip}:{HUB_API_PORT du .env généré}.
+
+    Adaptation à la mécanique réelle (pas de helper _generate_dotenv_content) :
+    on génère le .env dans un HUB_DIR temporaire et on compare les deux valeurs
+    écrites — le contrat est la cohérence issuer ↔ HUB_API_PORT.
+    """
+    hub_dir = _mock_env_path(monkeypatch, tmp_path, exists=False)
+    console = _mock_console()
+    monkeypatch.setattr(actions, "_detect_host_ip", lambda: "192.0.2.7")
+    result = actions._generate_dotenv(console, force=True, dry_run=False)
+    assert result is not None
+    content = (hub_dir / ".env").read_text()
+    issuer_line = next(l for l in content.splitlines() if l.startswith("OIDC_ISSUER="))
+    api_port_line = next(l for l in content.splitlines() if l.startswith("HUB_API_PORT="))
+    port = api_port_line.split("=", 1)[1].strip()
+    assert issuer_line == f"OIDC_ISSUER=http://192.0.2.7:{port}"

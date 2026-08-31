@@ -84,6 +84,8 @@ def _generate_dotenv(console, *, force: bool = False, dry_run: bool = False) -> 
 
     import socket as _socket
     host_ip = _detect_host_ip()
+    # Port API du template : une seule source pour HUB_API_PORT et OIDC_ISSUER
+    hub_api_port = "8000"
 
     # APP_WHITELIST_NETWORKS : inclure le subnet LAN réel de l'hôte (le /24
     # de l'IP détectée) pour que allocate-ports / l'auto-enregistrement des
@@ -136,7 +138,7 @@ ADMIN_PASSWORD={pwd}
 ADMIN_EMAIL=admin@local.lan
 
 # Ports
-HUB_API_PORT=8000
+HUB_API_PORT={hub_api_port}
 HUB_HOST={host_ip}
 HUB_FRONTEND_PORT=80
 HUB_HTTPS_PORT=443
@@ -191,7 +193,7 @@ LEGACY_COMPAT_ENABLED=false
 
 # OIDC Provider (bridge OIDC pour apps externes)
 OIDC_ENABLED=true
-OIDC_ISSUER=http://{host_ip}:8000
+OIDC_ISSUER=http://{host_ip}:{hub_api_port}
 OIDC_EMAIL_TEMPLATE={{username}}@hub.internal
 OIDC_CODE_TTL_SECONDS=30
 OIDC_ID_TOKEN_TTL_MINUTES=10
@@ -438,6 +440,17 @@ def _install_shell_marker(console) -> None:
         con.print(f"[yellow]⚠ Impossible d'écrire dans {bashrc} : {e}[/yellow]")
 
 
+def _summary_urls(host_ip: str) -> list[tuple[str, str]]:
+    """Lignes d'accès du résumé post-init, avec les ports réels du .env."""
+    front = _read_hub_env_value("HUB_FRONTEND_PORT", "80")
+    https = _read_hub_env_value("HUB_HTTPS_PORT", "443")
+    api = _read_hub_env_value("HUB_API_PORT", "8000")
+    https_url = f"https://{host_ip}" if https == "443" else f"https://{host_ip}:{https}"
+    http_url = f"http://{host_ip}" if front == "80" else f"http://{host_ip}:{front}"
+    return [("Hub (HTTPS)", https_url), ("Hub (HTTP)", http_url),
+            ("API", f"http://{host_ip}:{api}")]
+
+
 def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> int:
     """Bootstrap complet du Hub : .env → clés JWT → build+up → health → résumé.
 
@@ -499,10 +512,8 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     t = Table(title="Accès")
     t.add_column("Service", style="bold cyan")
     t.add_column("URL")
-    t.add_row("Hub (HTTPS)", f"https://{host_ip}")
-    t.add_row("Hub (HTTP)", f"http://{host_ip}:80")
-    # L'API écoute en HTTP sur ce port (HTTPS est servi par le frontend 443)
-    t.add_row("API", f"http://{host_ip}:8000")
+    for label, url in _summary_urls(host_ip):
+        t.add_row(label, url)
     con.print(t)
     con.print("")
     con.print(f"[bold]Login :[/bold] {admin_username}")

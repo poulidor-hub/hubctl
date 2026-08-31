@@ -158,6 +158,35 @@ def submenu_admin(canvas: Canvas, env_path: Path | None = None) -> None:
     pause(canvas)
 
 
+def _rewrite_oidc_issuer(env_path: Path, updates: dict) -> None:
+    """Met à jour OIDC_ISSUER si auto-généré (http://<HUB_HOST>:<port>) quand
+    le port API change. Un issuer personnalisé (autre forme) n'est jamais touché."""
+    try:
+        text = env_path.read_text()
+    except OSError:
+        return
+    new_port = str(updates.get("HUB_API_PORT") or "").strip()
+    if not new_port:
+        return
+    hub_host = None
+    for line in text.splitlines():
+        if line.startswith("HUB_HOST="):
+            hub_host = line.split("=", 1)[1].strip()
+            break
+    if not hub_host:
+        return
+    prefix = f"http://{hub_host}:"
+    out_lines = []
+    changed = False
+    for line in text.splitlines():
+        if line.startswith("OIDC_ISSUER=") and line[len("OIDC_ISSUER="):].startswith(prefix):
+            line = f"OIDC_ISSUER={prefix}{new_port}"
+            changed = True
+        out_lines.append(line)
+    if changed:
+        env_path.write_text("\n".join(out_lines) + "\n")
+
+
 def submenu_advanced(canvas: Canvas, env_path: Path | None = None) -> None:
     if env_path is None:
         env_path = ENV_PATH
@@ -192,6 +221,7 @@ def submenu_advanced(canvas: Canvas, env_path: Path | None = None) -> None:
         "DOCKER_SCAN_ENABLED": str(docker_scan).lower(),
     }
     env_manager.write_env(env_path, updates)
+    _rewrite_oidc_issuer(env_path, updates)
     canvas.render(_text("✓ Mode & avancé mis à jour"))
     from hubctl_cli.menu import pause
     pause(canvas)
