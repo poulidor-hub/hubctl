@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Suivre les symlinks : ./hubctl (racine) → hubctl_src/hubctl, sinon
+# BASH_SOURCE donne le chemin du lien et ROOT_DIR pointerait la racine.
+SRC="${BASH_SOURCE[0]}"
+while [ -L "$SRC" ]; do
+  DIR="$(cd "$(dirname "$SRC")" && pwd)"
+  SRC="$(readlink "$SRC")"
+  [[ "$SRC" != /* ]] && SRC="$DIR/$SRC"
+done
+ROOT_DIR="$(cd "$(dirname "$SRC")" && pwd)"
+PARC_ROOT="$(dirname "$ROOT_DIR")"
 PKG_DIR="$ROOT_DIR/hubctl_cli"
 VENV="$PKG_DIR/.venv"
 PY="$VENV/bin/python"
@@ -58,10 +67,10 @@ cd "$ROOT_DIR"
 # .secrets (machine où POULIDOR n'est pas dans le chemin canonique).
 # Idempotent : si une var est déjà dans l'env, .secrets ne l'écrasera qu'avec
 # la même valeur (puisqu'il est la source unique de vérité).
-if [ -f "$ROOT_DIR/.secrets" ]; then
+if [ -f "$PARC_ROOT/.secrets" ]; then
     set -a
     # shellcheck disable=SC1091
-    . "$ROOT_DIR/.secrets"
+    . "$PARC_ROOT/.secrets"
     set +a
 fi
 

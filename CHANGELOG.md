@@ -1,5 +1,22 @@
 # Changelog — Hubctl
 
+## [0.7.2] — 2 septembre 2026
+
+### 🔧 Wrapper symlink + slug atelier strict
+
+- **Corrigé** : le wrapper `hubctl` résout les symlinks (`BASH_SOURCE` suivi jusqu'au
+  fichier réel) — appelé depuis la racine du parc via le lien `./hubctl → hubctl_src/hubctl`,
+  `ROOT_DIR` ne pointe plus la racine du méta-repo ; `.secrets` est désormais lu depuis
+  `PARC_ROOT` (racine du parc, chemin canonique ou non).
+- **Corrigé** : `_ws_project` slugifie entièrement le nom de projet compose de l'atelier
+  (lowercase **et** `_`→`-`) — l'`APP_SLUG` atelier reste identique au slug enregistré
+  auprès du Hub (normalisé en tirets), sinon la résolution des rôles utilisateur JWT ne
+  matche plus (app vue « sans rôle »).
+- **Corrigé** (commit 3bbc6be, resté non releasé) : subnet IPAM None-safe, projet compose
+  lowercase, volume source basé sur `APP_SLUG`.
+- **Doc** : README `hubctl_cli` resynchronisé (modes `--dev`/`--prod` + auto-détection
+  atelier via `.workshop.env`, barre de chargement réelle, retrait de l'intro ASCII).
+
 ## [0.7.1] — 31 août 2026
 
 ### 🔧 Ports réels dans l'outillage

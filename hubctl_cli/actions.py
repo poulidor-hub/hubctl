@@ -1688,10 +1688,13 @@ _ws_session_ports: set[int] = set()
 def _ws_project(app_slug: str) -> str:
     """Nom du projet Docker Compose pour l'atelier : {slug}-ws.
 
-    Lowercase obligatoire : les noms de projet/volume/conteneur Docker
-    n'acceptent pas de majuscules (ex. dossier APPS/exemple-app-16_API_v3).
+    Slugifié entièrement (lowercase + underscores→tirets) : les noms de
+    projet/volume/conteneur Docker n'acceptent ni majuscules ni underscores
+    interdits, et l'APP_SLUG atelier doit rester IDENTIQUE au slug
+    enregistré auprès du Hub (qui normalise en tirets) — sinon la
+    résolution des rôles utilisateur JWT ne matche plus (app « sans rôle »).
     """
-    return f"{app_slug}-ws".lower()
+    return f"{app_slug}-ws".lower().replace("_", "-")
 
 
 def _ws_env_path(app_slug: str) -> Path:

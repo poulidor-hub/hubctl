@@ -1,30 +1,39 @@
 # hubctl — Menu CLI de pilotage du hub
 
-Menu interactif pour piloter le hub POULIDOR depuis le serveur : intro animée
-(animation HUB en ASCII art, ~10 s) + barre de chargement réelle, puis menu de pilotage.
+Menu interactif pour piloter le hub POULIDOR depuis le serveur : barre de
+chargement réelle (Docker, services, apps, disque), puis menu de pilotage.
 
 ## Lancement
 
 ```bash
-./hubctl                 # intro animée + menu
-./hubctl --no-anim       # sans intro
+./hubctl                 # barre de chargement + menu
+./hubctl --no-anim       # sans animation de chargement
 ./hubctl --dry-run       # imprime les commandes sans les exécuter
-./hubctl --anim random   # choisit une animation au hasard
+./hubctl --dev           # force le mode DEV (ateliers)
+./hubctl --prod          # force le mode PROD
 ```
 
-Au premier lancement, le launcher crée le venv `hubctl_cli/.venv` et installe
-`rich` et `cryptography`. En l'absence de terminal interactif (pipe,
-cron, SSH non interactif), `hubctl` affiche l'état du hub puis quitte (le menu
-requiert un TTY).
+Le mode est **auto-détecté** : DEV dès qu'un atelier est actif
+(`.workshop.env` dans `APPS/`), PROD sinon — les flags `--dev`/`--prod` (ou
+`HUBCTL_MODE`) forcent l'un ou l'autre.
+
+Au premier lancement, le launcher crée le venv `hubctl_src/hubctl_cli/.venv` et
+installe les dépendances (`rich`, `cryptography`, `mcp`, `pyyaml`). En l'absence
+de terminal interactif (pipe, cron, SSH non interactif), `hubctl` affiche l'état
+du hub puis quitte (le menu requiert un TTY).
 
 ## Menu
 
-Update · Ajouter une app · Supprimer une app · Logs · **Atelier (workshop)*** ·
-Réparer/Diagnostiquer · Start/Stop hub · Apps (vue + disque) · Quick setup · Réseau ·
-Admin · Coffre (secrets chiffrés) · Scénarios · Bascule DEV/PROD.
+Menu plat, touches différentes selon le mode courant :
 
-<small>* L'atelier (mode DEV) permet de mettre une app en atelier (clone DB), de
-tester une montée de version (`--maj`) et de déployer en prod (`--prod`).</small>
+| Mode | Touches |
+|------|---------|
+| **PROD** | `1` Démarrer tout · `2` Arrêter tout · `3` Mettre à jour · `4` Coffre · `0`/`Échap` Quitter |
+| **DEV** | `1` Démarrer prod · `2` Arrêter prod · `3` Démarrer dev · `4` Arrêter dev · `5` Mettre à jour · `6` Coffre · `0`/`Échap` Quitter |
+
+Le tableau de bord affiche en permanence les services, le disque, les apps
+(version, git, statut) et une alerte `⚠ PRA` si l'emplacement de secours est
+absent ou non synchronisé depuis 7+ jours.
 
 ## Atelier (workshop)
 
@@ -46,7 +55,8 @@ tester une montée de version (`--maj`) et de déployer en prod (`--prod`).</sma
 > déploiement prod, suppression) est porté par `atelier` et ses flags.
 > Voir le skill `app-workshop-mover` pour le détail du cycle.
 
-Depuis le menu TUI (mode DEV) : **Apps → Atelier**.
+Le cycle atelier se pilote en CLI (`./hubctl atelier` et ses flags) ou depuis
+l'UI HUB (vue Santé des Applications).
 
 Les opérations s'appuient sur les `Makefile` du parc : `make -C HUB_base …`
 (hub central) et `make -C APPS/<nom> …` (apps, y compris pour l'atelier qui
@@ -54,10 +64,10 @@ tourne dans le même dossier via un 2e projet compose `-p X-ws`).
 
 Toutes les confirmations sont des **choix** (Oui/Non), pas de la saisie libre.
 
-**Ajouter une app** = cloner un dépôt : tu saisis l'URL git
-(ex: `git@github.com:Poutchouli/exemple-app-2.git`), `hubctl` fait `git clone` dans
-`APPS/<nom-du-dépôt>` (le clone hérite des droits SSH du serveur), puis propose de
-lancer `INITIALISE.py`.
+**Ajouter une app** : via un fichier seed — `./hubctl seed apps.yaml` (clone,
+détection de config, écriture du `.env`, build, démarrage, sync coffre) — ou en
+clonant manuellement dans `APPS/<nom-du-dépôt>` puis en lançant
+`INITIALISE.py`.
 
 ## Raccourcis clavier
 
@@ -69,35 +79,24 @@ lancer `INITIALISE.py`.
 | **Échap** | Sous-menu, saisie | Revenir au menu principal |
 | **Ctrl-C** | Action en cours | Interrompre et revenir au menu |
 | **Ctrl-C** | Menu principal | Rester au menu |
-| Toute touche | Intro animée | Passer l'intro |
 
 ## Coffre
 
-Secrets chiffrés (Fernet) dans `hubctl_cli/vault/parc.vault.enc`, déverrouillé par
-une passphrase maître (jamais stockée). Sources lues : `HUB_base/.env`,
+Secrets chiffrés (Fernet) dans `hubctl_cli/vault/parc.vault.enc`. La passphrase
+maître est **auto-générée au premier besoin et mémorisée** dans
+`hubctl_cli/vault/parc.vault.key` (chmod 0600) : les démarrages suivants
+déverrouillent le coffre sans saisie. Rotation possible via le menu
+(**Coffre → 🔑 Changer la passphrase**). Sources lues : `HUB_base/.env`,
 `APPS/*/.env`, `HUB_base/secrets/`. Synchronisation manuelle, et automatique avant
 toute suppression d'app.
 
-## Animations
+## Chargement
 
-L'intro par défaut est **`hub-ascii`** : une animation HUB en ASCII art (~240 frames,
-~10 s) rejouée avec Rich. Les frames sont précalculées et stockées compressées dans
-`hubctl_cli/animations/hub_ascii.frames.gz`.
-
-Les animations sont **pluggables** : déposer un fichier `.py` dans
-`hubctl_cli/animations/` exposant :
-
-```python
-NAME = "mon-animation"
-DESCRIPTION = "…"
-
-def play(console, state):
-    # state["sleep"](secondes) -> True si l'utilisateur a pressé une touche (skip)
-    ...
-```
-
-Il est auto-découvert. Sélection : `--anim <NAME>` (ou `--anim random`).
-Animations fournies : `hub-ascii` (défaut), `fly-to-flock`.
+Le démarrage affiche une **barre de chargement réelle** (connexion Docker,
+services du hub, inventaire des apps, disque, version du hub) ; `--no-anim` la
+rend instantanée. Les anciens modules d'intro animée
+(`animations/hub_ascii.py`, `animations/fly_to_flock.py`) sont toujours présents
+dans le dépôt mais ne sont plus joués au démarrage.
 
 ## Garde-fous
 
@@ -109,6 +108,7 @@ Animations fournies : `hub-ascii` (défaut), `fly-to-flock`.
 ## Tests
 
 ```bash
+cd hubctl_src
 hubctl_cli/.venv/bin/pip install pytest
 hubctl_cli/.venv/bin/python -m pytest hubctl_cli/tests/ -v
 ```
@@ -130,8 +130,7 @@ depuis 7+ jours.
 
 ```bash
 git clone <repo POULIDOR> && cd POULIDOR
-pip install -r hubctl_cli/requirements.txt
-python -m hubctl_cli pra-restore          # assistant interactif
+./hubctl pra-restore          # assistant interactif (crée le venv au besoin)
 ```
 
 L'assistant : détecte le kit branché → passphrase du coffre → restaure
