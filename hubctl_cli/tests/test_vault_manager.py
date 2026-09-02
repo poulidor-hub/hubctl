@@ -7,6 +7,10 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
     monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
     monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
+    # recovery_dir hermétique : isolé du paquet réel
+    monkeypatch.setattr(
+        hub_state, "recovery_dir",
+        lambda *a, **k: tmp_path / "hubctl_cli" / "recovery")
     (tmp_path / "HUB_base" / "secrets").mkdir(parents=True)
     (tmp_path / "HUB_base" / ".env").write_text("POSTGRES_PASSWORD=sec\n")
     (tmp_path / "HUB_base" / "secrets" / "jwt_private_key.pem").write_bytes(b"KEYDATA")

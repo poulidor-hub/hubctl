@@ -873,7 +873,7 @@ def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> boo
 def _get_vault():
     """Récupère le coffre du parc (lazy import pour éviter les dépendances circulaires)."""
     from hubctl_cli.coffre import Vault
-    vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
+    vault_path = hub_state.vault_path()
     return Vault(vault_path)
 
 
@@ -982,7 +982,7 @@ def action_remove_app(console, name: str, vault=None, *, dry_run: bool = False) 
 
     # 2. backup tar.gz best-effort puis rm -rf
     if app_dir.exists():
-        backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+        backups = hub_state.backups_dir()
         backups.mkdir(parents=True, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         archive = backups / f"{name}-{stamp}.tar.gz"
@@ -1142,7 +1142,7 @@ def disk_guard(console=None) -> bool:
 def _db_snapshot(console=None) -> Path | None:
     """Take a PostgreSQL snapshot of hub-db. Returns path or None on failure."""
     con = console or _console
-    backups = hub_state.PARC_ROOT / "hubctl_cli" / "backups"
+    backups = hub_state.backups_dir()
     backups.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = backups / f"snap_{stamp}.sql"

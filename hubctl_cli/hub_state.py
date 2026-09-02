@@ -39,6 +39,46 @@ APPS_DIR = PARC_ROOT / "APPS"
 _mode: str = "prod"
 
 
+def _runtime_dir(name: str, parc_root: Path | None = None, pkg_dir: Path | None = None) -> Path:
+    """Dossier de données runtime de hubctl (vault/, backups/, recovery/…).
+
+    Emplacement canonique : ``<paquet>/<name>/`` — données gitignorées du
+    submodule. Repli legacy : ``<PARC_ROOT>/hubctl_cli/<name>/`` pour les
+    installations où ``hubctl_cli/`` est un vrai dossier racine (le symlink
+    racine n'existe plus depuis la restructuration). Si aucun des deux
+    n'existe, le dossier du paquet est retourné (créé au premier besoin).
+    """
+    root = parc_root if parc_root is not None else PARC_ROOT
+    base = pkg_dir if pkg_dir is not None else Path(__file__).resolve().parent
+    pkg = base / name
+    if pkg.is_dir():
+        return pkg
+    legacy = root / "hubctl_cli" / name
+    if legacy.is_dir():
+        return legacy
+    return pkg
+
+
+def vault_dir(parc_root: Path | None = None, pkg_dir: Path | None = None) -> Path:
+    """Dossier du coffre chiffré (``parc.vault.enc`` + clé ``parc.vault.key``)."""
+    return _runtime_dir("vault", parc_root, pkg_dir)
+
+
+def vault_path() -> Path:
+    """Chemin du coffre chiffré, toutes commandes confondues."""
+    return vault_dir() / "parc.vault.enc"
+
+
+def backups_dir(parc_root: Path | None = None, pkg_dir: Path | None = None) -> Path:
+    """Dossier des archives tar.gz et snapshots DB avant suppression/update."""
+    return _runtime_dir("backups", parc_root, pkg_dir)
+
+
+def recovery_dir(parc_root: Path | None = None, pkg_dir: Path | None = None) -> Path:
+    """Dossier des exports de recovery du coffre."""
+    return _runtime_dir("recovery", parc_root, pkg_dir)
+
+
 def set_mode(mode: str) -> None:
     global _mode
     _mode = mode

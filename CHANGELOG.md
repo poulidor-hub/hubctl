@@ -1,5 +1,29 @@
 # Changelog — Hubctl
 
+## [0.7.3] — 2 septembre 2026
+
+### 🔧 Chemins runtime résolus depuis le paquet (coffre retrouvé)
+
+- **Corrigé** : la restructuration v0.51.0 (suppression du symlink racine
+  `hubctl_cli`) rendait le coffre introuvable — le code cherchait
+  `<PARC_ROOT>/hubctl_cli/vault/parc.vault.enc`, chemin qui n'existe plus.
+  Conséquence : le coffre existant était traité comme **neuf** (prompt
+  passphrase au lieu du déverrouillage par `parc.vault.key`, et un
+  `vault backup` risquait d'écrire un coffre vide en orphelinant le vrai).
+- **Nouveau** : `hub_state.vault_dir()` / `vault_path()` / `backups_dir()` /
+  `recovery_dir()` — résolution unique pour toutes les données runtime :
+  emplacement canonique **dans le paquet** (`hubctl_src/hubctl_cli/vault|backups|recovery/`,
+  gitignorés du submodule), avec **repli legacy** `<PARC_ROOT>/hubctl_cli/<name>/`
+  pour les installations où `hubctl_cli/` reste un vrai dossier racine.
+  Sites migrés : `__main__.py` (CLI vault + TUI), `actions.py` (`_get_vault`,
+  backups avant suppression, snapshots DB), `pra_config.config_path()`,
+  `pra_replicate.vault_path()`, `vault_manager.export_recovery()`.
+- **Tests** : nouveau `test_vault_path.py` (7 tests — priorité paquet, repli
+  legacy, défaut paquet, garde-fou installation réelle) ; tests PRA/vault
+  rendus hermétiques (patch de `vault_dir`/`recovery_dir`, fin de pollution du
+  coffre réel en CI/dev) ; `test_slug_with_uppercase` aligné sur la
+  normalisation 0.7.2 (lowercase). Suite : **491 passed**.
+
 ## [0.7.2] — 2 septembre 2026
 
 ### 🔧 Wrapper symlink + slug atelier strict

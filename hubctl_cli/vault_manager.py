@@ -68,7 +68,7 @@ class VaultManager:
 
     def export_recovery(self) -> "Path":
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        dest = hub_state.PARC_ROOT / "hubctl_cli" / "recovery" / stamp
+        dest = hub_state.recovery_dir() / stamp
         dest.mkdir(parents=True, exist_ok=True)
         os.chmod(dest, 0o700)
         old_umask = os.umask(0o077)

@@ -24,7 +24,7 @@ DEFAULT_STALENESS_DAYS = 7
 
 
 def config_path() -> Path:
-    return hub_state.PARC_ROOT / "hubctl_cli" / "vault" / CONFIG_FILENAME
+    return hub_state.vault_dir() / CONFIG_FILENAME
 
 
 def load_config() -> dict | None:

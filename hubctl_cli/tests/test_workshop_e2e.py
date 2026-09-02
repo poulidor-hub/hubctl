@@ -45,7 +45,8 @@ class TestWsProject:
         assert _ws_project("exemple-app") == "exemple-app-ws"
 
     def test_slug_with_uppercase(self):
-        # Le slug est passé tel quel (la normalisation se fait en amont)
+        # hubctl 0.7.2 : le nom de projet compose est entièrement slugifié
+        # (lowercase, `_` → `-`) pour que la résolution des rôles JWT matche
         assert _ws_project("exemple-app") == "exemple-app-ws"
 
 

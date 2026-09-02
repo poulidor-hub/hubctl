@@ -327,7 +327,7 @@ def _run(args) -> int:
         from rich.console import Console as RichConsole
         console = RichConsole()
         try:
-            vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
+            vault_path = hub_state.vault_path()
             vault = Vault(vault_path)
             vault_mgr = VaultManager(vault)
 
@@ -452,7 +452,7 @@ def _run(args) -> int:
         except KeyboardInterrupt:
             pass
 
-        vault_path = hub_state.PARC_ROOT / "hubctl_cli" / "vault" / "parc.vault.enc"
+        vault_path = hub_state.vault_path()
         vault = Vault(vault_path)
         vault_mgr = VaultManager(vault)
         menu.install_layout(canvas)

@@ -16,8 +16,10 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
     monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
     monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
-    # parc : coffre + snapshot
-    vault = tmp_path / "hubctl_cli" / "vault" / pra_config.VAULT_FILENAME
+    # parc : coffre + snapshot (vault_dir hermétique, isolé du paquet réel)
+    vault_dir = tmp_path / "hubctl_cli" / "vault"
+    monkeypatch.setattr(hub_state, "vault_dir", lambda *a, **k: vault_dir)
+    vault = vault_dir / pra_config.VAULT_FILENAME
     vault.parent.mkdir(parents=True)
     vault.write_bytes(b"COFFRE-V1")
     snaps = tmp_path / "HUB_base" / "storage" / "snapshots"

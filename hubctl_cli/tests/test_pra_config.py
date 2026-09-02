@@ -6,6 +6,10 @@ def _patch_parc(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_state, "PARC_ROOT", tmp_path)
     monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
     monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
+    # vault_dir hermétique : isolé du vault réel du paquet
+    monkeypatch.setattr(
+        hub_state, "vault_dir",
+        lambda *a, **k: tmp_path / "hubctl_cli" / "vault")
 
 
 def test_load_config_absent_returns_none(tmp_path, monkeypatch):

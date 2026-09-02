@@ -36,7 +36,7 @@ du coffre).
 
 
 def vault_path() -> Path:
-    return hub_state.PARC_ROOT / "hubctl_cli" / "vault" / pra_config.VAULT_FILENAME
+    return hub_state.vault_path()
 
 
 def snapshots_dir() -> Path:
