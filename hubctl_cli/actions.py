@@ -1686,8 +1686,12 @@ _ws_session_ports: set[int] = set()
 
 
 def _ws_project(app_slug: str) -> str:
-    """Nom du projet Docker Compose pour l'atelier : {slug}-ws."""
-    return f"{app_slug}-ws"
+    """Nom du projet Docker Compose pour l'atelier : {slug}-ws.
+
+    Lowercase obligatoire : les noms de projet/volume/conteneur Docker
+    n'acceptent pas de majuscules (ex. dossier APPS/exemple-app-16_API_v3).
+    """
+    return f"{app_slug}-ws".lower()
 
 
 def _ws_env_path(app_slug: str) -> Path:
@@ -1746,7 +1750,9 @@ def _ws_used_subnets() -> set[str]:
                 capture_output=True, text=True, timeout=15)
             if nets.returncode == 0 and nets.stdout.strip():
                 for net in json.loads(nets.stdout):
-                    for cfg in net.get("IPAM", {}).get("Config", []):
+                    # Config peut être None (réseaux host/none) : la clé existe
+                    # avec la valeur None, le default de .get ne s'applique pas.
+                    for cfg in (net.get("IPAM", {}).get("Config") or []):
                         s = cfg.get("Subnet")
                         if s:
                             used.add(s)
@@ -2218,7 +2224,10 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             env_manager.write_env(env_path, ws_config)
 
         # 3. Cloner le volume DB
-        src_vol = f"{app_slug}-postgres-data"
+        # Le volume prod est nommé d'après le APP_SLUG du .env (ex. app
+        # « exemple-apps » dans le dossier APPS/exemple-app-16_API_v3) —
+        # PAS d'après le nom du dossier. Fallback sur le nom de dossier.
+        src_vol = f"{prod_env.get('APP_SLUG') or app_slug}-postgres-data".lower()
         dst_vol = f"{ws_slug}-postgres-data"
         con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
         if not dry_run:
