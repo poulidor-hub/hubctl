@@ -1,5 +1,25 @@
 # Changelog — Hubctl
 
+## [0.7.4] — 6 septembre 2026
+
+### 🔧 Atelier : allowlist env compose (parité hub-api 3.47.3)
+
+- **Corrigé** : `_ws_compose_env` ne transmet plus l'environnement du shell
+  hôte au `docker compose` atelier — allowlist `_COMPOSE_ENV_ALLOWLIST`
+  (PATH/HOME/locales + DOCKER_*) + `.workshop.env`. Les 4 fallbacks
+  `or dict(os.environ)` (maj, rollback, stop, remove) passent à
+  `_compose_base_env()`.
+- **Cause** (incident 2026-09) : `HUB_HTTPS_ENABLED` a deux sens opposés (hub =
+  « le hub sert du HTTPS » ≠ app = « joindre l'API hub en HTTPS ») ; une clé
+  exportée dans le shell hôte écrasait le `.env` de l'app via l'interpolation
+  `${VAR:-défaut}` du compose → atelier en « Mode dégradé »
+  (SSL WRONG_VERSION_NUMBER, enregistrement + JWKS en échec).
+- **Note** : `run_shell(env=)` remplace l'environnement (pas de fusion) — le
+  fix est localisé dans `_ws_compose_env`, sans mécanisme `env_base` comme
+  côté hub-api.
+- **Tests** : `test_ne_fuit_pas_env_hote` (rouge → vert) ; suite complète
+  492 passed.
+
 ## [0.7.3] — 2 septembre 2026
 
 ### 🔧 Chemins runtime résolus depuis le paquet (coffre retrouvé)
