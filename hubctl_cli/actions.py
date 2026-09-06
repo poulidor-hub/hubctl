@@ -1712,17 +1712,40 @@ def _ws_read_env(app_slug: str) -> dict[str, str]:
     return env_manager.read_env(_ws_env_path(app_slug))
 
 
+# Clés d'environnement transmises aux sous-processus docker compose atelier
+# (accès docker + locales). Parité HUB_base 3.47.3 (_COMPOSE_ENV_ALLOWLIST) :
+# ne JAMAIS fusionner os.environ entier — certaines clés du hub partagent leur
+# nom avec des clés des apps mais avec un AUTRE sens (ex. HUB_HTTPS_ENABLED :
+# hub = « le hub sert du HTTPS » ≠ app = « joindre l'API hub en HTTPS »).
+# Une clé exportée dans le shell hôte écraserait le .env de l'app via
+# l'interpolation ${VAR:-défaut} du compose → app en « Mode dégradé ».
+_COMPOSE_ENV_ALLOWLIST = (
+    "PATH", "HOME", "TZ", "LANG", "LC_ALL",
+    "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_API_VERSION",
+    "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+)
+
+
+def _compose_base_env() -> dict[str, str]:
+    """Env minimal (allowlist) pour les sous-processus docker compose."""
+    return {k: os.environ[k] for k in _COMPOSE_ENV_ALLOWLIST if k in os.environ}
+
+
 def _ws_compose_env(app_slug: str) -> dict[str, str] | None:
     """Construit l'environnement pour docker compose -p X-ws.
 
-    Fusionne os.environ + .workshop.env. Les valeurs de .workshop.env
-    override celles du .env de prod (que Docker Compose lira lui-même).
+    Allowlist (accès docker) + .workshop.env. Les valeurs de .workshop.env
+    restent la source de vérité ; le .env de prod est lu par Docker Compose
+    lui-même. L'environnement du shell hôte n'est volontairement PAS transmis
+    (cf. _COMPOSE_ENV_ALLOWLIST — incident 2026-09, parité hub-api 3.47.3).
     Retourne None si l'atelier n'existe pas.
     """
     ws = _ws_read_env(app_slug)
     if not ws:
         return None
-    return {**os.environ, **ws}
+    env = _compose_base_env()
+    env.update(ws)
+    return env
 
 
 def _ws_used_ports() -> set[int]:
@@ -1962,7 +1985,7 @@ def _update_workshop(console, app_slug: str, ref: str = "main", *, dry_run: bool
         # 4. BUILD avec APP_VERSION injectée depuis le VERSION du tree
         #    (hubctl bypass make sync-env → sans ça, l'atelier afficherait
         #     la version périmée du .env prod)
-        compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+        compose_env = _ws_compose_env(app_slug) or _compose_base_env()
         version_file = app_dir / "VERSION"
         if version_file.exists():
             compose_env["APP_VERSION"] = version_file.read_text().strip()
@@ -2021,7 +2044,7 @@ def _ws_update_rollback(console, app_slug: str, prev_branch: str | None,
     con.print(f"[red]✗ {reason}. ROLLBACK git.[/red]")
     _ws_git_restore(con, app_dir, prev_branch, prev_commit, dry_run=dry_run)
     if not dry_run:
-        compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+        compose_env = _ws_compose_env(app_slug) or _compose_base_env()
         version_file = app_dir / "VERSION"
         if version_file.exists():
             compose_env["APP_VERSION"] = version_file.read_text().strip()
@@ -2325,7 +2348,7 @@ def _stop_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     con = console or _console
     ws_slug = _ws_project(app_slug)
 
-    compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+    compose_env = _ws_compose_env(app_slug) or _compose_base_env()
     app_dir = hub_state.APPS_DIR / app_slug
     compose_file = app_dir / "docker-compose.yml"
 
@@ -2346,7 +2369,7 @@ def _remove_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     con = console or _console
     ws_slug = _ws_project(app_slug)
 
-    compose_env = _ws_compose_env(app_slug) or dict(os.environ)
+    compose_env = _ws_compose_env(app_slug) or _compose_base_env()
     app_dir = hub_state.APPS_DIR / app_slug
     compose_file = app_dir / "docker-compose.yml"
 

@@ -135,6 +135,33 @@ class TestWsComposeEnv:
         assert env is not None
         assert env["APP_SLUG"] == "canari-ws"  # workshop gagne
 
+    def test_ne_fuit_pas_env_hote(self, tmp_path, monkeypatch):
+        """Parité HUB_base 3.47.3 : seules les clés de l'allowlist (accès docker,
+        locales) + .workshop.env sont transmises au compose atelier.
+
+        Incident 2026-09 : HUB_HTTPS_ENABLED a deux sens opposés (hub = « le hub
+        sert du HTTPS » ≠ app = « joindre l'API hub en HTTPS ») — une clé exportée
+        dans le shell hôte écrasait le .env de l'app via l'interpolation compose
+        et mettait l'atelier en « Mode dégradé » (SSL WRONG_VERSION_NUMBER)."""
+        app_dir = tmp_path / "canari"
+        app_dir.mkdir()
+        (app_dir / ".workshop.env").write_text(
+            "APP_SLUG=canari-ws\nAPI_PORT=10000\n"
+        )
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        monkeypatch.setenv("HUB_HTTPS_ENABLED", "true")
+        monkeypatch.setenv("DATABASE_URL", "postgresql://secret")
+        monkeypatch.setenv("DOCKER_HOST", "unix:///run/docker.sock")
+
+        env = _ws_compose_env("canari")
+        assert env is not None
+        assert "HUB_HTTPS_ENABLED" not in env
+        assert "DATABASE_URL" not in env
+        # allowlist (accès docker) + contrat .workshop.env intacts
+        assert env["DOCKER_HOST"] == "unix:///run/docker.sock"
+        assert env["APP_SLUG"] == "canari-ws"
+        assert env["API_PORT"] == "10000"
+
 
 class TestWsUsedPorts:
     """Collecte des ports déjà utilisés par les ateliers."""
