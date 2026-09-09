@@ -1,5 +1,22 @@
 # Changelog — Hubctl
 
+## [0.8.0] — 9 septembre 2026
+
+### ⚡ Socle HUBsocle : commandes `socle build` / `socle status`
+
+- **Ajouté** : `hubctl socle build [--force]` — construction locale (offline-first)
+  des images de base du socle `poulidor/socle-api` et `poulidor/socle-web` depuis le
+  checkout `HUBsocle` (sous-module méta-repo ou sibling) ; cache par tag (rebuild
+  uniquement si le tag `:<VERSION>` est absent, `--force` pour forcer) ; échec
+  explicite si un build échoue.
+- **Ajouté** : `hubctl socle status` — tableau de drift flotte : `APP_SOCLE_VERSION`
+  par app (`APPS/*/.env`, `MIGRATION` et dossiers cachés exclus) vs version courante
+  du sous-module HUBsocle ; apps sans `APP_SOCLE_VERSION` marquées « fork template ».
+- **Technique** : module `hubctl_cli/socle.py` (helpers purs testés :
+  `socle_version`, `collect_app_socle_versions` ; `-f` Dockerfile web en chemin
+  absolu — le wrapper `./hubctl` fait `cd hubctl_src`) ; sous-commandes argparse
+  `socle build|status` câblées sur le pattern `vault` ; `--dry-run` global respecté.
+
 ## [0.7.4] — 6 septembre 2026
 
 ### 🔧 Atelier : allowlist env compose (parité hub-api 3.47.3)
