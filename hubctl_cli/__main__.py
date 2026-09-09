@@ -142,6 +142,13 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Écraser le fichier s'il existe déjà")
     seed_parser.set_defaults(seed_action=None)
 
+    # socle — build local des images de base, statut flotte
+    socle_parser = sub.add_parser("socle", help="Socle HUBsocle : build des images de base, statut flotte")
+    socle_sub = socle_parser.add_subparsers(dest="socle_cmd")
+    socle_build_p = socle_sub.add_parser("build", help="Construire les images poulidor/socle-{api,web} (local)")
+    socle_build_p.add_argument("--force", action="store_true", help="Reconstruire même si le tag existe")
+    socle_sub.add_parser("status", help="Version socle par app (drift flotte)")
+
     return p
 
 
@@ -421,6 +428,12 @@ def _run(args) -> int:
         except Exception as e:
             print(f"❌ seed a échoué : {e}")
             return 1
+
+    if args.command == "socle":
+        from hubctl_cli.socle import socle_build, socle_status
+        if args.socle_cmd == "build":
+            return socle_build(force=getattr(args, "force", False), dry_run=global_dry_run)
+        return socle_status()
 
     # ── TUI (pas de sous-commande ou flags seuls) ──
 
