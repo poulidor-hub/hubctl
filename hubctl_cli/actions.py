@@ -716,10 +716,37 @@ def _detect_app_config(name: str) -> dict:
     hub_api_port = _read_hub_env_value("HUB_API_PORT", "8000")
     host_ip = _detect_host_ip()
 
+    # Allocation officielle auprès du Hub : ports préservés par slug+host
+    # (registre partagé — évite les collisions entre instances/seed) et
+    # APP_SUBNET requis par les docker-compose récents. Fallback silencieux
+    # sur les ports locaux si le Hub est injoignable (le sync-env de l'app
+    # réinterrogera le Hub au build).
+    app_subnet = None
+    try:
+        import json as _json
+        import urllib.request as _ur
+
+        payload = _json.dumps({"slug": slug, "host": host_ip}).encode()
+        req = _ur.Request(
+            f"http://{hub_host}:{hub_api_port}/api/apps/allocate-ports",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with _ur.urlopen(req, timeout=10) as resp:
+            alloc = _json.loads(resp.read())
+        if alloc.get("api_port"):
+            api_port = int(alloc["api_port"])
+        if alloc.get("frontend_port"):
+            frontend_port = int(alloc["frontend_port"])
+        app_subnet = alloc.get("subnet") or None
+    except Exception:
+        pass  # Hub injoignable : fallback local, l'app retentera au build
+
     return {
         "slug": slug,
         "api_port": api_port,
         "frontend_port": frontend_port,
+        "app_subnet": app_subnet,
         "postgres_password": pg_password,
         "fernet_key": fernet_key,
         "hub_host": hub_host,
@@ -738,6 +765,8 @@ def _show_and_confirm_config(console, config, dest) -> bool:
     t.add_row("Destination", str(dest))
     t.add_row("Port API", str(config["api_port"]))
     t.add_row("Port Frontend", str(config["frontend_port"]))
+    if config.get("app_subnet"):
+        t.add_row("Subnet", config["app_subnet"])
     t.add_row("Hub", config["hub_url"])
     con.print(t)
     con.print("[dim]Secrets générés : mot de passe DB + clé Fernet (stockés dans .env + coffre)[/dim]")
@@ -790,6 +819,11 @@ def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
         "HUB_HOST": config["hub_host"],
         "HOST_UID": host_uid,
     }
+    # Subnet alloué par le Hub — requis par les docker-compose récents
+    # (interpolation APP_SUBNET). Écrit dès la génération du .env : sans lui,
+    # `make build` échoue avant que le sync-env de l'app n'ait pu intervenir.
+    if config.get("app_subnet"):
+        replacements["APP_SUBNET"] = config["app_subnet"]
 
     # Construire DATABASE_URL si présent dans le template
     db_url = f"postgresql+asyncpg://app_user:{config['postgres_password']}@db:5432/app_db"
