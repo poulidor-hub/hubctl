@@ -1,5 +1,20 @@
 # Changelog — Hubctl
 
+## [0.8.1] — 13 septembre 2026
+
+### ⚡ Seed : APP_SUBNET écrit dès l'allocation
+
+- **Corrigé** : `hubctl seed` génère désormais le `.env` avec `APP_SUBNET` — la
+  configuration est allouée officiellement auprès du Hub
+  (`POST /api/apps/allocate-ports` : ports préservés par slug+host **et**
+  subnet), ce qui supprime l'échec de `make build`
+  (« APP_SUBNET manquant ») survenant avant que le `sync-env` de l'app n'ait
+  pu interroger le Hub. Fallback silencieux sur les ports locaux si le Hub est
+  injoignable. Subnet affiché dans le récapitulatif de confirmation.
+- Validé en réel : allocation 9008/4208 + subnet 10.50.13.0/24 écrits dans le
+  `.env` généré ; 430 tests verts.
+
+---
 ## [0.8.0] — 9 septembre 2026
 
 ### ⚡ Socle HUBsocle : commandes `socle build` / `socle status`
