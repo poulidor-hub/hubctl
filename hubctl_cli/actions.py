@@ -1600,6 +1600,60 @@ def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False)
         con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
 
 
+def _ensure_branch_attached(path: Path, console=None, *, dry_run: bool = False) -> str | None:
+    """Rattache un checkout détaché à « main » avant le pull. Retourne la branche.
+
+    Un déploiement posé par copie/export (pas par clone) laisse HEAD détaché :
+    `git pull` y échoue avec « You are not currently on a branch » et tout le
+    cycle d'update part en rollback. On rattache alors main au commit déployé
+    (l'état déployé fait foi — `checkout -B`), et on restaure l'upstream absent
+    (repo jamais cloné) pour que le pull sache quoi tirer.
+
+    Retourne le nom de la branche courante/rattachée, None si pas un repo git
+    ou si le rattachement a échoué.
+    """
+    con = console or _console
+    try:
+        current = subprocess.run(
+            ["git", "-C", str(path), "branch", "--show-current"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if current.returncode != 0:
+        return None  # pas un dépôt git
+    if current.stdout.strip():
+        return current.stdout.strip()  # déjà rattaché, rien à faire
+
+    con.print("[yellow]↩ HEAD détaché → rattachement à « main »[/yellow]")
+    if utils.run_shell(["git", "-C", str(path), "checkout", "-B", "main"],
+                       dry_run=dry_run, console=con) != 0:
+        return None
+
+    # Upstream manquant (repo jamais cloné) → le pull ne saurait pas quoi tirer
+    try:
+        upstream = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--abbrev-ref",
+             "--symbolic-full-name", "main@{u}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "main"
+    if upstream.returncode == 0 and upstream.stdout.strip():
+        return "main"
+    remotes = subprocess.run(
+        ["git", "-C", str(path), "remote"],
+        capture_output=True, text=True, timeout=10,
+    ).stdout.split()
+    if remotes:
+        remote = "origin" if "origin" in remotes else remotes[0]
+        utils.run_shell(
+            ["git", "-C", str(path), "branch", "--set-upstream-to",
+             f"{remote}/main", "main"],
+            dry_run=dry_run, console=con)
+    return "main"
+
+
 def _update_target(console, target: str, *, dry_run: bool) -> bool:
     """Stop → git pull → build → up → health pour un hub ou une app. Retourne True si succès."""
     con = console or _console
@@ -1619,6 +1673,8 @@ def _update_target(console, target: str, *, dry_run: bool) -> bool:
 
     con.print(f"[bold]→ Arrêt de « {target} »…[/bold]")
     utils.run_shell(["make", "-C", str(target_path), "down"], dry_run=dry_run, console=con)
+
+    _ensure_branch_attached(target_path, con, dry_run=dry_run)
 
     con.print(f"[bold]→ git pull « {target} »…[/bold]")
     rc = utils.run_shell(["git", "-C", str(target_path), "pull", "--recurse-submodules"],
