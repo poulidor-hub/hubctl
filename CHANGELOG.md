@@ -1,5 +1,22 @@
 # Changelog — Hubctl
 
+## [0.8.2] — 14 septembre 2026
+
+### ⚡ Update : tolérance au HEAD détaché
+
+- **Corrigé** : `hubctl update` échouait en rollback complet sur les déploiements
+  posés par copie/export — leur dépôt git est en HEAD détaché et `git pull`
+  refusait (« You are not currently on a branch »). Désormais, avant chaque
+  pull, `update` détecte le détachement et rattache la branche `main` au commit
+  déployé (`checkout -B main` : l'état déployé fait foi), puis restaure
+  l'upstream absent (repo jamais cloné, `branch --set-upstream-to
+  <remote>/main`) pour que le pull sache quoi tirer. Cas nominal (branche
+  rattachée) strictement inchangé. Incident prod exemple-org 2026-09-14
+  (update hub 3.54.0 → 3.54.1 en rollback).
+- Tests : 4 nouveaux (repos git réels — rattachement, no-op sur branche,
+  restauration d'upstream, ordre attach < pull dans `_update_target`) ;
+  suite : 456 passed.
+
 ## [0.8.1] — 13 septembre 2026
 
 ### ⚡ Seed : APP_SUBNET écrit dès l'allocation

@@ -1450,3 +1450,118 @@ def test_generate_dotenv_issuer_matches_api_port(monkeypatch, tmp_path):
     api_port_line = next(l for l in content.splitlines() if l.startswith("HUB_API_PORT="))
     port = api_port_line.split("=", 1)[1].strip()
     assert issuer_line == f"OIDC_ISSUER=http://192.0.2.7:{port}"
+
+
+# ── Tolérance detached HEAD lors de `hubctl update` ──
+# Un déploiement posé par copie/export (pas par clone) laisse HEAD détaché :
+# `git pull` y échoue avec « You are not currently on a branch » et tout le
+# cycle d'update part en rollback (incident prod 2026-09-14).
+
+
+def _mkrepo(tmp_path, name, *, bare=False):
+    repo = tmp_path / name
+    args = ["git", "init", "--quiet"]
+    if bare:
+        args.append("--bare")
+    args += ["-b", "main", str(repo)]
+    subprocess.run(args, check=True, capture_output=True)
+    return repo
+
+
+def _git_run(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+
+
+def _git_out(repo, *args):
+    r = _git_run(repo, *args)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def _commit(repo, filename, content, msg):
+    (repo / filename).write_text(content)
+    _git_run(repo, "add", ".")
+    r = _git_run(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                 "commit", "-qm", msg)
+    assert r.returncode == 0, r.stderr
+    return _git_out(repo, "rev-parse", "HEAD")
+
+
+def _init_remote_and_clone(tmp_path):
+    """Dépôt bare + source avec 1 commit sur main ; retourne (bare, src, sha)."""
+    bare = _mkrepo(tmp_path, "remote.git", bare=True)
+    src = _mkrepo(tmp_path, "src")
+    sha = _commit(src, "f.txt", "v1\n", "v1")
+    _git_run(src, "remote", "add", "origin", str(bare))
+    _git_run(src, "push", "-q", "origin", "main")
+    return bare, src, sha
+
+
+def test_ensure_branch_reattaches_detached_head(tmp_path):
+    bare, src, sha = _init_remote_and_clone(tmp_path)
+    repo = tmp_path / "deploy"
+    subprocess.run(["git", "clone", "--quiet", str(bare), str(repo)],
+                   check=True, capture_output=True)
+    _git_run(repo, "checkout", "--detach")   # état prod : HEAD détaché
+    _git_run(repo, "branch", "-D", "main")   # branche locale absente
+    assert _git_out(repo, "branch", "--show-current") == ""
+
+    actions._ensure_branch_attached(repo)
+
+    assert _git_out(repo, "branch", "--show-current") == "main"
+    assert _git_out(repo, "rev-parse", "HEAD") == sha  # le commit déployé fait foi
+
+
+def test_ensure_branch_noop_when_on_branch(tmp_path):
+    bare, src, sha = _init_remote_and_clone(tmp_path)
+    repo = tmp_path / "deploy"
+    subprocess.run(["git", "clone", "--quiet", str(bare), str(repo)],
+                   check=True, capture_output=True)
+    assert _git_out(repo, "branch", "--show-current") == "main"
+
+    actions._ensure_branch_attached(repo)
+
+    assert _git_out(repo, "branch", "--show-current") == "main"
+    assert _git_out(repo, "rev-parse", "HEAD") == sha
+
+
+def test_ensure_branch_sets_missing_upstream(tmp_path):
+    """Repo déployé SANS clone (init + fetch) : aucune config branch.main —
+    le helper doit la restaurer pour que le pull sache quoi tirer."""
+    bare, src, sha = _init_remote_and_clone(tmp_path)
+    repo = _mkrepo(tmp_path, "deploy")
+    _commit(repo, "f.txt", "v1\n", "v1")
+    _git_run(repo, "remote", "add", "origin", str(bare))
+    _git_run(repo, "fetch", "--quiet", "origin")
+    _git_run(repo, "checkout", "--detach")
+    assert _git_out(repo, "branch", "--show-current") == ""
+
+    actions._ensure_branch_attached(repo)
+
+    assert _git_out(repo, "branch", "--show-current") == "main"
+    assert _git_out(repo, "rev-parse", "--abbrev-ref",
+                    "--symbolic-full-name", "main@{u}") == "origin/main"
+
+
+def test_update_target_reattaches_detached_head_before_pull(tmp_path, monkeypatch):
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    order = []
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
+    monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
+    monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc123")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: "snap.sql")
+    monkeypatch.setattr(actions, "_health_check", lambda *a, **k: True)
+
+    def fake_attach(path, console=None, **kw):
+        order.append("attach")
+        return "main"
+    monkeypatch.setattr(actions, "_ensure_branch_attached", fake_attach)
+
+    def fake_run_shell(cmd, **kwargs):
+        order.append("pull" if "pull" in cmd else "other")
+        return 0
+    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
+
+    assert actions._update_target(None, "hub", dry_run=False) is True
+    assert "attach" in order
+    assert order.index("attach") < order.index("pull")
