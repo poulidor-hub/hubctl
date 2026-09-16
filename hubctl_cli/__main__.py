@@ -127,6 +127,16 @@ def build_parser() -> argparse.ArgumentParser:
     set_url.add_argument("slug")
     set_url.add_argument("url")
 
+    # jwt — trousseau de clés JWT
+    jwt_parser = sub.add_parser("jwt", help="Trousseau de clés JWT (rotation, révocation)")
+    jwt_sub = jwt_parser.add_subparsers(dest="jwt_action")
+    jwt_sub.add_parser("keys", help="Lister le trousseau")
+    jwt_sub.add_parser("rotate", help="Rotater la clé de signature (overlap 24 h)")
+    jwt_revoke = jwt_sub.add_parser("revoke", help="Révoquer une clé (mode compromission)")
+    jwt_revoke.add_argument("--kid", required=True)
+    jwt_cleanup = jwt_sub.add_parser("cleanup", help="Supprimer les PEM archivés/révoqués anciens")
+    jwt_cleanup.add_argument("--older-than-months", type=int, default=12)
+
     # seed (déploiement batch déclaratif d'apps + export)
     seed_parser = sub.add_parser("seed",
                                  help="Déployer/converger des apps depuis un fichier seed YAML")
@@ -400,6 +410,18 @@ def _run(args) -> int:
         except Exception as e:
             print(f"❌ vault a echoue : {e}")
             return 1
+
+    if args.command == "jwt":
+        from hubctl_cli import jwt_keys
+        if args.jwt_action == "keys":
+            return jwt_keys.run_keys()
+        if args.jwt_action == "rotate":
+            return jwt_keys.run_rotate()
+        if args.jwt_action == "revoke":
+            return jwt_keys.run_revoke(args.kid)
+        if args.jwt_action == "cleanup":
+            return jwt_keys.run_cleanup(args.older_than_months)
+        return 0
 
     if args.command == "seed":
         from rich.console import Console as RichConsole
