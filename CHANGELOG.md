@@ -1,5 +1,18 @@
 # Changelog — Hubctl
 
+## [0.9.0] — 16 septembre 2026
+
+### ⚡ Sous-commande `hubctl jwt` — gestion du trousseau de clés JWT
+
+- **Ajouté** : `hubctl jwt keys|rotate|revoke|cleanup` — pilotage du trousseau multi-kid
+  du Hub (HUB_base ≥ 3.59.0) via l'API `/api/auth/keys*` (rotation sans rupture,
+  révocation d'urgence, nettoyage opt-in).
+- **Corrigé** : login admin sur `/api/auth/token` (`/api/token` est un endpoint mort
+  depuis le déplacement des routes auth) — login local à `jwt_keys.py`, l'import
+  `pra_restore.admin_login` n'est plus utilisé.
+
+---
+
 ## [0.8.2] — 14 septembre 2026
 
 ### ⚡ Update : tolérance au HEAD détaché
