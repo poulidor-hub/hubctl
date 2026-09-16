@@ -7,7 +7,6 @@ import urllib.request
 from rich.console import Console
 
 from hubctl_cli.hub_state import HUB_DIR
-from hubctl_cli.pra_restore import admin_login
 
 console = Console()
 
@@ -39,13 +38,36 @@ def _call(base_url: str, token: str, method: str, path: str, body: dict | None =
         raise SystemExit(f"Erreur HTTP {e.code} sur {path} : {detail}")
 
 
+def _admin_login(base_url: str, username: str, password: str) -> str:
+    """POST /api/auth/token (form password grant) → access_token. urllib stdlib.
+
+    NB : ne pas réutiliser pra_restore.admin_login — il cible /api/token,
+    endpoint disparu (404) depuis le déplacement des routes auth.
+    """
+    import urllib.parse
+    data = urllib.parse.urlencode({"username": username, "password": password,
+                                   "grant_type": "password"}).encode()
+    req = urllib.request.Request(
+        base_url + "/api/auth/token", data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"Échec login admin ({e.code}) : {e.read().decode(errors='replace')}")
+    token = payload.get("access_token")
+    if not token:
+        raise SystemExit("Réponse login sans access_token")
+    return token
+
+
 def _token() -> str:
     username = os.environ.get("ADMIN_USERNAME") or _env_lookup("ADMIN_USERNAME") or "admin"
     pw = os.environ.get("ADMIN_PASSWORD")
     if not pw:
         import getpass
         pw = getpass.getpass(f"Mot de passe admin ({username}) : ")
-    return admin_login(_api_base_url(), username, pw)
+    return _admin_login(_api_base_url(), username, pw)
 
 
 def run_keys() -> int:
