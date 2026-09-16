@@ -1,5 +1,11 @@
 # hubctl — Menu CLI de pilotage du hub
 
+![version](https://img.shields.io/badge/version-0.9.0-blue)
+
+> 📦 Paquet principal du dépôt [Hubctl](../README.md) — voir le README racine pour la
+> vue d'ensemble et la liste des sous-commandes. Ce document détaille le fonctionnement
+> interne : menu TUI, atelier, coffre, PRA, garde-fous.
+
 Menu interactif pour piloter le hub POULIDOR depuis le serveur : barre de
 chargement réelle (Docker, services, apps, disque), puis menu de pilotage.
 
