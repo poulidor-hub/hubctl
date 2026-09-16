@@ -1,5 +1,15 @@
 # Changelog — Hubctl
 
+## [0.9.1] — 17 septembre 2026
+
+### ⚡ Documentation — README racine du dépôt
+
+- **Créé** : `README.md` à la racine (il n'existait qu'un README dans `hubctl_cli/`) —
+  rôle de hubctl, place dans le parc (Mermaid), quickstart, tableau des 13 sous-commandes
+  à jour du parser (dont `jwt` v0.9.0), tests, liens.
+- `hubctl_cli/README.md` : bannière + badge de version + renvoi vers le README racine ;
+  contenu existant (menu TUI, atelier, coffre, PRA) inchangé.
+
 ## [0.9.0] — 16 septembre 2026
 
 ### ⚡ Sous-commande `hubctl jwt` — gestion du trousseau de clés JWT
