@@ -832,6 +832,12 @@ def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
     for key, val in replacements.items():
         content = re.sub(rf"^{key}=.*$", f"{key}={val}", content, flags=re.MULTILINE)
 
+    # HTTPS par défaut (spec 2026-09-19) : garantir HTTPS_ENABLED=true quand
+    # le .env.example de l'app ne définit pas la clé. Une app qui veut du
+    # HTTP le déclare explicitement (valeur respectée, jamais écrasée).
+    if not re.search(r"^HTTPS_ENABLED=.*$", content, flags=re.MULTILINE):
+        content = content.rstrip("\n") + "\nHTTPS_ENABLED=true\n"
+
     env_path = dest / ".env"
     env_path.write_text(content)
     os.chmod(env_path, 0o600)
@@ -1838,6 +1844,17 @@ def _ws_compose_env(app_slug: str) -> dict[str, str] | None:
     return env
 
 
+def _ws_compose_files(app_dir, ws_env):
+    """Liste des fichiers -f du compose atelier : docker-compose.yml + https.yml
+    si HTTPS actif et que le checkout l'embarque (spec 2026-09-19 : atelier = miroir
+    prod ; sans l'override, le :80 en 301 rendrait l'atelier inaccessible)."""
+    files = [str(app_dir / "docker-compose.yml")]
+    enabled = str((ws_env or {}).get("HTTPS_ENABLED", "true")).strip().lower()
+    if enabled == "true" and (app_dir / "docker-compose.https.yml").exists():
+        files.append(str(app_dir / "docker-compose.https.yml"))
+    return files
+
+
 def _ws_used_ports() -> set[int]:
     """Ports déjà utilisés par les ateliers existants."""
     used: set[int] = set()
@@ -2015,7 +2032,6 @@ def _update_workshop(console, app_slug: str, ref: str = "main", *, dry_run: bool
     con = console or _console
     ws_slug = _ws_project(app_slug)
     app_dir = hub_state.APPS_DIR / app_slug
-    compose_file = app_dir / "docker-compose.yml"
     ws_env = _ws_read_env(app_slug)
 
     # ── Pré-checks ──
@@ -2079,9 +2095,12 @@ def _update_workshop(console, app_slug: str, ref: str = "main", *, dry_run: bool
         version_file = app_dir / "VERSION"
         if version_file.exists():
             compose_env["APP_VERSION"] = version_file.read_text().strip()
+        files = _ws_compose_files(app_dir, ws_env)
         con.print(f"[bold]→ Build {ws_slug} sur {ref} @ {target_commit[:8]}…[/bold]")
         rc = utils.run_shell(
-            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "build"],
+            ["docker", "compose", "-p", ws_slug]
+            + sum([["-f", f] for f in files], [])
+            + ["build"],
             cwd=str(app_dir), dry_run=dry_run, console=con, timeout=600, env=compose_env)
         if rc != 0:
             return _ws_update_rollback(con, app_slug, prev_branch, prev_commit,
@@ -2089,7 +2108,9 @@ def _update_workshop(console, app_slug: str, ref: str = "main", *, dry_run: bool
 
         # 5. UP (les migrations rejouent sur le volume cloné au boot)
         rc = utils.run_shell(
-            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "up", "-d"],
+            ["docker", "compose", "-p", ws_slug]
+            + sum([["-f", f] for f in files], [])
+            + ["up", "-d"],
             cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
         if rc != 0:
             return _ws_update_rollback(con, app_slug, prev_branch, prev_commit,
@@ -2130,19 +2151,24 @@ def _ws_update_rollback(console, app_slug: str, prev_branch: str | None,
     """Rollback d'un --maj échoué : git restauré + rebuild atelier best-effort."""
     con = console or _console
     app_dir = hub_state.APPS_DIR / app_slug
-    compose_file = app_dir / "docker-compose.yml"
     con.print(f"[red]✗ {reason}. ROLLBACK git.[/red]")
     _ws_git_restore(con, app_dir, prev_branch, prev_commit, dry_run=dry_run)
     if not dry_run:
         compose_env = _ws_compose_env(app_slug) or _compose_base_env()
+        ws_env = _ws_read_env(app_slug)
+        files = _ws_compose_files(app_dir, ws_env)
         version_file = app_dir / "VERSION"
         if version_file.exists():
             compose_env["APP_VERSION"] = version_file.read_text().strip()
         utils.run_shell(
-            ["docker", "compose", "-p", _ws_project(app_slug), "-f", str(compose_file), "build"],
+            ["docker", "compose", "-p", _ws_project(app_slug)]
+            + sum([["-f", f] for f in files], [])
+            + ["build"],
             cwd=str(app_dir), dry_run=False, console=con, timeout=600, env=compose_env)
         utils.run_shell(
-            ["docker", "compose", "-p", _ws_project(app_slug), "-f", str(compose_file), "up", "-d"],
+            ["docker", "compose", "-p", _ws_project(app_slug)]
+            + sum([["-f", f] for f in files], [])
+            + ["up", "-d"],
             cwd=str(app_dir), dry_run=False, console=con, timeout=60, env=compose_env)
     con.print("[yellow]⚠ DB du clone possiblement migrée — pour repartir d'un clone propre : ./hubctl atelier "
               f"{app_slug} (supprimer) puis recréer.[/yellow]")
@@ -2325,6 +2351,7 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             "API_PORT": str(ws_api),
             "FRONTEND_PORT": str(ws_fe),
             "FRONTEND_HTTPS_PORT": str(ws_fe + 1),
+            "HTTPS_ENABLED": "true",   # spec 2026-09-19 : atelier = miroir prod
             # Tracing du code testé en atelier (cycle --maj/--prod)
             "WS_REF": git_state["branch"] if git_state["ok"] else "n/a",
             "WS_COMMIT": git_state["head"] if git_state["ok"] else "n/a",
@@ -2363,9 +2390,12 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             # hubctl bypass make sync-env : sans ça, l'atelier afficherait
             # la version périmée du .env prod.
             compose_env["APP_VERSION"] = version_file.read_text().strip()
+        files = _ws_compose_files(app_dir, ws_config)
         con.print(f"[bold]→ Build & démarrage de {ws_slug}…[/bold]")
         rc = utils.run_shell(
-            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "build"],
+            ["docker", "compose", "-p", ws_slug]
+            + sum([["-f", f] for f in files], [])
+            + ["build"],
             cwd=str(app_dir), dry_run=dry_run, console=con, timeout=600, env=compose_env)
         if not dry_run and rc != 0:
             con.print(f"[red]✗ Build échoué. ROLLBACK : suppression .workshop.env + volume.[/red]")
@@ -2374,7 +2404,9 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             return False
 
         rc = utils.run_shell(
-            ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "up", "-d"],
+            ["docker", "compose", "-p", ws_slug]
+            + sum([["-f", f] for f in files], [])
+            + ["up", "-d"],
             cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
         if not dry_run and rc != 0:
             con.print(f"[red]✗ up échoué. ROLLBACK.[/red]")
@@ -2416,7 +2448,6 @@ def _start_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
         return False
 
     app_dir = hub_state.APPS_DIR / app_slug
-    compose_file = app_dir / "docker-compose.yml"
     ws_config = _ws_read_env(app_slug)
     ws_slug_check = ws_config.get("APP_SLUG", ws_slug)
 
@@ -2425,7 +2456,9 @@ def _start_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
         return True
 
     rc = utils.run_shell(
-        ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "up", "-d"],
+        ["docker", "compose", "-p", ws_slug]
+        + sum([["-f", f] for f in _ws_compose_files(app_dir, ws_config)], [])
+        + ["up", "-d"],
         cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60, env=compose_env)
     if rc == 0 and not dry_run:
         api_port = ws_config.get("API_PORT", "8000")

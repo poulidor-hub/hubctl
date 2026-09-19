@@ -927,6 +927,29 @@ def test_sync_db_password_dry_run_no_docker(monkeypatch, tmp_path):
 # ── _write_app_env ──
 
 
+def test_write_app_env_https_enabled_true_si_absent(tmp_path):
+    """Spec 2026-09-19 : HTTPS par défaut — la clé absente du .env.example est ajoutée à true."""
+    (tmp_path / ".env.example").write_text("APP_SLUG=mon-app\nAPI_PORT=9000\nFRONTEND_PORT=4250\n")
+    config = {"slug": "mon-app", "api_port": 9000, "frontend_port": 4250,
+              "host_ip": "192.0.2.10", "postgres_password": "pw",
+              "fernet_key": "k", "hub_url": "http://192.0.2.10:8000",
+              "hub_host": "192.0.2.10"}
+    actions._write_app_env(None, tmp_path, config)
+    env = (tmp_path / ".env").read_text()
+    assert "HTTPS_ENABLED=true" in env
+
+
+def test_write_app_env_https_choice_app_respecte(tmp_path):
+    """Une app qui déclare HTTPS_ENABLED=false dans son .env.example n'est pas écrasée."""
+    (tmp_path / ".env.example").write_text("APP_SLUG=mon-app\nHTTPS_ENABLED=false\n")
+    config = {"slug": "mon-app", "api_port": 9000, "frontend_port": 4250,
+              "host_ip": "192.0.2.10", "postgres_password": "pw",
+              "fernet_key": "k", "hub_url": "http://192.0.2.10:8000",
+              "hub_host": "192.0.2.10"}
+    actions._write_app_env(None, tmp_path, config)
+    assert "HTTPS_ENABLED=false" in (tmp_path / ".env").read_text()
+
+
 
 
 
