@@ -1,5 +1,15 @@
 # Changelog — Hubctl
 
+## [0.10.0] — 19 septembre 2026
+
+### ⚡ HTTPS par défaut sur la flotte — init + ateliers
+
+- `hubctl init` : HTTPS_ENABLED=true écrit explicitement dans le .env généré quand le
+  .env.example de l'app ne définit pas la clé (choix app respecté sinon).
+- Ateliers : HTTPS_ENABLED=true dans .workshop.env + override docker-compose.https.yml
+  chargé quand le checkout l'embarque (l'atelier reste accessible, le :80 renvoie un 301).
+- Spec : docs/superpowers/specs/2026-09-19-https-par-defaut-flotte-design.md (méta).
+
 ## [0.9.1] — 17 septembre 2026
 
 ### ⚡ Documentation — README racine du dépôt
