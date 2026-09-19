@@ -847,3 +847,126 @@ class TestActionAtelierDispatch:
             stdin.isatty.return_value = False
             action_atelier(None, "wstest")  # pas de flags → menu
         rw.assert_not_called()
+
+
+# ── HTTPS atelier (spec 2026-09-19 : atelier = miroir prod) ──
+
+from hubctl_cli.actions import _start_workshop
+
+
+def _compose_build_up_calls(rs) -> list[list]:
+    """Commandes docker compose build/up capturées via le mock run_shell."""
+    return [c.args[0] for c in rs.call_args_list
+            if c.args and c.args[0][:2] == ["docker", "compose"]
+            and ("build" in c.args[0] or "up" in c.args[0])]
+
+
+def _passe_override_https(cmd: list) -> bool:
+    """True si la commande a un -f <…>/docker-compose.https.yml (chemin complet)."""
+    return any(a == "-f" and b.endswith("docker-compose.https.yml")
+               for a, b in zip(cmd, cmd[1:]))
+
+
+class TestWsComposeFiles:
+    """Helper pur : liste -f du compose atelier (override https si actif + embarqué)."""
+
+    def test_ws_compose_files_ajoute_https_si_present_et_actif(self, tmp_path):
+        from hubctl_cli.actions import _ws_compose_files
+        (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+        assert _ws_compose_files(tmp_path, {"HTTPS_ENABLED": "true"}) == [str(tmp_path / "docker-compose.yml")]
+        (tmp_path / "docker-compose.https.yml").write_text("services: {}\n")
+        assert _ws_compose_files(tmp_path, {"HTTPS_ENABLED": "true"}) == [
+            str(tmp_path / "docker-compose.yml"), str(tmp_path / "docker-compose.https.yml")]
+        assert _ws_compose_files(tmp_path, {"HTTPS_ENABLED": "false"}) == [str(tmp_path / "docker-compose.yml")]
+        assert _ws_compose_files(tmp_path, {}) == [   # défaut true (spec)
+            str(tmp_path / "docker-compose.yml"), str(tmp_path / "docker-compose.https.yml")]
+
+
+class TestWorkshopHttpsE2E:
+    """Les commandes build/up atelier voient l'override docker-compose.https.yml.
+
+    Sans l'override, le :80 du compose https renverrait un 301 vers le port
+    https non publié → atelier inaccessible. Non-régression apps anciennes :
+    sans docker-compose.https.yml dans le checkout, pas de -f https.
+    """
+
+    def test_create_https_enabled_et_override_compose(self, git_app, monkeypatch):
+        (git_app / "docker-compose.https.yml").write_text("services: {}\n")
+        _git(git_app, "add", "-A")
+        _git(git_app, "commit", "-qm", "override https")
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value="10.210.0.0/24"), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(None, "wstest") is True
+        # .workshop.env écrit avec le flag HTTPS
+        ws = env_manager.read_env(git_app / ".workshop.env")
+        assert ws["HTTPS_ENABLED"] == "true"
+        # build + up de création voient l'override
+        calls = _compose_build_up_calls(rs)
+        assert calls, "aucune commande build/up capturee"
+        for cmd in calls:
+            assert _passe_override_https(cmd), cmd
+
+    def test_maj_passe_override_https_si_embarque(self, git_app, monkeypatch):
+        (git_app / "docker-compose.https.yml").write_text("services: {}\n")
+        _git(git_app, "add", "-A")
+        _git(git_app, "commit", "-qm", "override https")
+        _git(git_app, "push", "-q", "origin", "main")
+        _ws_setup(git_app, monkeypatch)
+        _origin_commit(git_app, "v2 https")  # avance origin/main → build réel
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True):
+            assert _update_workshop(None, "wstest", "main") is True
+        calls = _compose_build_up_calls(rs)
+        assert calls, "aucune commande build/up capturee"
+        for cmd in calls:
+            assert _passe_override_https(cmd), cmd
+
+    def test_maj_sans_https_yml_pas_de_f_https(self, git_app, monkeypatch):
+        """Non-régression apps anciennes : pas d'override → pas de -f https."""
+        _ws_setup(git_app, monkeypatch)
+        _origin_commit(git_app, "v2 sans https")
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True):
+            assert _update_workshop(None, "wstest", "main") is True
+        calls = _compose_build_up_calls(rs)
+        assert calls, "aucune commande build/up capturee"
+        for cmd in calls:
+            assert not _passe_override_https(cmd), cmd
+
+    def test_maj_rollback_rebuild_passe_override_https(self, git_app, monkeypatch):
+        """Atelier « ancien » (.workshop.env sans HTTPS_ENABLED) : le défaut true
+        s'applique quand même — le rebuild de rollback voit l'override."""
+        (git_app / "docker-compose.https.yml").write_text("services: {}\n")
+        _git(git_app, "add", "-A")
+        _git(git_app, "commit", "-qm", "override https")
+        _git(git_app, "push", "-q", "origin", "main")
+        _ws_setup(git_app, monkeypatch)  # .workshop.env SANS HTTPS_ENABLED (atelier pré-spec)
+        _origin_commit(git_app, "v2 casse build https")
+        with patch.object(actions_mod.utils, "run_shell", side_effect=_docker_build_ko) as rs:
+            assert _update_workshop(None, "wstest", "main") is False
+        calls = _compose_build_up_calls(rs)
+        # build maj (KO) + rebuild rollback build + up
+        assert len(calls) == 3, calls
+        for cmd in calls:
+            assert _passe_override_https(cmd), cmd
+
+    def test_start_passe_override_https_si_embarque(self, git_app, monkeypatch):
+        (git_app / "docker-compose.https.yml").write_text("services: {}\n")
+        _git(git_app, "add", "-A")
+        _git(git_app, "commit", "-qm", "override https")
+        _ws_setup(git_app, monkeypatch)
+        with patch.object(actions_mod, "_app_running", return_value=False), \
+             patch.object(actions_mod.utils, "run_shell", side_effect=_docker_ok) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True):
+            assert _start_workshop(None, "wstest") is True
+        up_calls = [c.args[0] for c in rs.call_args_list
+                    if c.args and c.args[0][:2] == ["docker", "compose"]]
+        assert up_calls, "aucune commande compose capturee"
+        for cmd in up_calls:
+            assert _passe_override_https(cmd), cmd
