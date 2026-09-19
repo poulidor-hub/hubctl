@@ -832,6 +832,12 @@ def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
     for key, val in replacements.items():
         content = re.sub(rf"^{key}=.*$", f"{key}={val}", content, flags=re.MULTILINE)
 
+    # HTTPS par défaut (spec 2026-09-19) : garantir HTTPS_ENABLED=true quand
+    # le .env.example de l'app ne définit pas la clé. Une app qui veut du
+    # HTTP le déclare explicitement (valeur respectée, jamais écrasée).
+    if not re.search(r"^HTTPS_ENABLED=.*$", content, flags=re.MULTILINE):
+        content = content.rstrip("\n") + "\nHTTPS_ENABLED=true\n"
+
     env_path = dest / ".env"
     env_path.write_text(content)
     os.chmod(env_path, 0o600)
