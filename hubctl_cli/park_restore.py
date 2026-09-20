@@ -109,6 +109,47 @@ def _wait_db_ready(container: str, timeout: int = 90) -> bool:
     return False
 
 
+# Migrations « fourchues » : même liste que HUB_base/hub/app/restore_snapshot.py
+# (FORKED_MIGRATIONS). Un dump hub legacy (ex. hub-legacy 3.9.x) porte un numéro 027
+# avec un SQL différent du nôtre (normalisation de données au lieu de créer
+# port_allocations). Sans purge, le boot du hub neuf sauterait NOTRE 027 → table
+# port_allocations manquante → hub cassé. Cf. docs/handover/2026-09-20-migration-legacy-hub-neuf-design.md §5.
+FORKED_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("027", "port_allocations"),
+)
+
+
+def _reconcile_forked_migrations(container: str = HUB_DB_CONTAINER) -> bool:
+    """Purge les lignes schema_migrations « fourchues » après un pg_restore legacy.
+
+    Pour chaque (version, table) de FORKED_MIGRATIONS : si la ligne version est
+    présente mais que la table attendue n'existe pas, on supprime la ligne → le
+    boot du hub rejouera notre migration (idempotente).
+
+    Retourne True si OK (purge ou no-op), False si la requête psql échoue.
+    Non fatal pour restore_park (warning) — le runbook vérifie la table au boot.
+    """
+    ok = True
+    for version, table in FORKED_MIGRATIONS:
+        sql = (
+            f"DELETE FROM schema_migrations WHERE version = '{version}' "
+            f"AND NOT EXISTS (SELECT 1 FROM information_schema.tables "
+            f"WHERE table_name = '{table}');"
+        )
+        r = _run(["docker", "exec", container, "psql", "-U", HUB_DB_USER,
+                  "-d", HUB_DB_NAME, "-c", sql], check=False)
+        if r.returncode != 0:
+            print(f"  ⚠️  Réconciliation migration {version} échouée : {r.stderr.strip()}")
+            print("      → Vérifier manuellement au boot du hub "
+                  "(SELECT count(*) FROM port_allocations).")
+            ok = False
+        elif "DELETE 1" in r.stdout:
+            print(f"  ✅ Migration {version} fourchue purgée — le boot rejugera la nôtre")
+        else:
+            print(f"  ✅ Migration {version} : rien à réconcilier")
+    return ok
+
+
 def _restore_pgdump(container: str, user: str, db: str, dump_path: Path) -> bool:
     """Restaure un pg_dump dans un conteneur PostgreSQL."""
     if not dump_path.exists():
@@ -261,6 +302,11 @@ def restore_park(archive_path: str, passphrase: str | None = None) -> bool:
         if not _restore_pgdump(HUB_DB_CONTAINER, HUB_DB_USER, HUB_DB_NAME, hub_pgdump):
             print("   ❌ Restauration Hub DB échouée — abandon.")
             return False
+
+        # ── Réconciliation migrations fourchues (dump legacy → hub neuf) ──
+        if not _reconcile_forked_migrations(HUB_DB_CONTAINER):
+            print("   ⚠️  Réconciliation incomplète — vérifier le boot du hub "
+                  "(table port_allocations).")
 
         # ── Apps ──
         apps = manifest.get("apps", [])
