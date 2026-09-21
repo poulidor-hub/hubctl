@@ -150,6 +150,28 @@ def _reconcile_forked_migrations(container: str = HUB_DB_CONTAINER) -> bool:
     return ok
 
 
+def _reset_hub_db(container: str = HUB_DB_CONTAINER) -> bool:
+    """Recrée la base hub VIERGE (DROP WITH (FORCE) + CREATE) avant le pg_restore.
+
+    Le pg_restore --clean ne suffit pas face à un dump legacy : les tables du
+    schéma courant (créées au boot du hub neuf) absentes du dump bloquent les
+    DROP (FKs croisées) et les COPY legacy échouent sur les colonnes récentes
+    NOT NULL. Réinitialiser la base garantit que le schéma restauré est
+    exactement celui du dump ; les migrations du hub rejouent ensuite le delta
+    (cf. _reconcile_forked_migrations + apply_migrations au boot).
+    """
+    sql = (f"DROP DATABASE IF EXISTS {HUB_DB_NAME} WITH (FORCE); "
+           f"CREATE DATABASE {HUB_DB_NAME} OWNER {HUB_DB_USER};")
+    r = _run(["docker", "exec", container, "psql", "-U", HUB_DB_USER,
+              "-d", "postgres", "-c", sql], check=False)
+    if r.returncode != 0:
+        print(f"  ⚠️  Reset de la base hub échoué : {r.stderr.strip()}")
+        return False
+    print("  ✅ Base hub réinitialisée — le dump restauré fait foi, "
+          "les migrations rejoueront le delta au boot")
+    return True
+
+
 def _restore_pgdump(container: str, user: str, db: str, dump_path: Path) -> bool:
     """Restaure un pg_dump dans un conteneur PostgreSQL."""
     if not dump_path.exists():
@@ -293,6 +315,11 @@ def restore_park(archive_path: str, passphrase: str | None = None) -> bool:
         print("⏳ Attente que hub-db soit prêt...")
         if not _wait_db_ready(HUB_DB_CONTAINER, timeout=90):
             print("   ❌ hub-db injoignable après 90s — abandon.")
+            return False
+
+        # ── Reset de la base hub (le dump restauré fait foi — cf. dump legacy) ──
+        if not _reset_hub_db(HUB_DB_CONTAINER):
+            print("   ❌ Impossible de réinitialiser la DB hub — abandon.")
             return False
 
         # ── Hub DB : pg_restore (maintenant que le conteneur tourne) ──

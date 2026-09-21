@@ -396,3 +396,59 @@ def test_restore_park_calls_reconciliation(tmp_path, monkeypatch):
 
     assert result is True
     assert len(called) == 1
+
+
+# ── Reset DB hub avant pg_restore (dump legacy vs schéma courant) ──
+
+
+def test_reset_hub_db_runs_drop_and_create(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="DROP DATABASE\nCREATE DATABASE", stderr="")
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    assert pr._reset_hub_db() is True
+    joined = " ".join(calls[0])
+    assert "DROP DATABASE" in joined and "CREATE DATABASE" in joined
+    assert "WITH (FORCE)" in joined
+    assert "-d" in joined and "postgres" in joined
+
+
+def test_reset_hub_db_failure_returns_false(monkeypatch):
+    def fake_run(cmd, check=True):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="syntax error")
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    assert pr._reset_hub_db() is False
+
+
+def test_restore_park_aborts_when_reset_fails(tmp_path, monkeypatch):
+    work = tmp_path / "src"
+    work.mkdir()
+    (work / "manifest.json").write_text(
+        '{"version":"1.0","exported_at":"2026-01-01","apps":[],'
+        '"hub_db":{"pgdump":"databases/hub.pgdump"}}'
+    )
+    plain_archive = tmp_path / "park.tar.gz"
+    with tarfile.open(plain_archive, "w:gz") as tar:
+        tar.add(work, arcname="")
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / "secrets").mkdir()
+    monkeypatch.setattr(pr, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(pr, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(pr, "_check_hub_is_empty", lambda: True)
+    monkeypatch.setattr(pr, "_run", lambda cmd, check=True: subprocess.CompletedProcess(
+        cmd, 0, stdout="", stderr=""))
+    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, timeout=90: True)
+    monkeypatch.setattr(pr, "_reset_hub_db", lambda c=None: False)
+    pgdump_called = []
+    monkeypatch.setattr(pr, "_restore_pgdump",
+                        lambda c, u, d, p: pgdump_called.append(1) or True)
+
+    result = pr.restore_park(str(plain_archive))
+
+    assert result is False
+    assert pgdump_called == [], "le pg_restore ne doit PAS tourner après un reset échoué"
