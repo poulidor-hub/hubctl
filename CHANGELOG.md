@@ -1,5 +1,22 @@
 # Changelog — Hubctl
 
+## [0.10.1] — 21 septembre 2026
+
+### ⚡ park-restore : migration legacy → hub neuf fiabilisée
+
+- **Reset de la base hub avant `pg_restore`** (`_reset_hub_db`, fatal) : un dump legacy
+  restauré sur le schéma courant du hub neuf échouait (FKs de tables courantes-only
+  bloquant les DROP, COPY legacy refusés sur les colonnes récentes NOT NULL). La base
+  est recréée (`DROP DATABASE WITH (FORCE)` + `CREATE`, deux `-c` psql distincts —
+  `DROP DATABASE` est interdit dans un bloc transactionnel).
+- **Réconciliation des migrations fourchues** (`_reconcile_forked_migrations`, non
+  fatal) : purge de la ligne `027` d'un dump legacy quand la table `port_allocations`
+  attendue par notre 027 est absente (même sémantique que
+  `HUB_base/hub/app/restore_snapshot.py::FORKED_MIGRATIONS`) — le boot rejoue notre 027.
+- Tests : +7 sur `test_park_restore.py` (22 total). Prouvé de bout en bout en répétition
+  VM (journal `build/vm-lab/client-mig-legacy/journal.md` du méta-repo) : restore legacy
+  complet, 027 purgée puis rejouée, `port_allocations` créée, comptages hub identiques.
+
 ## [0.10.0] — 19 septembre 2026
 
 ### ⚡ HTTPS par défaut sur la flotte — init + ateliers
