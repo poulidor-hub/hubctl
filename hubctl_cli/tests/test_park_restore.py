@@ -326,3 +326,136 @@ def test_safe_extractall_accepts_clean_archive(tmp_path):
     assert pr._safe_extractall(tar, tmp_path) is True
     assert (tmp_path / "manifest.json").read_bytes() == b'{"version":"1.0"}'
     assert (tmp_path / "databases" / "hub.pgdump").read_bytes() == b"DUMP"
+
+
+# ── Réconciliation migrations fourchues (dump legacy → hub neuf) ──
+
+
+def test_reconcile_purges_forked_migration(monkeypatch):
+    """DB legacy : 027 marquée mais table port_allocations absente → DELETE émis."""
+    calls = []
+
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="DELETE 1", stderr="")
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    assert pr._reconcile_forked_migrations() is True
+    joined = [" ".join(c) for c in calls]
+    assert any("DELETE FROM schema_migrations" in c for c in joined)
+    assert any("port_allocations" in c for c in joined)
+    assert any("hub-db" in c for c in joined)
+
+
+def test_reconcile_noop_when_our_027_applied(monkeypatch):
+    """DB déjà conforme (notre 027 a tourné, table existe) → DELETE 0, True."""
+    def fake_run(cmd, check=True):
+        return subprocess.CompletedProcess(cmd, 0, stdout="DELETE 0", stderr="")
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    assert pr._reconcile_forked_migrations() is True
+
+
+def test_reconcile_psql_failure_returns_false(monkeypatch):
+    """psql échoue (ex. schema_migrations absente) → False, pas d'exception."""
+    def fake_run(cmd, check=True):
+        return subprocess.CompletedProcess(cmd, 1, stdout="",
+                                           stderr="relation \"schema_migrations\" does not exist")
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    assert pr._reconcile_forked_migrations() is False
+
+
+def test_restore_park_calls_reconciliation(tmp_path, monkeypatch):
+    """restore_park appelle la réconciliation après le pg_restore du hub."""
+    work = tmp_path / "src"
+    work.mkdir()
+    (work / "manifest.json").write_text(
+        '{"version":"1.0","exported_at":"2026-01-01","apps":[],'
+        '"hub_db":{"pgdump":"databases/hub.pgdump"}}'
+    )
+    plain_archive = tmp_path / "park.tar.gz"
+    with tarfile.open(plain_archive, "w:gz") as tar:
+        tar.add(work, arcname="")
+
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / "secrets").mkdir()
+    monkeypatch.setattr(pr, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(pr, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(pr, "_check_hub_is_empty", lambda: True)
+    monkeypatch.setattr(pr, "_run", lambda cmd, check=True: subprocess.CompletedProcess(
+        cmd, 0, stdout="", stderr=""))
+    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, timeout=90: True)
+    monkeypatch.setattr(pr, "_restore_pgdump", lambda c, u, d, p: True)
+    called = []
+    monkeypatch.setattr(pr, "_reconcile_forked_migrations",
+                        lambda c=None: called.append(c) or True)
+
+    result = pr.restore_park(str(plain_archive))
+
+    assert result is True
+    assert len(called) == 1
+
+
+# ── Reset DB hub avant pg_restore (dump legacy vs schéma courant) ──
+
+
+def test_reset_hub_db_runs_drop_and_create(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="DROP DATABASE\nCREATE DATABASE", stderr="")
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    assert pr._reset_hub_db() is True
+    cmd = calls[0]
+    joined = " ".join(cmd)
+    assert "DROP DATABASE" in joined and "CREATE DATABASE" in joined
+    assert "WITH (FORCE)" in joined
+    assert "-d" in joined and "postgres" in joined
+    # Deux -c DISTINCTS : un -c multi-statements = une transaction, et
+    # DROP DATABASE est interdit dans un bloc transactionnel.
+    assert cmd.count("-c") == 2
+    drop_idx = cmd.index("-c")
+    assert "DROP DATABASE" in cmd[drop_idx + 1]
+    assert "CREATE DATABASE" in cmd[drop_idx + 3]
+
+
+def test_reset_hub_db_failure_returns_false(monkeypatch):
+    def fake_run(cmd, check=True):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="syntax error")
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    assert pr._reset_hub_db() is False
+
+
+def test_restore_park_aborts_when_reset_fails(tmp_path, monkeypatch):
+    work = tmp_path / "src"
+    work.mkdir()
+    (work / "manifest.json").write_text(
+        '{"version":"1.0","exported_at":"2026-01-01","apps":[],'
+        '"hub_db":{"pgdump":"databases/hub.pgdump"}}'
+    )
+    plain_archive = tmp_path / "park.tar.gz"
+    with tarfile.open(plain_archive, "w:gz") as tar:
+        tar.add(work, arcname="")
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / "secrets").mkdir()
+    monkeypatch.setattr(pr, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(pr, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(pr, "_check_hub_is_empty", lambda: True)
+    monkeypatch.setattr(pr, "_run", lambda cmd, check=True: subprocess.CompletedProcess(
+        cmd, 0, stdout="", stderr=""))
+    monkeypatch.setattr(pr, "_wait_db_ready", lambda c, timeout=90: True)
+    monkeypatch.setattr(pr, "_reset_hub_db", lambda c=None: False)
+    pgdump_called = []
+    monkeypatch.setattr(pr, "_restore_pgdump",
+                        lambda c, u, d, p: pgdump_called.append(1) or True)
+
+    result = pr.restore_park(str(plain_archive))
+
+    assert result is False
+    assert pgdump_called == [], "le pg_restore ne doit PAS tourner après un reset échoué"
