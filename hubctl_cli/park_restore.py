@@ -160,10 +160,14 @@ def _reset_hub_db(container: str = HUB_DB_CONTAINER) -> bool:
     exactement celui du dump ; les migrations du hub rejouent ensuite le delta
     (cf. _reconcile_forked_migrations + apply_migrations au boot).
     """
-    sql = (f"DROP DATABASE IF EXISTS {HUB_DB_NAME} WITH (FORCE); "
-           f"CREATE DATABASE {HUB_DB_NAME} OWNER {HUB_DB_USER};")
+    # Deux -c distincts : psql exécute plusieurs -c HORS transaction, mais un
+    # seul -c multi-statements dans UNE transaction — et DROP DATABASE est
+    # interdit dans un bloc transactionnel (prouvé en répétition VM 2026-09-21).
     r = _run(["docker", "exec", container, "psql", "-U", HUB_DB_USER,
-              "-d", "postgres", "-c", sql], check=False)
+              "-d", "postgres",
+              "-c", f"DROP DATABASE IF EXISTS {HUB_DB_NAME} WITH (FORCE);",
+              "-c", f"CREATE DATABASE {HUB_DB_NAME} OWNER {HUB_DB_USER};"],
+             check=False)
     if r.returncode != 0:
         print(f"  ⚠️  Reset de la base hub échoué : {r.stderr.strip()}")
         return False

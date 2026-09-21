@@ -410,10 +410,17 @@ def test_reset_hub_db_runs_drop_and_create(monkeypatch):
 
     monkeypatch.setattr(pr, "_run", fake_run)
     assert pr._reset_hub_db() is True
-    joined = " ".join(calls[0])
+    cmd = calls[0]
+    joined = " ".join(cmd)
     assert "DROP DATABASE" in joined and "CREATE DATABASE" in joined
     assert "WITH (FORCE)" in joined
     assert "-d" in joined and "postgres" in joined
+    # Deux -c DISTINCTS : un -c multi-statements = une transaction, et
+    # DROP DATABASE est interdit dans un bloc transactionnel.
+    assert cmd.count("-c") == 2
+    drop_idx = cmd.index("-c")
+    assert "DROP DATABASE" in cmd[drop_idx + 1]
+    assert "CREATE DATABASE" in cmd[drop_idx + 3]
 
 
 def test_reset_hub_db_failure_returns_false(monkeypatch):
