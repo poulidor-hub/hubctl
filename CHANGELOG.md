@@ -1,5 +1,16 @@
 # Changelog — Hubctl
 
+## [0.10.2] — 24 septembre 2026
+
+### ⚡ init : TTL du JWT dashboard aligné sur 8h
+
+- **Fix** : le `.env` généré par `hubctl init` écrivait `ACCESS_TOKEN_EXPIRE_MINUTES=30`,
+  écrasant le défaut 480 (8h) présent partout ailleurs (code HUB_base, docker-compose,
+  install.sh, `.env.example`) — tout déploiement initialisé via hubctl se retrouvait avec
+  des sessions de 30 min. Génère désormais `ACCESS_TOKEN_EXPIRE_MINUTES=480` avec la note
+  LAN (revenir à 30 si exposition externe), aligné sur la décision HUB_base
+  (`SECURITY_AUDIT.md` §9).
+
 ## [0.10.1] — 21 septembre 2026
 
 ### ⚡ park-restore : migration legacy → hub neuf fiabilisée
