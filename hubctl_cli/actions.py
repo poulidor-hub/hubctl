@@ -130,7 +130,8 @@ POSTGRES_DB=hub_auth
 DATABASE_URL=postgresql+asyncpg://hubadmin:{pwd}@db:5432/hub_auth
 JWT_ALGORITHM=RS256
 APP_ENV=production
-ACCESS_TOKEN_EXPIRE_MINUTES=30
+# 8h (LAN) — revenir à 30 si exposition externe
+ACCESS_TOKEN_EXPIRE_MINUTES=480
 
 # Admin par défaut
 ADMIN_USERNAME=admin
