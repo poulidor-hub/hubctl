@@ -1,5 +1,16 @@
 # Changelog — Hubctl
 
+## [0.10.3] - 5 octobre 2026
+
+### 🔧 fix vpn — message reconcile en état résiduel
+
+- `_vpn_reconcile` : quand `wg0.conf` est absente, le message renvoie
+  désormais au toggle OFF→ON dans l'UI admin (auto-réparation,
+  HUB_base ≥ 3.62.4) au lieu de « VPN → Initialiser » — l'init
+  répond 409 quand le serveur est déjà initialisé.
+
+---
+
 ## [0.10.2] — 24 septembre 2026
 
 ### ⚡ init : TTL du JWT dashboard aligné sur 8h
