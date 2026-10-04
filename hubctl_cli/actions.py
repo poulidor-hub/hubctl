@@ -2682,7 +2682,8 @@ def _vpn_reconcile(enabled: bool, *, dry_run: bool, console=None) -> None:
         con.print(f"[bold]→ vpn_enabled=true, conf={'présente' if conf else 'ABSENTE'} — démarrage conteneur…[/bold]")
         _vpn_compose_up(dry_run=dry_run, console=con)
         if not conf:
-            con.print("[yellow]⚠ Aucune wg0.conf — initialise le serveur via l'UI admin (VPN → Initialiser).[/yellow]")
+            con.print("[yellow]⚠ Aucune wg0.conf — basculez le toggle VPN OFF→ON "
+                      "dans l'UI admin (auto-réparation ≥ 3.62.4).[/yellow]")
     else:
         con.print("[bold]→ vpn_enabled=false — arrêt conteneur…[/bold]")
         _vpn_stop(dry_run=dry_run, console=con)
