@@ -242,6 +242,16 @@ def test_is_healthy_body_unhealthy_status():
     assert actions._is_healthy_body('{"status":"starting"}') is False
 
 
+def test_is_healthy_body_accepte_status_ok_apps_node():
+    """Apps Node d'ancien template (ex. exemple-app) : /api/health répond
+    {"status":"ok", …} — reconnues saines au même titre que "healthy",
+    sinon health check faux négatif systématique → rollback à chaque
+    création d'atelier, quel que soit le timeout."""
+    assert actions._is_healthy_body('{"status":"ok"}') is True
+    assert actions._is_healthy_body('{"status":"ok","timestamp":"2026-10-10T16:33:12Z"}') is True
+    assert actions._is_healthy_body('{"status": "OK"}') is False  # sensibilité exacte conservée
+
+
 def test_is_healthy_body_non_json():
     assert actions._is_healthy_body("<html>404 Not Found</html>") is False
     assert actions._is_healthy_body("Service Unavailable") is False
