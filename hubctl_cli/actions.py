@@ -1218,12 +1218,18 @@ def _git_previous_commit(path: Path, console=None) -> str | None:
 
 
 def _is_healthy_body(text: str | None) -> bool:
-    """True si le corps de réponse /api/health indique un statut « healthy ».
+    """True si le corps de réponse /api/health indique un statut sain.
 
     Parse réellement le JSON (et non une sous-chaîne littérale) afin de reconnaître
     `{"status": "healthy"}` (espaces après `:`, format json.dumps par défaut) qui
     échouait avec l'ancien test `'"status":"healthy"' in stdout` → faux négatif
     → rollbacks destructeurs sur une API pourtant saine.
+
+    Les deux formats réels du parc sont acceptés :
+    - `"healthy"` : template courant (HUB_base & apps alignées) ;
+    - `"ok"` : apps Node d'ancien template (ex. exemple-app) — leur
+      /api/health répond `{"status":"ok", …}`. Même garde grossière que le
+      template courant : la validation métier reste manuelle avant --prod.
     """
     if not text:
         return False
@@ -1231,7 +1237,7 @@ def _is_healthy_body(text: str | None) -> bool:
         data = json.loads(text)
     except (ValueError, TypeError):
         return False
-    return isinstance(data, dict) and data.get("status") == "healthy"
+    return isinstance(data, dict) and data.get("status") in ("healthy", "ok")
 
 
 def _health_check(target: str, console=None, timeout: int = 60, port_override: str | None = None) -> bool:
