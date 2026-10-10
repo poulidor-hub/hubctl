@@ -970,3 +970,110 @@ class TestWorkshopHttpsE2E:
         assert up_calls, "aucune commande compose capturee"
         for cmd in up_calls:
             assert _passe_override_https(cmd), cmd
+
+
+# ── Résolution du volume DB (datadir PostgreSQL) ──
+
+
+class TestResolveRunningDbVolume:
+    """Source du clone : datadir PostgreSQL du conteneur prod en cours."""
+
+    def test_trouve_le_volume_pgdata(self):
+        out = (
+            "volume|exemple-app_backend_logs|/app/logs\n"
+            "bind||/app/uploads\n"
+            "volume|exemple-app_postgres_data|/var/lib/postgresql/data\n"
+        )
+        fake = subprocess.CompletedProcess([], 0, stdout=out, stderr="")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            assert actions_mod._resolve_running_db_volume("exemple-app-postgres") == \
+                "exemple-app_postgres_data"
+
+    def test_variant_datadir_versionne(self):
+        # postgres:18 : PGDATA inclut la version (/var/lib/postgresql/18/docker)
+        out = "volume|exemple_pgdata|/var/lib/postgresql/18/docker\n"
+        fake = subprocess.CompletedProcess([], 0, stdout=out, stderr="")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            assert actions_mod._resolve_running_db_volume("exemple-app-postgres") == "exemple_pgdata"
+
+    def test_conteneur_absent_retourne_none(self):
+        fake = subprocess.CompletedProcess([], 1, stdout="", stderr="No such object")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            assert actions_mod._resolve_running_db_volume("ghost-postgres") is None
+
+    def test_sans_datadir_postgres_retourne_none(self):
+        out = "volume|app_storage|/app/storage\n"
+        fake = subprocess.CompletedProcess([], 0, stdout=out, stderr="")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            assert actions_mod._resolve_running_db_volume("app-backend") is None
+
+
+class TestResolveComposeDbVolume:
+    """Cible du clone : datadir PostgreSQL du projet -ws résolu depuis le compose."""
+
+    _CFG_DEFAULT = {
+        "services": {
+            "db": {
+                "volumes": [
+                    {"type": "volume", "source": "postgres_data",
+                     "target": "/var/lib/postgresql/data"},
+                ]
+            },
+            "backend": {
+                "volumes": [
+                    {"type": "volume", "source": "backend_storage",
+                     "target": "/app/storage"},
+                ]
+            },
+        },
+        "volumes": {"postgres_data": {"driver": "local"},
+                    "backend_storage": {"driver": "local"}},
+    }
+
+    def test_naming_compose_par_defaut(self, tmp_path):
+        fake = subprocess.CompletedProcess(
+            [], 0, stdout=json.dumps(self._CFG_DEFAULT), stderr="")
+        env = {"APP_SLUG": "exemple-app-ws"}
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            vol = actions_mod._resolve_compose_db_volume(
+                tmp_path, [tmp_path / "docker-compose.yml"],
+                "exemple-app-ws", env)
+        assert vol == "exemple-app-ws_postgres_data"
+
+    def test_name_explicite_prio(self, tmp_path):
+        cfg = {
+            "services": {"db": {"volumes": [
+                {"type": "volume", "source": "postgres_data",
+                 "target": "/var/lib/postgresql/data"}]}},
+            "volumes": {"postgres_data": {"name": "legacy_pin_pgdata"}},
+        }
+        fake = subprocess.CompletedProcess([], 0, stdout=json.dumps(cfg), stderr="")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            vol = actions_mod._resolve_compose_db_volume(
+                tmp_path, [tmp_path / "docker-compose.yml"], "x-ws", {})
+        assert vol == "legacy_pin_pgdata"
+
+    def test_bind_ignore(self, tmp_path):
+        cfg = {
+            "services": {"db": {"volumes": [
+                {"type": "bind", "source": "./DATA/pg",
+                 "target": "/var/lib/postgresql/data"}]}},
+            "volumes": {},
+        }
+        fake = subprocess.CompletedProcess([], 0, stdout=json.dumps(cfg), stderr="")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            assert actions_mod._resolve_compose_db_volume(
+                tmp_path, [tmp_path / "docker-compose.yml"], "x-ws", {}) is None
+
+    def test_config_echoue_retourne_none(self, tmp_path):
+        fake = subprocess.CompletedProcess([], 1, stdout="", stderr="boom")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            assert actions_mod._resolve_compose_db_volume(
+                tmp_path, [tmp_path / "docker-compose.yml"], "x-ws", {}) is None
+
+    def test_json_invalide_retourne_none(self, tmp_path):
+        fake = subprocess.CompletedProcess([], 0, stdout="not json", stderr="")
+        with patch.object(actions_mod.subprocess, "run", return_value=fake):
+            assert actions_mod._resolve_compose_db_volume(
+                tmp_path, [tmp_path / "docker-compose.yml"], "x-ws", {}) is None
+

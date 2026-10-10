@@ -1948,6 +1948,79 @@ def _ws_git_state(app_dir: Path) -> dict:
         return {"ok": False, "branch": None, "head": None}
 
 
+# ── Résolution du volume DB (datadir PostgreSQL) ────────────────────────────
+# Les composes du parc nomment le volume DB de façons variées (naming compose
+# par défaut `<projet>_<clé>`, `name:` explicite, convention historique
+# `<slug>-postgres-data`). Pour que le clone DB soit réellement consommé par
+# le projet atelier, on résout les noms réels au lieu de les deviner.
+
+# Points de montage reconnus comme datadir PostgreSQL (image officielle ; les
+# variants récents incluent la version dans le chemin, ex. /var/lib/postgresql/18).
+_PGDATA_MARKERS = ("/var/lib/postgresql",)
+
+
+def _resolve_compose_db_volume(app_dir: Path, files: list, project: str,
+                               env: dict | None) -> str | None:
+    """Nom du volume montant le datadir PostgreSQL dans un projet compose résolu.
+
+    Lit `docker compose config --format json` et retourne le premier named
+    volume monté sous /var/lib/postgresql : `name` explicite s'il existe,
+    sinon le naming compose par défaut `<projet>_<clé>`. None si la résolution
+    échoue (l'appelant garde son fallback historique).
+    """
+    cmd: list[str] = ["docker", "compose", "-p", project]
+    for f in files:
+        cmd += ["-f", str(f)]
+    cmd += ["config", "--format", "json"]
+    try:
+        st = subprocess.run(cmd, cwd=str(app_dir), env=env,
+                            capture_output=True, text=True, timeout=30)
+        if st.returncode != 0 or not isinstance(st.stdout, str):
+            return None
+        cfg = json.loads(st.stdout or "{}")
+        for svc in (cfg.get("services") or {}).values():
+            for vol in (svc.get("volumes") or []):
+                if vol.get("type") == "bind":
+                    continue
+                target = vol.get("target") or ""
+                if not target.startswith(_PGDATA_MARKERS):
+                    continue
+                key = vol.get("source")
+                if not key:
+                    continue
+                vdef = (cfg.get("volumes") or {}).get(key) or {}
+                return vdef.get("name") or f"{project}_{key}"
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, ValueError):
+        return None
+    return None
+
+
+def _resolve_running_db_volume(container_name: str) -> str | None:
+    """Nom du volume montant le datadir PostgreSQL d'un conteneur en cours.
+
+    Retourne None si le conteneur est absent ou ne monte pas de datadir
+    (l'appelant garde son fallback historique).
+    """
+    try:
+        st = subprocess.run(
+            ["docker", "inspect", "-f",
+             "{{range .Mounts}}{{.Type}}|{{.Name}}|{{.Destination}}\n{{end}}",
+             container_name],
+            capture_output=True, text=True, timeout=15)
+        if st.returncode != 0 or not isinstance(st.stdout, str):
+            return None
+        for line in st.stdout.splitlines():
+            parts = line.split("|", 2)
+            if len(parts) != 3:
+                continue
+            mtype, name, dest = parts
+            if mtype == "volume" and dest.startswith(_PGDATA_MARKERS):
+                return name
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return None
+
+
 def _ws_worktree_clean(app_dir: Path) -> bool:
     """True si le working tree est propre ET sans commits locaux non poussés.
 
@@ -2368,11 +2441,28 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             env_manager.write_env(env_path, ws_config)
 
         # 3. Cloner le volume DB
-        # Le volume prod est nommé d'après le APP_SLUG du .env (ex. app
-        # « exemple-apps » dans le dossier APPS/exemple-app-16_API_v3) —
-        # PAS d'après le nom du dossier. Fallback sur le nom de dossier.
-        src_vol = f"{prod_env.get('APP_SLUG') or app_slug}-postgres-data".lower()
-        dst_vol = f"{ws_slug}-postgres-data"
+        # Résolution des volumes RÉELS (les composes du parc nomment le volume
+        # DB de façons variées) :
+        # - source : datadir PostgreSQL du conteneur prod en cours
+        #   (APP_SLUG-postgres) — la prod tourne par définition au moment
+        #   d'une création d'atelier ;
+        # - cible : datadir PostgreSQL du projet -ws, résolu depuis la config
+        #   compose (naming par défaut <projet>_<clé> ou name explicite) →
+        #   le `up` montera exactement ce volume et consommera le clone.
+        # Fallbacks : convention historique <slug>-postgres-data (comportement
+        # antérieur à la résolution).
+        files = _ws_compose_files(app_dir, ws_config)
+        compose_env = {**os.environ, **ws_config}
+        version_file = app_dir / "VERSION"
+        if version_file.exists():
+            # hubctl bypass make sync-env : sans ça, l'atelier afficherait
+            # la version périmée du .env prod.
+            compose_env["APP_VERSION"] = version_file.read_text().strip()
+        prod_slug = (prod_env.get("APP_SLUG") or app_slug).lower()
+        src_vol = (_resolve_running_db_volume(f"{prod_slug}-postgres")
+                   or f"{prod_slug}-postgres-data")
+        dst_vol = (_resolve_compose_db_volume(app_dir, files, ws_slug, compose_env)
+                   or f"{ws_slug}-postgres-data")
         con.print(f"[bold]→ Clone DB : {src_vol} → {dst_vol}[/bold]")
         if not dry_run:
             subprocess.run(["docker", "volume", "create", dst_vol],
@@ -2385,13 +2475,6 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
                 con.print("[yellow]⚠ Clone DB échoué (atelier démarrera avec DB vide).[/yellow]")
 
         # 4. docker compose -p X-ws build + up
-        compose_env = {**os.environ, **ws_config}
-        version_file = app_dir / "VERSION"
-        if version_file.exists():
-            # hubctl bypass make sync-env : sans ça, l'atelier afficherait
-            # la version périmée du .env prod.
-            compose_env["APP_VERSION"] = version_file.read_text().strip()
-        files = _ws_compose_files(app_dir, ws_config)
         con.print(f"[bold]→ Build & démarrage de {ws_slug}…[/bold]")
         rc = utils.run_shell(
             ["docker", "compose", "-p", ws_slug]
@@ -2416,14 +2499,19 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             return False
 
         # 5. Health check
-        con.print(f"[bold]→ Santé atelier (port {ws_api}, timeout 30s)…[/bold]")
+        # Premier boot d'un atelier = initdb (si DB vierge) + migrations + seed :
+        # au-delà du timeout court d'un reboot, on accorde 90 s (surchageable).
+        health_timeout = int(os.environ.get("WORKSHOP_HEALTH_TIMEOUT_CREATE", "90"))
+        con.print(f"[bold]→ Santé atelier (port {ws_api}, timeout {health_timeout}s)…[/bold]")
         healthy = True if dry_run else _health_check(
-            ws_slug, console=con, timeout=30, port_override=str(ws_api))
+            ws_slug, console=con, timeout=health_timeout, port_override=str(ws_api))
         if not healthy:
             con.print(f"[red]✗ Health échoué. ROLLBACK : down atelier + suppression config.[/red]")
             if not dry_run:
                 utils.run_shell(
-                    ["docker", "compose", "-p", ws_slug, "-f", str(compose_file), "down"],
+                    ["docker", "compose", "-p", ws_slug]
+                    + sum([["-f", str(f)] for f in files], [])
+                    + ["down"],
                     cwd=str(app_dir), dry_run=False, console=con, timeout=30, env=compose_env)
                 env_path.unlink(missing_ok=True)
                 subprocess.run(["docker", "volume", "rm", dst_vol], capture_output=True, timeout=10)
