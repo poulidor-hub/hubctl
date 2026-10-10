@@ -1,5 +1,29 @@
 # Changelog — Hubctl
 
+## [0.10.4] - 10 octobre 2026
+
+### ⚡ fix atelier — clone DB consommé + health 90 s
+
+- `_create_workshop` : le clone DB copie désormais vers le volume
+  **réellement monté** par le projet `-ws` (résolu depuis
+  `docker compose config` : `name:` explicite prioritaire, sinon naming
+  compose par défaut `<projet>_<clé>`) au lieu de la convention
+  historique `<ws-slug>-postgres-data`, jamais référencée par les
+  composes à naming dynamique. Source : datadir PostgreSQL du conteneur
+  prod en cours (`docker inspect APP_SLUG-postgres`). Fallbacks sur la
+  convention historique.
+  Conséquence terrain (exemple-app) : l'atelier ne démarre plus sur
+  une DB vide — et ne peut plus monter la DB de prod sur un compose à
+  volumes épinglés dont le `name:` viserait le volume prod.
+- Timeout health de création : 30 s → **90 s** (premier boot = initdb +
+  migrations + seed, > 30 s sur DB vierge → faux échec + rollback).
+  Surchageable : `WORKSHOP_HEALTH_TIMEOUT_CREATE`.
+- Rollback health : tous les fichiers compose passés en `-f`
+  (docker-compose.https.yml inclus), plus le seul docker-compose.yml.
+- +9 tests unitaires des helpers de résolution (test_workshop_e2e.py).
+
+---
+
 ## [0.10.3] - 5 octobre 2026
 
 ### 🔧 fix vpn — message reconcile en état résiduel
