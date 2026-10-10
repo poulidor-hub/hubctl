@@ -1,5 +1,19 @@
 # Changelog — Hubctl
 
+## [0.10.5] - 10 octobre 2026
+
+### ⚡ fix atelier — health : accepter le format « status ok »
+
+- `_is_healthy_body` exigeait `status == "healthy"` (format template
+  courant). Les apps Node d'ancien template (ex. exemple-app)
+  répondent `{"status":"ok", …}` → faux négatif systématique : rollback à
+  chaque création d'atelier, quel que soit le timeout (constaté après la
+  montée à 90 s du 0.10.4 — la vraie cause n'était pas le délai).
+- « healthy » et « ok » acceptés ; sensibilité à la casse conservée.
+- +1 test (test_actions.py).
+
+---
+
 ## [0.10.4] - 10 octobre 2026
 
 ### ⚡ fix atelier — clone DB consommé + health 90 s
