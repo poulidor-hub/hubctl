@@ -1878,17 +1878,27 @@ def _ws_used_ports() -> set[int]:
     return used
 
 
-def _ws_used_subnets() -> set[str]:
-    """Subnets déjà pris : tous les réseaux docker existants + APP_SUBNET des ateliers."""
+def _ws_used_subnets() -> set[str] | None:
+    """Subnets déjà pris : tous les réseaux docker existants + APP_SUBNET des ateliers.
+
+    Retourne None si l'état docker est inconnu (network ls/inspect en échec,
+    timeout, JSON invalide) : l'appelant doit alors REFUSER d'allouer —
+    les APP_SUBNET des ateliers seuls ne suffisent pas, allouer à l'aveugle
+    produirait un « Pool overlaps » au `up`.
+    """
     used: set[str] = set()
     try:
         ids = subprocess.run(["docker", "network", "ls", "-q"],
                              capture_output=True, text=True, timeout=10)
-        if ids.returncode == 0 and ids.stdout.strip():
+        if ids.returncode != 0:
+            return None
+        if ids.stdout.strip():
             nets = subprocess.run(
                 ["docker", "network", "inspect", *ids.stdout.split()],
                 capture_output=True, text=True, timeout=15)
-            if nets.returncode == 0 and nets.stdout.strip():
+            if nets.returncode != 0:
+                return None
+            if nets.stdout.strip():
                 for net in json.loads(nets.stdout):
                     # Config peut être None (réseaux host/none) : la clé existe
                     # avec la valeur None, le default de .get ne s'applique pas.
@@ -1897,7 +1907,7 @@ def _ws_used_subnets() -> set[str]:
                         if s:
                             used.add(s)
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, ValueError):
-        pass
+        return None
     for app in hub_state.get_apps():
         if _ws_exists(app.name):
             s = _ws_read_env(app.name).get("APP_SUBNET")
@@ -2418,13 +2428,25 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
         # Tracker les ports alloués (pour dry-run et allocations consécutives)
         _ws_session_ports.update({ws_api, ws_fe, ws_fe + 1})
 
-        # Subnet dédié : les apps template récent épinglent APP_SUBNET (mandatory)
-        # dans docker-compose.yml — sans override, l'atelier réutilise le subnet
-        # prod interpolé depuis .env → « Pool overlaps » quand la prod tourne.
-        ws_subnet = _find_free_subnet(_ws_used_subnets())
+        # Subnet dédié GARANTI (fail-hard) : les apps template récent épinglent
+        # APP_SUBNET (mandatory) dans docker-compose.yml — sans override,
+        # l'atelier réutilise le subnet prod interpolé depuis .env →
+        # « Pool overlaps » quand la prod tourne. Politique : un atelier est
+        # créé SUR un subnet dédié disjoint du pool 10.210.x, ou n'est pas
+        # créé — jamais de repli sur le subnet prod.
+        used_subnets = _ws_used_subnets()
+        if used_subnets is None:
+            con.print("[red]✗ Impossible d'inspecter les réseaux Docker — création annulée "
+                      "(on n'alloue jamais un subnet à l'aveugle).[/red]")
+            con.print("[dim]  Vérifiez : docker network ls[/dim]")
+            return False
+        ws_subnet = _find_free_subnet(used_subnets)
         if not ws_subnet:
-            con.print("[yellow]⚠ Plus de subnet libre pour l'atelier — le subnet prod sera réutilisé "
-                      "(risque de conflit si la prod tourne avec un subnet épinglé).[/yellow]")
+            con.print("[red]✗ Plus de subnet libre dans le pool atelier "
+                      "(10.210.0.0/24 … 10.210.63.0/24) — création annulée.[/red]")
+            con.print("[dim]  Un réseau étranger squatte probablement le pool : "
+                      "docker network inspect $(docker network ls -q) | grep -B2 10.210[/dim]")
+            return False
 
         ws_config = {
             "APP_SLUG": ws_slug,
@@ -2435,13 +2457,23 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
             # Tracing du code testé en atelier (cycle --maj/--prod)
             "WS_REF": git_state["branch"] if git_state["ok"] else "n/a",
             "WS_COMMIT": git_state["head"] if git_state["ok"] else "n/a",
+            # Subnet dédié — TOUJOURS écrit (parité voie UI workshop_service)
+            "APP_SUBNET": ws_subnet,
         }
-        if ws_subnet:
-            ws_config["APP_SUBNET"] = ws_subnet
+
+        # Warning apps legacy : compose sans épinglage APP_SUBNET → le réseau
+        # atelier recevra un subnet dynamique Docker (non contrôlé par le pool).
+        if not any(
+            "APP_SUBNET" in (Path(f).read_text(encoding="utf-8", errors="replace")
+                             if Path(f).exists() else "")
+            for f in _ws_compose_files(app_dir, ws_config)
+        ):
+            con.print("[yellow]⚠ compose sans APP_SUBNET : le réseau atelier recevra un subnet "
+                      "dynamique Docker (non contrôlé) — migration template recommandée.[/yellow]")
 
         # 2. Écrire .workshop.env
         env_path = _ws_env_path(app_slug)
-        subnet_info = f", subnet {ws_subnet}" if ws_subnet else ""
+        subnet_info = f", subnet {ws_subnet}"
         con.print(f"[bold]→ Config atelier : ports {ws_api}/{ws_fe}{subnet_info}[/bold]")
         if not dry_run:
             env_manager.write_env(env_path, ws_config)
@@ -2660,6 +2692,11 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False,
     version = version_file.read_text().strip() if version_file.exists() else "?"
     con.print(f"[yellow]⚠ Atelier « {ws.get('APP_SLUG', ws_slug)} » actif — "
               f"teste {ws_ref} @ {ws_commit} (code {version})[/yellow]")
+    if not ws.get("APP_SUBNET"):
+        # Atelier créé avant l'allocation systématique du subnet dédié :
+        # son réseau n'est pas garanti disjoint de la prod → inciter à recréer.
+        con.print("[yellow]⚠ Atelier sans subnet dédié (APP_SUBNET absent) — recréez-le "
+                  "(choix 3 puis création) pour l'isolation réseau garantie.[/yellow]")
     con.print("   1) [bold]mettre à jour[/bold] — fetch + rebuild sur origin/main")
     con.print("   2) [bold]déployer en prod[/bold] — origin/main validé puis suppression de l'atelier")
     con.print("   3) [bold]supprimer[/bold] — down -v + suppression config")

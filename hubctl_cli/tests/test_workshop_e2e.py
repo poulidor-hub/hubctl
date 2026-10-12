@@ -253,7 +253,14 @@ class TestWsUsedSubnets:
         assert "172.18.0.0/16" in used
         assert "10.210.5.0/24" in used   # APP_SUBNET d'un atelier existant
 
-    def test_docker_indisponible_retourne_workshops_seulement(self, tmp_path, monkeypatch):
+    def test_docker_indisponible_retourne_none(self, tmp_path, monkeypatch):
+        """Docker injoignable → None (état inconnu), jamais une liste partielle.
+
+        Les APP_SUBNET des ateliers seuls ne suffisent pas : allouer un subnet
+        sans connaître les réseaux docker existants risquerait un
+        « Pool overlaps » au `up`. L'appelant (_create_workshop) doit refuser
+        la création sur None.
+        """
         app = tmp_path / "canari"
         app.mkdir()
         (app / ".workshop.env").write_text("APP_SLUG=canari-ws\nAPP_SUBNET=10.210.7.0/24\n")
@@ -262,7 +269,7 @@ class TestWsUsedSubnets:
             type("A", (), {"name": "canari"})(),
         ])
         with patch.object(subprocess, "run", return_value=mock.Mock(returncode=1)):
-            assert _ws_used_subnets() == {"10.210.7.0/24"}
+            assert _ws_used_subnets() is None
 
 
 class TestWsSessionPorts:
@@ -788,24 +795,123 @@ class TestCreateWorkshopTracing:
         assert build_calls
         assert build_calls[0].kwargs.get("env", {}).get("APP_SUBNET") == "10.210.9.0/24"
 
-    def test_create_sans_subnet_libre_omet_cle(self, git_app, monkeypatch):
-        """Pool atelier épuisé → pas de APP_SUBNET (fallback subnet prod + warning)."""
+    def test_create_sans_subnet_libre_refuse(self, git_app, monkeypatch):
+        """Pool atelier épuisé → création REFUSÉE (fail-hard).
+
+        Plus de repli « subnet prod réutilisé » : un atelier sur le subnet
+        prod est exactement le conflit que le pool 10.210.x doit empêcher.
+        Aucun fichier ni appel compose ne doit être produit.
+        """
         monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
         monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
         with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
              patch.object(actions_mod, "_find_free_subnet", return_value=None), \
              patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(None, "wstest") is False
+        # Rien n'a été fait : pas de .workshop.env, pas de build, pas de clone
+        assert not (git_app / ".workshop.env").exists()
+        assert not [c for c in rs.call_args_list
+                    if c.args and c.args[0][:2] == ["docker", "compose"]]
+
+    def test_create_refuse_si_subnets_docker_inconnus(self, git_app, monkeypatch):
+        """État docker inconnu (_ws_used_subnets() → None) → création refusée.
+
+        On n'alloue jamais un subnet à l'aveugle : sans la liste des réseaux
+        existants, l'allocation pourrait tomber sur un subnet déjà pris.
+        """
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=None), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(None, "wstest") is False
+        assert not (git_app / ".workshop.env").exists()
+        assert not [c for c in rs.call_args_list
+                    if c.args and c.args[0][:2] == ["docker", "compose"]]
+
+    def test_create_warn_compose_sans_app_subnet(self, git_app, monkeypatch):
+        """Compose sans APP_SUBNET → warning : subnet atelier non contrôlé.
+
+        Pour ces apps (legacy), le réseau atelier reçoit un subnet dynamique
+        Docker — l'atelier n'est PAS garanti sur le pool 10.210.x.
+        """
+        from rich.console import Console
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        # git_app fournit un compose « services: {} » sans APP_SUBNET
+        con = Console(record=True, width=120)
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value="10.210.0.0/24"), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
              patch.object(actions_mod.utils, "run_shell", return_value=0), \
              patch.object(actions_mod, "_health_check", return_value=True), \
              patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
-            assert _create_workshop(None, "wstest") is True
-        ws = env_manager.read_env(git_app / ".workshop.env")
-        assert "APP_SUBNET" not in ws
+            assert _create_workshop(con, "wstest") is True
+        assert "subnet dynamique" in con.export_text()
+
+    def test_create_sans_warning_si_compose_epingle(self, git_app, monkeypatch):
+        """Compose épinglant APP_SUBNET → aucun warning subnet dynamique."""
+        from rich.console import Console
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        (git_app / "docker-compose.yml").write_text(
+            "networks:\n  app-network:\n    subnet: ${APP_SUBNET:?}\n"
+        )
+        con = Console(record=True, width=120)
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value="10.210.0.0/24"), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0), \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(con, "wstest") is True
+        assert "subnet dynamique" not in con.export_text()
 
 
 # ── action_atelier : dispatch flags ──
 
 from hubctl_cli.actions import action_atelier
+
+
+class TestAtelierMenuWarningLegacySubnet:
+    """Menu atelier : rendre visibles les ateliers sans subnet dédié (legacy).
+
+    Les ateliers créés avant l'allocation systématique n'ont pas de clé
+    APP_SUBNET dans .workshop.env → le menu doit l'afficher pour inciter à
+    recréer l'atelier (isolation réseau garantie).
+    """
+
+    def test_menu_warn_sans_app_subnet(self, tmp_path, monkeypatch):
+        from rich.console import Console
+        app = tmp_path / "APPS" / "wstest"; app.mkdir(parents=True)
+        (app / "docker-compose.yml").write_text("services: {}\n")
+        (app / ".workshop.env").write_text(
+            "APP_SLUG=wstest-ws\nAPI_PORT=10000\nFRONTEND_PORT=5200\n"
+            "WS_REF=main\nWS_COMMIT=abcdef1234567890\n"
+        )
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", tmp_path / "APPS")
+        con = Console(record=True, width=120)
+        action_atelier(con, "wstest")
+        assert "sans subnet dédié" in con.export_text()
+
+    def test_menu_pas_de_warning_avec_app_subnet(self, tmp_path, monkeypatch):
+        from rich.console import Console
+        app = tmp_path / "APPS" / "wstest"; app.mkdir(parents=True)
+        (app / "docker-compose.yml").write_text("services: {}\n")
+        (app / ".workshop.env").write_text(
+            "APP_SLUG=wstest-ws\nAPI_PORT=10000\nFRONTEND_PORT=5200\n"
+            "APP_SUBNET=10.210.3.0/24\n"
+            "WS_REF=main\nWS_COMMIT=abcdef1234567890\n"
+        )
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", tmp_path / "APPS")
+        con = Console(record=True, width=120)
+        action_atelier(con, "wstest")
+        assert "sans subnet dédié" not in con.export_text()
 
 
 class TestActionAtelierDispatch:
