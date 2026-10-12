@@ -229,6 +229,7 @@ def _cleanup_existing_hub_containers(console=None, *, dry_run: bool = False) -> 
     partagent les mêmes noms (hub-db, hub-api, hub-frontend).
     """
     con = console or _console
+    ensure_hub_env(con, dry_run=dry_run)
     if dry_run:
         con.print("[dim](dry-run) docker compose down + cleanup orphelins[/dim]")
         return
@@ -303,6 +304,7 @@ def _sync_db_password_if_needed(console=None, *, dry_run: bool = False) -> None:
     est introuvable.
     """
     con = console or _console
+    ensure_hub_env(con, dry_run=dry_run)
     if dry_run:
         con.print("[dim](dry-run) Sync mot de passe DB si volume existant[/dim]")
         return
@@ -1408,6 +1410,7 @@ def _start_hub(console, *, dry_run: bool) -> bool:
         console.print("[dim]✓ hub déjà démarré[/dim]")
         return True
     _ensure_jwt_keys(console, dry_run=dry_run)
+    ensure_hub_env(console, dry_run=dry_run)
     rc = hub_make("up-prod", dry_run=dry_run, console=console)
     if rc == 0:
         _health_check("hub", console=console, timeout=60)
@@ -1667,9 +1670,35 @@ def _ensure_branch_attached(path: Path, console=None, *, dry_run: bool = False) 
     return "main"
 
 
+def ensure_hub_env(console=None, *, dry_run: bool = False) -> None:
+    """Garantit APPS_HOST_PATH dans le .env du Hub (auto-réparation, zéro action).
+
+    APPS_HOST_PATH est requis par le docker-compose.yml du Hub (montage APPS au
+    même chemin hôte/conteneur — HUB_base 3.71.1+). Sur les serveurs installés
+    avant, la clé est absente (ou vide) du .env : TOUTE interpolation compose
+    échoue, y compris `docker compose down`. Appelée avant chaque invocation
+    compose du Hub (update/start/cleanup/sync-db/vpn), l'écriture est
+    persistante → même un `docker compose` lancé hors hubctl fonctionne ensuite.
+    Une valeur existante non vide n'est jamais écrasée.
+    """
+    con = console or _console
+    env_path = hub_state.HUB_DIR / ".env"
+    current = env_manager.read_env(env_path).get("APPS_HOST_PATH", "").strip()
+    if current:
+        return  # déjà défini — valeur custom respectée
+    apps_path = str(hub_state.APPS_DIR.resolve())
+    if dry_run:
+        con.print(f"[dim](dry-run) APPS_HOST_PATH={apps_path} serait ajouté à {env_path}[/dim]")
+        return
+    env_manager.write_env(env_path, {"APPS_HOST_PATH": apps_path})
+    con.print(f"[green]✓ APPS_HOST_PATH ajouté au .env du Hub : {apps_path}[/green]")
+
+
 def _update_target(console, target: str, *, dry_run: bool) -> bool:
     """Stop → git pull → build → up → health pour un hub ou une app. Retourne True si succès."""
     con = console or _console
+    if target == "hub":
+        ensure_hub_env(con, dry_run=dry_run)
     target_path = hub_state.HUB_DIR if target == "hub" else hub_state.active_apps_dir() / target
     compose_file = target_path / "docker-compose.yml"
     if not compose_file.exists():
@@ -2791,6 +2820,7 @@ def _vpn_container_state() -> str:
 
 
 def _vpn_compose_up(*, dry_run: bool, console=None) -> int:
+    ensure_hub_env(console, dry_run=dry_run)
     return utils.run_shell(
         ["docker", "compose", "-f", str(hub_state.HUB_DIR / "docker-compose.yml"),
          "--profile", WG_PROFILE, "up", "-d", WG_SERVICE],
