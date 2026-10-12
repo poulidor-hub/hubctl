@@ -1,5 +1,33 @@
 # Changelog — Hubctl
 
+## [0.10.6] - 12 octobre 2026
+
+### ⚡ fix atelier — subnet dédié garanti (fail-hard), plus de repli subnet prod
+
+- `_create_workshop` : la création est **refusée** si aucun /24 du pool
+  atelier (`10.210.0.0/24` … `10.210.63.0/24`) n'est libre. L'ancien
+  fallback « subnet prod réutilisé » (simple warning) produisait des
+  ateliers en conflit réseau avec la prod : `APP_SUBNET` absent du
+  `.workshop.env` → le compose interpolait la valeur prod → « Pool
+  overlaps » ou subnet partagé. `APP_SUBNET` est désormais **toujours
+  écrit** (parité voie UI `workshop_service`, qui levait déjà
+  `RuntimeError`).
+- `_ws_used_subnets()` retourne `None` si l'état Docker est inconnu
+  (`network ls`/`inspect` en échec, timeout, JSON invalide) → création
+  refusée : on n'alloue jamais un subnet à l'aveugle (une liste
+  partielle rend l'overlap-check muet).
+- Warning à la création si le compose de l'app n'épingle pas
+  `APP_SUBNET` (apps legacy) : le réseau atelier recevra un subnet
+  dynamique Docker, non contrôlé — migration template recommandée.
+- Menu `atelier` : les ateliers legacy sans `APP_SUBNET` sont signalés
+  (« sans subnet dédié ») — recréer l'atelier pour une isolation réseau
+  garantie.
+- Tests : refus pool épuisé (plus d'« omission de clé »), refus état
+  Docker inconnu, warnings legacy (création + menu), contrat
+  `APP_SUBNET` toujours écrit ; `_ws_used_subnets` → `None` testé.
+
+---
+
 ## [0.10.5] - 10 octobre 2026
 
 ### ⚡ fix atelier — health : accepter le format « status ok »
