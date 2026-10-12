@@ -1,3 +1,18 @@
+## [0.10.7] - 12 octobre 2026
+
+### ⚡ ensure_hub_env — APPS_HOST_PATH auto-réparée avant tout compose du Hub
+
+- `ensure_hub_env()` : ajoute `APPS_HOST_PATH` (valeur = `APPS_DIR` réel du
+  parc) au `.env` du Hub si absente ou vide, **de façon persistante**, avant
+  chaque invocation compose du Hub (`update`, `start`, cleanup, sync-db,
+  vpn). Répare automatiquement les serveurs installés avant HUB_base 3.71.1
+  au prochain `hubctl update`/`start` — zéro action manuelle, et un
+  `docker compose` lancé hors hubctl fonctionne ensuite aussi.
+- Valeur custom existante jamais écrasée ; clé vide traitée comme absente ;
+  dry-run sans écriture. Tests : ajout / conservation / remplissage / dry-run.
+
+---
+
 # Changelog — Hubctl
 
 ## [0.10.6] - 12 octobre 2026

@@ -175,6 +175,71 @@ def test_ensure_jwt_keys_does_not_write_to_dotenv(tmp_path, monkeypatch):
     assert "APP_ENV=production" in content  # .env non modifié
 
 
+def test_ensure_hub_env_adds_missing_key(tmp_path, monkeypatch):
+    """Serveur pré-3.71.1 : APPS_HOST_PATH absente du .env → ajoutée automatiquement.
+
+    Le contenu existant est préservé (merge atomique), la valeur pointe vers
+    APPS_DIR réel du parc — réparation persistante, zéro action manuelle.
+    """
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+
+    dotenv = hub_dir / ".env"
+    dotenv.write_text("POSTGRES_PASSWORD=x\nADMIN_USERNAME=a\n")
+
+    actions.ensure_hub_env()
+
+    env = env_manager.read_env(dotenv)
+    assert env["APPS_HOST_PATH"] == str(apps_dir.resolve())
+    assert env["POSTGRES_PASSWORD"] == "x"  # contenu existant préservé
+    assert env["ADMIN_USERNAME"] == "a"
+
+
+def test_ensure_hub_env_never_overwrites_custom_value(tmp_path, monkeypatch):
+    """Une APPS_HOST_PATH déjà définie (custom) n'est jamais écrasée."""
+    hub_dir = tmp_path
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path / "APPS")
+
+    dotenv = hub_dir / ".env"
+    dotenv.write_text("APPS_HOST_PATH=/srv/custom/APPS\n")
+
+    actions.ensure_hub_env()
+
+    assert env_manager.read_env(dotenv)["APPS_HOST_PATH"] == "/srv/custom/APPS"
+
+
+def test_ensure_hub_env_fills_empty_value(tmp_path, monkeypatch):
+    """APPS_HOST_PATH présente mais vide (= absente) → remplie."""
+    hub_dir = tmp_path
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+
+    dotenv = hub_dir / ".env"
+    dotenv.write_text("APPS_HOST_PATH=\n")
+
+    actions.ensure_hub_env()
+
+    assert env_manager.read_env(dotenv)["APPS_HOST_PATH"] == str(apps_dir.resolve())
+
+
+def test_ensure_hub_env_dry_run_writes_nothing(tmp_path, monkeypatch):
+    """dry_run : aucun fichier écrit."""
+    hub_dir = tmp_path
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path / "APPS")
+
+    actions.ensure_hub_env(dry_run=True)
+
+    assert not (hub_dir / ".env").exists()
+
+
 def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
     """Seuls les projets -test correspondant au hub ou à une app réelle sont nettoyés.
     Les projets -test étrangers (load-test, integration-test) doivent être préservés."""
