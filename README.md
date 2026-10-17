@@ -56,7 +56,7 @@ Dépôts voisins : [POULIDOR](https://github.com/POULIDOR-Audit-Developpement/PO
 |---|---|
 | `start [all\|prod\|dev]` | Démarrer le Hub et/ou les apps |
 | `stop [all\|prod\|dev]` | Tout arrêter |
-| `update` | Mettre à jour Hub + apps (git pull + rebuild) |
+| `update <cible…>` | Mettre à jour une cible : `hub`, un ou plusieurs slugs d'app, `*`/`all` = Hub + toutes les apps (git pull + rebuild + rollback auto ; sans cible : usage, rien n'exécuté) |
 | `atelier <app> [--maj] [--prod]` | Cycle atelier d'une app (créer, tester, déployer) |
 | `init [--force]` | Bootstrap du Hub (.env, démarrage, health check) |
 | `export` / `restore <archive>` | Archive chiffrée du parc complet / restauration |
