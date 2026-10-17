@@ -1,3 +1,11 @@
+## [0.11.1] - 17 octobre 2026
+
+### ⚡ README — sous-commande update documentée avec sa cible obligatoire
+
+- Table des sous-commandes : `update` → `update <cible…>` (`hub`, un ou
+  plusieurs slugs d'app, `*`/`all` = Hub + toutes les apps ; sans cible :
+  usage, rien n'exécuté). Documentation seule, aucun changement de code.
+
 ## [0.11.0] - 17 octobre 2026
 
 ### ⚡ update ciblé — hub | <slug> | * (rupture d'usage)
