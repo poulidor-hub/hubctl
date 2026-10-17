@@ -211,6 +211,15 @@ def test_parser_update():
     p = build_parser()
     args = p.parse_args(["update"])
     assert args.command == "update"
+    assert args.targets == []
+
+
+def test_parser_update_targets():
+    p = build_parser()
+    assert p.parse_args(["update", "hub"]).targets == ["hub"]
+    assert p.parse_args(["update", "hub", "exemple-app"]).targets == ["hub", "exemple-app"]
+    assert p.parse_args(["update", "*"]).targets == ["*"]
+    assert p.parse_args(["update", "all"]).targets == ["all"]
 
 
 def test_parser_atelier():
@@ -294,11 +303,30 @@ def test_dispatch_stop_calls_action_stop_all(monkeypatch):
     fn.assert_called_once()
 
 
-def test_dispatch_update_calls_action_update_all(monkeypatch):
+def test_dispatch_update_sans_cible_n_appelle_pas_action(monkeypatch, capsys):
+    """`hubctl update` sans cible : usage affiché, rien n'est exécuté, rc != 0."""
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
-    with mock.patch.object(m, "action_update_all") as fn:
+    with mock.patch.object(m, "action_update") as fn:
         rc = m.main(["update"])
+    assert rc == 1
+    fn.assert_not_called()
+    assert "cible" in capsys.readouterr().out
+
+
+def test_dispatch_update_avec_cible_appelle_action_update(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_update", return_value=0) as fn:
+        rc = m.main(["update", "hub", "exemple-app"])
     assert rc == 0
+    fn.assert_called_once()
+    assert fn.call_args.kwargs.get("targets") == ["hub", "exemple-app"]
+
+
+def test_dispatch_update_propage_le_nombre_echecs(monkeypatch):
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_update", return_value=2) as fn:
+        rc = m.main(["update", "exemple-app"])
+    assert rc == 2
     fn.assert_called_once()
 
 
