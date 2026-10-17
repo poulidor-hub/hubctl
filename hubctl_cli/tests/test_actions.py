@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -280,6 +281,98 @@ def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
 
 
 # ── action_update (Lot 2 : flux séquentiel + rollback) ──
+
+
+# ── action_update : ciblage hub | <slug> | * / all ──
+
+
+def _apps(*names):
+    return [
+        actions.hub_state.AppInfo(
+            name=n, path=Path(n), version="1.0.0", git_dirty=False, size_bytes=0)
+        for n in names
+    ]
+
+
+def test_resolve_update_targets_joker_selectionne_tout(monkeypatch):
+    monkeypatch.setattr(actions.hub_state, "get_active_apps",
+                        lambda: _apps("exemple-app", "exemple-apps"))
+    resolved, all_requested = actions._resolve_update_targets(["*"])
+    assert resolved == ["hub", "exemple-app", "exemple-apps"]
+    assert all_requested is True
+
+
+def test_resolve_update_targets_alias_all(monkeypatch):
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    resolved, all_requested = actions._resolve_update_targets(["all"])
+    assert resolved == ["hub", "exemple-app"]
+    assert all_requested is True
+
+
+def test_resolve_update_targets_melange_joker_et_cible(monkeypatch):
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    resolved, all_requested = actions._resolve_update_targets(["hub", "*"])
+    assert resolved == ["hub", "exemple-app"]
+    assert all_requested is True
+
+
+def test_resolve_update_targets_slug_et_hub_deduplique(monkeypatch):
+    monkeypatch.setattr(actions.hub_state, "get_active_apps",
+                        lambda: _apps("exemple-app", "exemple-apps"))
+    resolved, all_requested = actions._resolve_update_targets(["exemple-app", "hub", "exemple-app"])
+    assert resolved == ["exemple-app", "hub"]
+    assert all_requested is False
+
+
+def test_resolve_update_targets_inconnue_leve_erreur(monkeypatch):
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    with pytest.raises(ValueError) as ei:
+        actions._resolve_update_targets(["nope"])
+    msg = str(ei.value)
+    assert "nope" in msg
+    assert "hub" in msg and "exemple-app" in msg  # cibles valides listées
+    assert '"*"' in msg  # astuce guillemets pour éviter l'expansion du glob
+
+
+def test_action_update_sans_cible_leve_erreur():
+    with pytest.raises(ValueError):
+        actions.action_update(console=mock.MagicMock(), targets=[])
+
+
+def test_action_update_compte_les_echecs(monkeypatch):
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("a", "b"))
+    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
+    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda *a, **k: None)
+    monkeypatch.setattr(actions, "_update_target",
+                        lambda con, name, *, dry_run: name != "b")
+    rc = actions.action_update(console=mock.MagicMock(), targets=["a", "b"])
+    assert rc == 1
+
+
+def test_action_update_joker_passe_par_le_mem_chemin(monkeypatch):
+    """`update *` conserve le comportement « tout » de l'ancien update."""
+    seen = []
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
+    monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda *a, **k: None)
+    monkeypatch.setattr(actions, "_update_target",
+                        lambda con, name, *, dry_run: seen.append(name) or True)
+    rc = actions.action_update(console=mock.MagicMock(), targets=["*"])
+    assert rc == 0
+    assert seen == ["hub", "exemple-app"]
+
+
+def test_action_update_all_menu_delegue(monkeypatch):
+    """Le menu (action_update_all) conserve son comportement « tout »."""
+    calls = {}
+
+    def fake_action_update(console=None, targets=None, *, dry_run=False):
+        calls["targets"] = targets
+        return 0
+
+    monkeypatch.setattr(actions, "action_update", fake_action_update)
+    actions.action_update_all()
+    assert calls["targets"] == ["*"]
 
 
 

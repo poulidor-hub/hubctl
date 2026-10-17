@@ -1,3 +1,21 @@
+## [0.11.0] - 17 octobre 2026
+
+### ⚡ update ciblé — hub | <slug> | * (rupture d'usage)
+
+- **Rupture** : `hubctl update` **sans cible** n'exécute plus rien (usage
+  affiché, code retour 1). La mise à jour globale devient `hubctl update "*"`
+  (alias `all`) — quoter le `*`, sinon le shell développe le glob.
+- **Ajouté** : ciblage par argument(s) : `hubctl update hub` (Hub seul),
+  `hubctl update exemple-app` (une app), plusieurs slugs en une passe
+  (`hubctl update hub exemple-app`). Cible inconnue → erreur listant les cibles
+  valides. Code retour = nombre d'échecs.
+- Factoring : validation dans `_resolve_update_targets()`, pool parallèle
+  factorisé dans `_update_targets_pool()` ; `action_update_all()` (menu TUI)
+  délègue à `action_update(["*"])` — comportement du menu inchangé.
+- Le cycle par cible reste stop → git pull → build → up → health, avec
+  snapshot DB (Hub) et rollback automatique (flux Lot 2 inchangé).
+- +14 tests (parser, dispatch, résolution de cibles, comptage d'échecs).
+
 ## [0.10.7] - 12 octobre 2026
 
 ### ⚡ ensure_hub_env — APPS_HOST_PATH auto-réparée avant tout compose du Hub

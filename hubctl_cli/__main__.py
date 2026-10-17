@@ -8,7 +8,7 @@ from rich.text import Text
 
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
-    action_start_all, action_stop_all, action_update_all,
+    action_start_all, action_stop_all, action_update_all, action_update,
     action_atelier, action_bootstrap, action_vpn, action_seed,
     action_seed_export,
 )
@@ -45,8 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     stop_parser.add_argument("target", nargs="?", default="all",
                              choices=["all", "prod", "dev"])
 
-    # update — mettre a jour tout
-    sub.add_parser("update", help="Mise a jour du Hub et de toutes les apps (git pull + rebuild)")
+    # update — mise à jour ciblée
+    update_parser = sub.add_parser(
+        "update",
+        help="Mise a jour ciblee : hub, une ou plusieurs apps, ou tout (git pull + rebuild)")
+    update_parser.add_argument("targets", nargs="*", metavar="CIBLE",
+                               help='hub | <slug app> | "*" ou all (Hub + toutes les apps)')
 
     # atelier
     atelier_parser = sub.add_parser(
@@ -181,6 +185,16 @@ def _resolve_mode(args) -> str:
     return mode
 
 
+def _print_update_usage(console) -> None:
+    """`hubctl update` sans cible : affiche l'usage, n'exécute rien."""
+    console.print("[yellow]hubctl update requiert au moins une cible — rien n'a été exécuté.[/yellow]")
+    console.print("[bold]Usage :[/bold]")
+    console.print("  hubctl update hub          # Hub seul")
+    console.print("  hubctl update exemple-app       # une app (slug)")
+    console.print("  hubctl update hub exemple-app   # plusieurs cibles")
+    console.print('  hubctl update "*"          # Hub + toutes les apps (alias : all)')
+
+
 def _poll_quit() -> bool:
     k = keys.read_key(sys.stdin.fileno(), timeout=0.5)
     if k is None:
@@ -312,8 +326,11 @@ def _run(args) -> int:
         console = RichConsole()
         _resolve_mode(args)
         try:
-            action_update_all(console=console, dry_run=global_dry_run)
-            return 0
+            if not args.targets:
+                _print_update_usage(console)
+                return 1
+            return action_update(console=console, targets=args.targets,
+                                 dry_run=global_dry_run)
         except Exception as e:
             print(f"❌ update a echoue : {e}")
             return 1

@@ -1753,29 +1753,45 @@ def _update_target(console, target: str, *, dry_run: bool) -> bool:
     return True
 
 
-def action_update_all(console=None, *, dry_run: bool = False) -> None:
-    """Met à jour le Hub et toutes les apps actives : git pull + rebuild."""
-    con = console or _console
+def _resolve_update_targets(targets: list[str]) -> tuple[list[str], bool]:
+    """Normalise et valide les cibles de ``hubctl update``.
+
+    Retourne (cibles résolues, tout_demandé). Le joker « * » (ou l'alias
+    « all ») sélectionne le Hub + toutes les apps actives. Lève ValueError
+    si une cible n'est ni « hub », ni une app active, ni le joker.
+    """
+    apps = [a.name for a in hub_state.get_active_apps()]
+    if any(t in ("*", "all") for t in targets):
+        return ["hub"] + apps, True
+    unknown = [t for t in targets if t != "hub" and t not in apps]
+    if unknown:
+        valid = ", ".join(["hub"] + apps) if apps else "hub (aucune app active)"
+        raise ValueError(
+            f"cible inconnue : {', '.join(unknown)} — cibles valides : {valid}. "
+            "Astuce : « hubctl update \"*\" » met à jour le Hub et toutes les apps "
+            "(guillemets obligatoires, sinon le shell développe le glob).")
+    deduped: list[str] = []
+    for t in targets:
+        if t not in deduped:
+            deduped.append(t)
+    return deduped, False
+
+
+def _update_targets_pool(con, targets: list[str], *, dry_run: bool) -> int:
+    """Met à jour les cibles en parallèle (stop → pull → build → up → health).
+
+    Retourne le nombre d'échecs.
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    if not disk_guard(con):
-        return
-
-    _ensure_jwt_keys(console, dry_run=dry_run)
-
-    apps = [a.name for a in hub_state.get_active_apps()]
-
-    if not apps:
-        con.print("[dim]Aucune app active à mettre à jour.[/dim]")
-
     tasks: dict = {}
-    with ThreadPoolExecutor(max_workers=max(1, len(apps) + 1)) as pool:
-        con.print("[bold]→ Mise à jour du Hub…[/bold]")
-        tasks[pool.submit(_update_target, con, "hub", dry_run=dry_run)] = "hub"
-
-        for app_name in apps:
-            con.print(f"[bold]→ Mise à jour de « {app_name} »…[/bold]")
-            tasks[pool.submit(_update_target, con, app_name, dry_run=dry_run)] = app_name
+    with ThreadPoolExecutor(max_workers=max(1, len(targets))) as pool:
+        for name in targets:
+            if name == "hub":
+                con.print("[bold]→ Mise à jour du Hub…[/bold]")
+            else:
+                con.print(f"[bold]→ Mise à jour de « {name} »…[/bold]")
+            tasks[pool.submit(_update_target, con, name, dry_run=dry_run)] = name
 
         ok, fail = 0, 0
         for future in as_completed(tasks):
@@ -1791,6 +1807,35 @@ def action_update_all(console=None, *, dry_run: bool = False) -> None:
                 con.print(f"[red]✗ {name} erreur : {e}[/red]")
                 fail += 1
         con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
+        return fail
+
+
+def action_update(console=None, targets: list[str] | None = None, *,
+                  dry_run: bool = False) -> int:
+    """Mise à jour ciblée : hub, une ou plusieurs apps (slug), ou tout (« * »/« all »).
+
+    Sans cible, lève ValueError (le CLI affiche l'usage sans rien exécuter).
+    Retourne le nombre d'échecs (0 = succès).
+    """
+    con = console or _console
+    if not targets:
+        raise ValueError(
+            'aucune cible fournie — usage : hubctl update hub | <slug> | "*"')
+    resolved, all_requested = _resolve_update_targets(list(targets))
+    if all_requested and resolved == ["hub"]:
+        con.print("[dim]Aucune app active à mettre à jour.[/dim]")
+
+    if not disk_guard(con):
+        return 1
+
+    _ensure_jwt_keys(console, dry_run=dry_run)
+
+    return _update_targets_pool(con, resolved, dry_run=dry_run)
+
+
+def action_update_all(console=None, *, dry_run: bool = False) -> None:
+    """(menu) Met à jour le Hub et toutes les apps actives : git pull + rebuild."""
+    action_update(console, ["*"], dry_run=dry_run)
 
 
 # ── Workshop (ateliers Docker Compose -p) ──
