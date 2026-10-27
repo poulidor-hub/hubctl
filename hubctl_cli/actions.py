@@ -1296,7 +1296,8 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
               db_container: str | None = None, db_name: str | None = None,
               dry_run: bool = False,
               meta_root: Path | None = None,
-              prev_meta_sha: str | None = None) -> None:
+              prev_meta_sha: str | None = None,
+              meta_clean: bool = True) -> None:
     """Rollback: revert git, restore DB snapshot, re-up.
 
     ``meta_root``/``prev_meta_sha`` (plan unification updates) : restaure
@@ -1307,7 +1308,10 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
     con = console or _console
     con.print(f"[bold red]↩ Rollback de « {target} »[/bold red]")
 
-    if meta_root and prev_meta_sha:
+    if meta_root and prev_meta_sha and meta_clean:
+        # C1 (revue) : le reset --hard du méta ne tourne QUE si le méta était
+        # propre avant l'update — sinon il détruirait les modifications non
+        # commitées que les pré-checks ont expressément tolérées.
         con.print(f"  méta reset → {prev_meta_sha[:8]} (pointeur submodule)")
         utils.run_shell(
             ["git", "-C", str(meta_root), "reset", "--hard", prev_meta_sha],
@@ -1758,6 +1762,8 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
 
     prev_meta_sha = _git_head_sha(meta_root)
     prev_hub_sha = _git_head_sha(hub_path)
+    # C1 (revue) : le rollback ne reset --hard le méta que s'il était propre
+    meta_clean = not park_checks.meta_unrelated_dirty_files(meta_root)
     snapshot = _db_snapshot(con) if not dry_run else None
 
     con.print("[bold]→ git pull --ff-only du méta…[/bold]")
@@ -1776,7 +1782,7 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
         con.print("[red]✗ submodule update échoué — rollback.[/red]")
         _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
                   dry_run=dry_run, meta_root=meta_root,
-                  prev_meta_sha=prev_meta_sha)
+                  prev_meta_sha=prev_meta_sha, meta_clean=meta_clean)
         return False
 
     con.print("[bold]→ Build « hub »…[/bold]")
@@ -1786,7 +1792,7 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
         con.print("[red]✗ Build échoué pour « hub » — rollback.[/red]")
         _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
                   dry_run=dry_run, meta_root=meta_root,
-                  prev_meta_sha=prev_meta_sha)
+                  prev_meta_sha=prev_meta_sha, meta_clean=meta_clean)
         return False
 
     con.print("[bold]→ Démarrage « hub »…[/bold]")
@@ -1796,14 +1802,14 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
         con.print("[red]✗ Démarrage échoué pour « hub » — rollback.[/red]")
         _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
                   dry_run=dry_run, meta_root=meta_root,
-                  prev_meta_sha=prev_meta_sha)
+                  prev_meta_sha=prev_meta_sha, meta_clean=meta_clean)
         return False
 
     if not _health_check("hub", con, timeout=60):
         con.print("[red]✗ Health échoué pour « hub » — rollback.[/red]")
         _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
                   dry_run=dry_run, meta_root=meta_root,
-                  prev_meta_sha=prev_meta_sha)
+                  prev_meta_sha=prev_meta_sha, meta_clean=meta_clean)
         return False
     return True
 
@@ -1819,6 +1825,16 @@ def _update_target(console, target: str, *, dry_run: bool) -> bool:
     compose_file = target_path / "docker-compose.yml"
     if not compose_file.exists():
         con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
+        return False
+
+    # I3 (revue) : pré-check app AVANT tout stop/pull — une app sale ou
+    # divergente échoue proprement avec son remède (jamais de rollback
+    # destructeur sur des modifications locales).
+    app_check = park_checks.check_app_repo(target_path)
+    if not app_check.ok:
+        con.print(f"[red]✗ {app_check.check} — {app_check.detail}[/red]")
+        if app_check.remedy:
+            con.print(f"    [yellow]remède : {app_check.remedy}[/yellow]")
         return False
 
     # Idempotence : si git est déjà à jour, on saute tout le cycle.

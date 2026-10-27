@@ -180,6 +180,23 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _update_mode(args) -> str:
+    """Mode pour `update` : EXPLICITE uniquement (plan Task 4 + revue I4).
+
+    Jamais l'auto-détection atelier : un `.workshop.env` résiduel ne doit
+    pas basculer un Hub de prod en `up-dev`. Défaut : prod.
+    """
+    import os
+    if getattr(args, "dev", False):
+        return "dev"
+    if getattr(args, "prod", False):
+        return "prod"
+    env = os.environ.get("HUBCTL_MODE", "").lower()
+    if env in ("dev", "prod"):
+        return env
+    return "prod"
+
+
 def _resolve_mode(args) -> str:
     import os
     from hubctl_cli.hub_state import auto_detect_mode, set_mode
@@ -334,7 +351,9 @@ def _run(args) -> int:
     if args.command == "update":
         from rich.console import Console as RichConsole
         console = RichConsole()
-        _resolve_mode(args)
+        # Plan unification updates (revue I4) : mode explicite uniquement,
+        # jamais l'auto-détection atelier pour une mise à jour.
+        hub_state.set_mode(_update_mode(args))
         try:
             if not args.targets:
                 _print_update_usage(console)

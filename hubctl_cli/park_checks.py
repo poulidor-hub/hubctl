@@ -62,6 +62,26 @@ def _dirty_tracked(repo: Path, path: str | None = None) -> list[str]:
             if line.strip() and not line.lstrip().startswith("??")]
 
 
+def _submodule_paths(parc_root: Path) -> set[str]:
+    """Chemins des sous-modules déclarés dans ``.gitmodules`` du méta."""
+    out = _git_out("git", "config", "--file", ".gitmodules", "--get-regexp",
+                   r"submodule\..*\.path", cwd=parc_root)
+    if not out:
+        return set()
+    return {line.split()[-1] for line in out.splitlines() if line.strip()}
+
+
+def meta_unrelated_dirty_files(parc_root: Path) -> list[str]:
+    """Fichiers suivis modifiés du méta sans rapport avec l'update.
+
+    (tout sauf le gitlink ``HUB_base``) — le rollback ne doit jamais
+    faire de ``reset --hard`` quand cette liste n'est pas vide (C1).
+    """
+    parc_root = Path(parc_root)
+    return [line.split()[-1] for line in _dirty_tracked(parc_root)
+            if line.split()[-1] != "HUB_base"]
+
+
 def check_meta_ready(parc_root: Path) -> list[Finding]:
     """Méta : branche ``main`` + gitlink ``HUB_base`` propre pour un pull."""
     parc_root = Path(parc_root)
@@ -75,9 +95,13 @@ def check_meta_ready(parc_root: Path) -> list[Finding]:
         remedy=None if branch == "main" else "git -C <méta> checkout main",
     ))
 
-    dirty = _dirty_tracked(parc_root, "HUB_base")
-    gitlink_dirty = any(line.split()[-1] == "HUB_base" for line in dirty)
-    if gitlink_dirty:
+    dirty = _dirty_tracked(parc_root)
+    subs = _submodule_paths(parc_root)
+    paths = [line.split()[-1] for line in dirty]
+    hub_dirty = "HUB_base" in paths
+    other_subs = sorted(p for p in paths if p in subs and p != "HUB_base")
+
+    if hub_dirty:
         findings.append(Finding(
             check="meta.gitlink_clean",
             ok=False,
@@ -85,13 +109,23 @@ def check_meta_ready(parc_root: Path) -> list[Finding]:
             remedy=f"git -C {parc_root} submodule update --init HUB_base",
         ))
     else:
-        others = [line for line in _dirty_tracked(parc_root)
-                  if line.split()[-1] != "HUB_base"]
+        plain = [p for p in paths if p not in subs]
         detail = "gitlink HUB_base propre"
-        if others:
+        if plain:
             detail += (" ; avertissement : fichiers suivis modifiés sans rapport "
-                       "avec l'update : " + ", ".join(others[:5]))
+                       "avec l'update : " + ", ".join(plain[:5]))
         findings.append(Finding(check="meta.gitlink_clean", ok=True, detail=detail))
+
+    # I5 : un AUTRE submodule dérivé casserait `submodule update` → bloquant
+    if other_subs:
+        findings.append(Finding(
+            check="meta.submodules_clean",
+            ok=False,
+            detail="sous-modules dérivés (HEAD local ≠ pointeur méta) : "
+                   + ", ".join(other_subs),
+            remedy=(f"git -C {parc_root} submodule update --init "
+                    + " ".join(other_subs)),
+        ))
 
     return findings
 
@@ -109,7 +143,18 @@ def check_hub_base(parc_root: Path) -> list[Finding]:
         )]
 
     findings: list[Finding] = []
-    _run("git", "fetch", "--prune", "origin", cwd=hub)
+    frc, _, ferr = _run("git", "fetch", "--prune", "origin", cwd=hub)
+    if frc != 0:
+        # I2 : refs potentiellement périmées → JAMAIS de diagnostic
+        # « divergent » (remède destructeur) sur un fetch en échec.
+        findings.append(Finding(
+            check="hub_base.fetch",
+            ok=False,
+            detail="fetch origin impossible : "
+                   + (ferr.splitlines()[-1] if ferr else "erreur réseau"),
+            remedy=None,
+        ))
+        return findings
 
     local = _git_out("git", "rev-parse", "HEAD", cwd=hub)
     remote = _git_out("git", "rev-parse", "origin/main", cwd=hub)
@@ -146,6 +191,17 @@ def check_hub_base(parc_root: Path) -> list[Finding]:
         remedy=None if local == recorded_sha
         else f"git -C {parc_root} submodule update --init HUB_base",
     ))
+
+    # I1 : branches locales mergées restantes (le --fix sait les supprimer)
+    merged = list_merged_local_branches(hub)
+    if merged:
+        findings.append(Finding(
+            check="hub_base.branches",
+            ok=False,
+            detail="branches locales mergées restantes : "
+                   + ", ".join(merged[:5]),
+            remedy=f"hubctl doctor --fix (supprime {', '.join(merged[:5])})",
+        ))
     return findings
 
 
@@ -158,7 +214,13 @@ def check_app_repo(app_path: Path) -> Finding:
                        detail="dépôt git absent (app posée par copie ?)",
                        remedy=None)
 
-    _run("git", "fetch", "--prune", "origin", cwd=app_path)
+    frc, _, ferr = _run("git", "fetch", "--prune", "origin", cwd=app_path)
+    if frc != 0:
+        # I2 : pas de diagnostic destructeur sur des refs périmées
+        return Finding(check=f"app.{name}", ok=False,
+                       detail="fetch origin impossible : "
+                              + (ferr.splitlines()[-1] if ferr else "erreur réseau"),
+                       remedy=None)
 
     dirty = _dirty_tracked(app_path)
     if dirty:
@@ -245,8 +307,15 @@ def apply_safe_fixes(findings: list[Finding], parc_root: Path, *,
     failed = {f.check for f in findings if not f.ok}
     applied = 0
 
+    if "meta.branch" in failed:
+        # I6 : méta détaché → retour sur main (sans toucher au worktree)
+        if _confirm(console, "Repasser le méta sur la branche main ?", assume_yes):
+            rc, _, _ = _run("git", "checkout", "main", cwd=parc_root)
+            if rc == 0:
+                applied += 1
+
     if "hub_base.aligned_origin" in failed and hub.exists():
-        if _confirm(console, f"Réaligner HUB_base sur origin/main (reset --hard) ?",
+        if _confirm(console, "Réaligner HUB_base sur origin/main (reset --hard) ?",
                     assume_yes):
             rc, _, _ = _run("git", "checkout", "main", cwd=hub)
             if rc == 0:
@@ -254,11 +323,11 @@ def apply_safe_fixes(findings: list[Finding], parc_root: Path, *,
             if rc == 0:
                 applied += 1
 
-    if failed & {"hub_base.pointer", "meta.gitlink_clean"}:
+    if failed & {"hub_base.present", "hub_base.pointer", "meta.gitlink_clean"}:
         if _confirm(console, "Réaligner le submodule HUB_base sur le pointeur méta ?",
                     assume_yes):
             rc, _, _ = _run("git", "-c", "protocol.file.allow=always",
-                            "submodule", "update", "--init", "HUB_base",
+                            "submodule", "update", "--init", "--recursive",
                             cwd=parc_root)
             if rc == 0:
                 applied += 1

@@ -68,6 +68,9 @@ def test_update_app_uses_up_dev_in_dev_mode(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
+    from hubctl_cli.park_checks import Finding
+    monkeypatch.setattr(actions.park_checks, "check_app_repo",
+                        lambda p: Finding(check="app.exemple-app", ok=True, detail="ok"))
     monkeypatch.setattr(actions.hub_state, "_mode", "dev")
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
@@ -93,6 +96,9 @@ def test_update_app_uses_up_in_prod_mode(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
+    from hubctl_cli.park_checks import Finding
+    monkeypatch.setattr(actions.park_checks, "check_app_repo",
+                        lambda p: Finding(check="app.exemple-app", ok=True, detail="ok"))
     monkeypatch.setattr(actions.hub_state, "_mode", "prod")
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
@@ -139,3 +145,22 @@ def test_update_all_hub_failure_blocks_apps(monkeypatch):
     rc = actions.action_update(console=Console(), targets=["*"])
     assert rc >= 1
     assert executed == ["hub"], "les apps ne doivent pas être mises à jour"
+
+
+def test_update_mode_defaults_to_prod_without_explicit_flags(monkeypatch):
+    """I4 : sans --dev/--prod/HUBCTL_MODE, update est PROD — jamais
+    l'auto-détection atelier (un .workshop.env ne doit pas basculer le hub)."""
+    from hubctl_cli import __main__ as m
+
+    args = m.build_parser().parse_args(["update", "hub"])
+    monkeypatch.delenv("HUBCTL_MODE", raising=False)
+    assert m._update_mode(args) == "prod"
+
+    monkeypatch.setenv("HUBCTL_MODE", "dev")
+    assert m._update_mode(args) == "dev"
+    monkeypatch.delenv("HUBCTL_MODE", raising=False)
+
+    args_dev = m.build_parser().parse_args(["--dev", "update", "hub"])
+    assert m._update_mode(args_dev) == "dev"
+    args_prod = m.build_parser().parse_args(["--prod", "update", "hub"])
+    assert m._update_mode(args_prod) == "prod"
