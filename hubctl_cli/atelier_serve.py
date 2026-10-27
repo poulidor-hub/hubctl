@@ -28,6 +28,7 @@ import hmac
 import io
 import json
 import subprocess
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -39,6 +40,11 @@ from hubctl_cli import actions, hub_state
 DEFAULT_TOKEN_FILE = Path.home() / ".config" / "hubctl" / "atelier_token"
 
 _ROUTES_DOC = "GET /health · GET /atelier/list · POST /atelier/close-all"
+
+# close-all = `docker compose down -v` successifs : deux exécutions en
+# parallèle sur le même atelier seraient imprévisibles (retry du Hub pendant
+# qu'une fermeture tourne). ThreadingHTTPServer = 1 thread/requête → sérialiser.
+_close_all_lock = threading.Lock()
 
 
 # ── Collecte des ateliers ──
@@ -103,8 +109,10 @@ def collect_ateliers() -> list[dict]:
             "ws_slug": ws_slug,
             "api_port": _int_or_none(ws.get("API_PORT")),
             "frontend_port": _int_or_none(ws.get("FRONTEND_PORT")),
+            # Préfixe strict (pas de sous-chaîne) : sinon le slug « si »
+            # s'attribuerait les conteneurs de « exemple-app-ws-api-1 ».
             "containers_state": {n: s for n, s in all_states.items()
-                                 if ws_slug in n},
+                                 if n == ws_slug or n.startswith(ws_slug + "-")},
         })
     return ateliers
 
@@ -168,7 +176,8 @@ class AtelierHandler(BaseHTTPRequestHandler):
         buf = io.StringIO()
         console = Console(file=buf, force_terminal=False, color_system=None,
                           width=100)
-        rc = actions.action_atelier_close_all(console, oui=True)
+        with _close_all_lock:
+            rc = actions.action_atelier_close_all(console, oui=True)
         after = {a["app"] for a in collect_ateliers()}
         payload = {
             "closed": sorted(before - after),

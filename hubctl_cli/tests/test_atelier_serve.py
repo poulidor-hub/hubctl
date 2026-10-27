@@ -205,6 +205,21 @@ def test_collect_ateliers_ports_invalid(monkeypatch, tmp_path):
     assert ateliers[0]["frontend_port"] is None
 
 
+def test_collect_ateliers_containers_no_cross_match(monkeypatch, tmp_path):
+    """Conteneurs attribués par préfixe strict : le slug « si » ne captura pas
+    les conteneurs de « exemple-app-ws-* » (sous-chaîne ≠ préfixe)."""
+    monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+    monkeypatch.setattr(atelier_serve, "_ws_containers_state",
+                        lambda: {"exemple-app-ws-api-1": "Up 2 minutes"})
+    for slug in ("exemple-app", "si"):
+        d = tmp_path / slug
+        d.mkdir()
+        (d / ".workshop.env").write_text("API_PORT=10001\n", encoding="utf-8")
+    by_app = {a["app"]: a for a in atelier_serve.collect_ateliers()}
+    assert by_app["exemple-app"]["containers_state"] == {"exemple-app-ws-api-1": "Up 2 minutes"}
+    assert by_app["si"]["containers_state"] == {}
+
+
 # ── build_server / token ──
 
 def test_build_server_binds_loopback(serve_env):
