@@ -1754,6 +1754,9 @@ def test_update_target_app_reattaches_detached_head_before_pull(tmp_path, monkey
     (app_dir / "docker-compose.yml").write_text("services: {}\n")
     order = []
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
+    from hubctl_cli.park_checks import Finding
+    monkeypatch.setattr(actions.park_checks, "check_app_repo",
+                        lambda p: Finding(check="app.exemple-app", ok=True, detail="ok"))
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc123")
     monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
@@ -1772,3 +1775,28 @@ def test_update_target_app_reattaches_detached_head_before_pull(tmp_path, monkey
     assert actions._update_target(None, "exemple-app", dry_run=False) is True
     assert "attach" in order
     assert order.index("attach") < order.index("pull")
+
+
+def test_update_target_app_fails_clean_on_local_modifications(monkeypatch, tmp_path):
+    """I3 : une app sale échoue proprement AVANT tout stop/pull/rollback."""
+    from hubctl_cli.park_checks import Finding
+
+    app_dir = tmp_path / "exemple-app"
+    app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        actions.park_checks, "check_app_repo",
+        lambda p: Finding(check="app.exemple-app", ok=False,
+                          detail="modifications locales non commitées",
+                          remedy=f"commit ou stash dans {p}"))
+    monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
+    rollback = mock.Mock()
+    monkeypatch.setattr(actions, "_rollback", rollback)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(actions.utils, "run_shell",
+                        lambda cmd, **kw: calls.append(list(cmd)) or 0)
+
+    assert actions._update_target(None, "exemple-app", dry_run=False) is False
+    rollback.assert_not_called()
+    assert not any(c[0] == "make" for c in calls), "aucun stop/build avant échec propre"

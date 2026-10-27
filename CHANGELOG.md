@@ -1,3 +1,28 @@
+## [0.12.1] - 27 octobre 2026
+
+### ⚡ Findings de la revue finale (sécurité du rollback et fiabilité du diagnostic)
+
+- **C1** : le rollback ne fait plus de `reset --hard` sur le méta si celui-ci
+  portait des modifications non commitées tolérées par les pré-checks — le
+  travail des sessions parallèles n'est plus détruit en cas d'échec d'update.
+- **I1** : `doctor` détecte désormais les branches locales mergées restantes
+  de HUB_base (`hub_base.branches`) — le `--fix` pouvait les supprimer mais
+  rien ne les listait jamais.
+- **I2** : fetch origin en échec (réseau) = diagnostic fail-closed sans
+  remède destructeur — un `origin/main` périmé ne produit plus un faux
+  « historique divergent → reset --hard » (Hub et apps).
+- **I3** : `update <app>` pré-vérifie l'app (propreté/alignement) AVANT tout
+  stop/pull — une app sale échoue proprement, sans rollback destructeur.
+- **I4** : le mode d'`update` est explicite uniquement (`--dev`/`--prod`/
+  `HUBCTL_MODE`, défaut **prod**) — jamais l'auto-détection atelier : un
+  `.workshop.env` résiduel ne bascule plus un hub de prod en `up-dev`.
+- **I5** : un autre submodule du méta dérivé (HUBCSS…) est bloquant au
+  pré-check (il aurait cassé `submodule update`) au lieu d'un simple warning.
+- **I6** : `doctor --fix` corrige aussi le méta détaché (checkout main) et
+  le submodule HUB_base absent.
+- +8 tests (rollback méta sale, branches, fetch fail-closed ×2, submodule
+  dérivé, méta détaché réparé, mode update défaut prod, app sale).
+
 ## [0.12.0] - 27 octobre 2026
 
 ### ⚡ Unification des mises à jour — méta = source de vérité, doctor

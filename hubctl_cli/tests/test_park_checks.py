@@ -215,3 +215,76 @@ class TestRunChecks:
         _commit(app, "x.txt", "app sans remote")
         findings = park_checks.run_checks(meta, apps=["exemple-app"])
         assert any(f.check == "app.exemple-app" for f in findings)
+
+
+class TestReviewFixes:
+    """Findings de la revue finale (C1, I1, I2, I5, I6)."""
+
+    def test_check_hub_base_flags_merged_branches(self, tmp_path):
+        meta, hub, _ = _make_meta_with_submodule(tmp_path)
+        _git("checkout", "-b", "feat-a", cwd=hub)
+        _commit(hub, "fa.txt", "feat-a")
+        _git("checkout", "main", cwd=hub)
+        _git("merge", "--no-ff", "feat-a", "-m", "merge feat-a", cwd=hub)
+        _git("push", "origin", "main", cwd=hub)
+
+        findings = park_checks.check_hub_base(meta)
+        branches = [f for f in findings if f.check == "hub_base.branches"]
+        assert branches and branches[0].ok is False
+        assert "feat-a" in branches[0].detail
+
+    def test_check_hub_base_fetch_failure_is_fail_closed(self, tmp_path):
+        """I2 : fetch impossible → pas de diagnostic « divergent » destructeur."""
+        meta, hub, _ = _make_meta_with_submodule(tmp_path)
+        _git("remote", "set-url", "origin", "/tmp/origin-inexistante-xyz", cwd=hub)
+        findings = park_checks.check_hub_base(meta)
+        fetch = [f for f in findings if f.check == "hub_base.fetch"]
+        assert fetch and fetch[0].ok is False and fetch[0].remedy is None
+        assert all("reset --hard" not in (f.remedy or "") for f in findings), findings
+
+    def test_check_app_repo_fetch_failure_is_fail_closed(self, tmp_path):
+        meta, _, _ = _make_meta_with_submodule(tmp_path)
+        app = _init_repo(meta / "APPS" / "exemple-app")
+        app_origin = _init_repo(tmp_path / "origin_inv")
+        _commit(app_origin, "README.md", "app")
+        _git("remote", "add", "origin", str(app_origin), cwd=app)
+        _git("fetch", "origin", cwd=app)
+        _git("checkout", "-b", "main", "origin/main", cwd=app)
+        _git("remote", "set-url", "origin", "/tmp/origin-inexistante-inv", cwd=app)
+        finding = park_checks.check_app_repo(app)
+        assert finding.ok is False
+        assert finding.remedy is None
+        assert "fetch" in finding.detail.lower()
+
+    def test_check_meta_ready_fails_on_other_submodule_dirty(self, tmp_path):
+        """I5 : un autre submodule (HUBCSS…) dérivé doit bloquer, pas avertir."""
+        meta, _, _ = _make_meta_with_submodule(tmp_path)
+        css_origin = _init_repo(tmp_path / "origin_css")
+        _commit(css_origin, "README.md", "css")
+        _git("-c", "protocol.file.allow=always", "submodule", "add",
+             str(css_origin), "HUBCSS", cwd=meta)
+        _git("commit", "-am", "add HUBCSS", cwd=meta)
+        _commit(meta / "HUBCSS", "drift.txt", "dérive locale HUBCSS")
+
+        findings = park_checks.check_meta_ready(meta)
+        sub = [f for f in findings if f.check == "meta.submodules_clean"]
+        assert sub and sub[0].ok is False
+        assert "HUBCSS" in sub[0].detail
+
+    def test_apply_safe_fixes_restores_detached_meta(self, tmp_path):
+        """I6 : méta détaché → --fix ramène sur main."""
+        meta, _, _ = _make_meta_with_submodule(tmp_path)
+        _git("checkout", "--detach", cwd=meta)
+        findings = park_checks.check_meta_ready(meta)
+        applied = park_checks.apply_safe_fixes(findings, parc_root=meta,
+                                               assume_yes=True, console=None)
+        assert applied >= 1
+        branch = subprocess.run(
+            ["git", "-C", str(meta), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True).stdout.strip()
+        assert branch == "main"
+
+    def test_meta_unrelated_dirty_files_lists_them(self, tmp_path):
+        meta, _, _ = _make_meta_with_submodule(tmp_path)
+        (meta / "README.md").write_text("modifié\n")
+        assert park_checks.meta_unrelated_dirty_files(meta) == ["README.md"]
