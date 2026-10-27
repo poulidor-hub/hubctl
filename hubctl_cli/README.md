@@ -59,14 +59,18 @@ absent ou non synchronisé depuis 7+ jours.
 
 ### Serveur hôte (`atelier --serve`) et service systemd
 
-Mini-serveur HTTP écoutant sur `127.0.0.1` uniquement (jamais exposé au
-réseau), que le Hub proxy pour piloter les ateliers : `GET /health`,
-`GET /atelier/list`, `POST /atelier/close-all`. Toute route sauf `/health`
-exige le header `X-Atelier-Token`.
+Mini-serveur HTTP que le Hub proxy pour piloter les ateliers :
+`GET /health`, `GET /atelier/list`, `POST /atelier/close-all`. Toute route
+sauf `/health` exige le header `X-Atelier-Token` (le vrai garde-fou
+d'exposition). Bind `127.0.0.1` par défaut ; `--host` permet de l'ouvrir au
+strict nécessaire — ex. `172.17.0.1` (passerelle docker0) pour être joignable
+des conteneurs via `host.docker.internal`, sans être visible du LAN
+(c'est le bind de l'unit systemd, cf. `ExecStart`).
 
 ```bash
 ./hubctl atelier --serve                                        # port 8777, token ~/.config/hubctl/atelier_token
 ./hubctl atelier --serve --port 8800 --token-file ~/autre_token # variantes
+./hubctl atelier --serve --host 172.17.0.1                      # joignable des conteneurs (host-gateway)
 ```
 
 Installation en service (unit : [`packaging/hubctl-atelier.service`](../packaging/hubctl-atelier.service),

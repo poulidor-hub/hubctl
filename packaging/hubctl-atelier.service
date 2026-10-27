@@ -1,7 +1,9 @@
 # hubctl-atelier.service — service système du mini-serveur atelier de hubctl.
 #
-# (`hubctl atelier --serve` : HTTP sur 127.0.0.1 uniquement, piloté par le Hub
-#  via GET /health, GET /atelier/list, POST /atelier/close-all.)
+# (`hubctl atelier --serve` : HTTP piloté par le Hub via GET /health,
+#  GET /atelier/list, POST /atelier/close-all. Bind 172.17.0.1, cf. ExecStart :
+#  joignable des conteneurs via host.docker.internal, invisible du LAN ;
+#  l'auth X-Atelier-Token reste le vrai garde-fou d'exposition.)
 #
 # Installation et activation (token, copie vers HUB_base/secrets, systemctl) :
 # voir hubctl_cli/README.md, section « Serveur hôte (atelier --serve) ».
@@ -13,7 +15,7 @@
 # quel lancement de ./hubctl — l'unit ne peut pas le construire).
 
 [Unit]
-Description=hubctl atelier — mini-serveur hôte de pilotage des ateliers (127.0.0.1)
+Description=hubctl atelier — mini-serveur hôte de pilotage des ateliers (172.17.0.1)
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -24,7 +26,12 @@ User=admin
 # lui-même les symlinks et source $PARC_ROOT/.secrets. Adapter si le parc
 # n'est pas à ~/MyCOMPANY/HUB_stack/POULIDOR.
 WorkingDirectory=%h/MyCOMPANY/HUB_stack/POULIDOR
-ExecStart=%h/MyCOMPANY/HUB_stack/POULIDOR/hubctl atelier --serve
+# --host 172.17.0.1 = passerelle docker0 : le conteneur hub-api joint le
+# serveur via host.docker.internal (résout vers la passerelle) ; or 503
+# systématique sur /atelier/close-all avec le bind 127.0.0.1 par défaut.
+# 172.17.0.1 n'est pas routé depuis le LAN → pas d'exposition réseau ; le
+# token X-Atelier-Token reste le vrai garde-fou.
+ExecStart=%h/MyCOMPANY/HUB_stack/POULIDOR/hubctl atelier --serve --host 172.17.0.1
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5s

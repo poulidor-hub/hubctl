@@ -5,7 +5,9 @@ les routes /atelier/list et /atelier/close-all (shapes JSON = contrat).
 
 Contraintes (spec §4) :
 - stdlib uniquement : ThreadingHTTPServer, aucune dépendance nouvelle ;
-- bind 127.0.0.1 UNIQUEMENT (jamais exposé au réseau) ;
+- bind 127.0.0.1 par défaut (--host pour l'ouvrir au strict nécessaire :
+  p. ex. 172.17.0.1, passerelle docker0, pour la joignabilité des
+  conteneurs via host.docker.internal — l'auth token reste le garde-fou) ;
 - 3 routes fixes sans paramètre libre ;
 - auth par header ``X-Atelier-Token`` comparé en constant-time
   (hmac.compare_digest) contre le contenu du fichier --token-file
@@ -128,14 +130,19 @@ def _read_token(token_file: Path) -> bytes:
     return token.encode("utf-8")
 
 
-def build_server(port: int, token_file: Path) -> ThreadingHTTPServer:
-    """Construit le serveur (bind 127.0.0.1, token lu au démarrage).
+def build_server(port: int, token_file: Path,
+                 host: str = "127.0.0.1") -> ThreadingHTTPServer:
+    """Construit le serveur (bind host:port, token lu au démarrage).
+
+    host : défaut 127.0.0.1 (comportement historique inchangé). 172.17.0.1
+    (passerelle docker0) rend le serveur joignable des conteneurs via
+    host.docker.internal sans être visible du LAN.
 
     port=0 → port libre choisi par l'OS (utile aux tests) : le port réel
     se lit sur server_address après construction.
     """
     token = _read_token(token_file)
-    server = ThreadingHTTPServer(("127.0.0.1", port), AtelierHandler)
+    server = ThreadingHTTPServer((host, port), AtelierHandler)
     server.atelier_token = token
     return server
 
@@ -225,14 +232,15 @@ class AtelierHandler(BaseHTTPRequestHandler):
             return self._send_json(500, {"erreur": str(e)})
 
 
-def serve(port: int = 8777, token_file: Path | None = None) -> int:
+def serve(port: int = 8777, token_file: Path | None = None,
+          host: str = "127.0.0.1") -> int:
     """`hubctl atelier --serve` — bloque jusqu'à Ctrl-C.
 
     Retour : 0 après arrêt (Ctrl-C), 2 si le token est indisponible/invalide.
     """
     tf = Path(token_file).expanduser() if token_file else DEFAULT_TOKEN_FILE
     try:
-        server = build_server(port, tf)
+        server = build_server(port, tf, host=host)
     except FileNotFoundError:
         print(f"❌ Fichier token introuvable : {tf}")
         print(f"   Créez-le (ex : openssl rand -hex 32 > {tf}) — le Hub "

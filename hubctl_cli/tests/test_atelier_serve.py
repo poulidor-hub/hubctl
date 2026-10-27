@@ -223,7 +223,24 @@ def test_collect_ateliers_containers_no_cross_match(monkeypatch, tmp_path):
 # ── build_server / token ──
 
 def test_build_server_binds_loopback(serve_env):
+    """Défaut inchangé : bind 127.0.0.1 quand host n'est pas passé."""
     assert serve_env.server.server_address[0] == "127.0.0.1"
+
+
+def test_build_server_binds_host_passe(tmp_path):
+    """build_server accepte host et bind dessus (pas de 127.0.0.1 hardcodé).
+
+    127.0.0.2 ∈ 127.0.0.0/8 : bindable sur Linux sans config, et distinct
+    de 127.0.0.1 → prouve que l'host passé est bien utilisé.
+    """
+    token_file = tmp_path / "atelier_token"
+    token_file.write_text(TOKEN + "\n", encoding="utf-8")
+    server = atelier_serve.build_server(0, token_file, host="127.0.0.2")
+    try:
+        assert server.server_address[0] == "127.0.0.2"
+        assert server.server_address[1] > 0
+    finally:
+        server.server_close()
 
 
 def test_build_server_rejects_missing_token_file(tmp_path):
@@ -253,11 +270,17 @@ class TestDispatchServe:
         a = m.build_parser().parse_args(["atelier", "--serve"])
         assert a.atelier_serve is True
         assert a.atelier_port == 8777
+        assert a.atelier_host == "127.0.0.1"
         assert a.atelier_token_file is None
 
     def test_parser_port(self):
         a = m.build_parser().parse_args(["atelier", "--serve", "--port", "9000"])
         assert a.atelier_port == 9000
+
+    def test_parser_host(self):
+        a = m.build_parser().parse_args(
+            ["atelier", "--serve", "--host", "172.17.0.1"])
+        assert a.atelier_host == "172.17.0.1"
 
     def test_parser_token_file(self):
         a = m.build_parser().parse_args(
@@ -283,14 +306,15 @@ class TestDispatchServe:
         assert "--serve" in out and "slug" in out
 
     def test_dispatch_serve_wiring(self, monkeypatch):
-        """Le dispatch appelle serve(port, token_file) et remonte son rc."""
+        """Le dispatch appelle serve(port, token_file, host) et remonte son rc."""
         calls = {}
 
-        def fake_serve(port=None, token_file=None):
-            calls["args"] = (port, token_file)
+        def fake_serve(port=None, token_file=None, host=None):
+            calls["args"] = (port, token_file, host)
             return 0
 
         monkeypatch.setattr(atelier_serve, "serve", fake_serve)
         assert m.main(["atelier", "--serve", "--port", "1234",
+                       "--host", "172.17.0.1",
                        "--token-file", "/tmp/tk"]) == 0
-        assert calls["args"] == (1234, Path("/tmp/tk"))
+        assert calls["args"] == (1234, Path("/tmp/tk"), "172.17.0.1")
