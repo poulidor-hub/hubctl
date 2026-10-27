@@ -57,6 +57,49 @@ absent ou non synchronisé depuis 7+ jours.
 - `--prod` exige que l'atelier ait testé `main` au commit courant d'`origin/main`.
 - Rollback git automatique en cas d'échec ; atelier conservé si le déploiement prod échoue.
 
+### Serveur hôte (`atelier --serve`) et service systemd
+
+Mini-serveur HTTP écoutant sur `127.0.0.1` uniquement (jamais exposé au
+réseau), que le Hub proxy pour piloter les ateliers : `GET /health`,
+`GET /atelier/list`, `POST /atelier/close-all`. Toute route sauf `/health`
+exige le header `X-Atelier-Token`.
+
+```bash
+./hubctl atelier --serve                                        # port 8777, token ~/.config/hubctl/atelier_token
+./hubctl atelier --serve --port 8800 --token-file ~/autre_token # variantes
+```
+
+Installation en service (unit : [`packaging/hubctl-atelier.service`](../packaging/hubctl-atelier.service),
+utilisateur `admin` ayant accès Docker) :
+
+```bash
+# 1. Générer le token UNE seule fois (s'il n'existe pas déjà)
+mkdir -p ~/.config/hubctl
+[ -s ~/.config/hubctl/atelier_token ] || openssl rand -hex 32 > ~/.config/hubctl/atelier_token
+chmod 600 ~/.config/hubctl/atelier_token
+
+# 2. Rappel — le Hub lit le MÊME token depuis son dépôt (copie MANUELLE :
+#    HUB_base est un autre dépôt, rien n'est copié automatiquement)
+cp ~/.config/hubctl/atelier_token ~/MyCOMPANY/HUB_stack/POULIDOR/HUB_base/secrets/atelier_token
+
+# 3. Prérequis : le venv hubctl_cli/.venv doit exister (créé par n'importe
+#    quel lancement de ./hubctl). L'unit, en lecture seule stricte, ne peut
+#    pas le construire — sans lui, le service échoue en boucle.
+
+# 4. Activer le service
+sudo cp packaging/hubctl-atelier.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hubctl-atelier.service
+journalctl -u hubctl-atelier -f     # suivi ; si le token est absent,
+                                    # le service échoue visiblement (rc 2)
+```
+
+L'unit durcit l'exécution (`Restart=on-failure`, `NoNewPrivileges`,
+`ProtectSystem=strict`, `PrivateTmp=true`, utilisateur `admin`) : le serveur
+n'écrit nulle part, il lit le token et le code et interroge Docker via son
+socket. Chemins supposés : parc à `~/MyCOMPANY/HUB_stack/POULIDOR`
+(spécificateur `%h`) — adapter l'unit copiée sinon.
+
 > **Note** : les anciennes docs référencent les commandes `work`, `ship`,
 > `deploy`, multi-slug et `--copy-db`. **Aucune de ces commandes n'est
 > exposée dans le parser actuel** — le cycle complet (création, MAJ,

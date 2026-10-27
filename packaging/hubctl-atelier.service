@@ -1,0 +1,59 @@
+# hubctl-atelier.service — service système du mini-serveur atelier de hubctl.
+#
+# (`hubctl atelier --serve` : HTTP sur 127.0.0.1 uniquement, piloté par le Hub
+#  via GET /health, GET /atelier/list, POST /atelier/close-all.)
+#
+# Installation et activation (token, copie vers HUB_base/secrets, systemctl) :
+# voir hubctl_cli/README.md, section « Serveur hôte (atelier --serve) ».
+#
+# Le serveur n'écrit nulle part : il lit le token (~/.config/hubctl/atelier_token),
+# lit le code, et parle à Docker via le socket. D'où le durcissement lecture
+# seule intégral (ProtectSystem=strict, sans ReadWritePaths). Conséquence :
+# le venv hubctl_cli/.venv doit exister AVANT l'activation (créé par n'importe
+# quel lancement de ./hubctl — l'unit ne peut pas le construire).
+
+[Unit]
+Description=hubctl atelier — mini-serveur hôte de pilotage des ateliers (127.0.0.1)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+# Chemin canonique du parc (%h = home de User) ; le launcher ./hubctl résout
+# lui-même les symlinks et source $PARC_ROOT/.secrets. Adapter si le parc
+# n'est pas à ~/MyCOMPANY/HUB_stack/POULIDOR.
+WorkingDirectory=%h/MyCOMPANY/HUB_stack/POULIDOR
+ExecStart=%h/MyCOMPANY/HUB_stack/POULIDOR/hubctl atelier --serve
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5s
+
+# ── Durcissement exigé ──
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+
+# ── Durcissement complémentaire — validé en exécution réelle (serveur +
+#    `docker ps` sous sandbox, journal propre) ; le service reste un serveur
+#    TCP localhost : AF_UNIX/AF_INET/AF_INET6 autorisés, pas davantage.
+ProtectHome=read-only
+PrivateDevices=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+SystemCallArchitectures=native
+RemoveIPC=true
+ProtectProc=invisible
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
