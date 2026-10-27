@@ -1,3 +1,27 @@
+## [0.12.0] - 27 octobre 2026
+
+### ⚡ Unification des mises à jour — méta = source de vérité, doctor
+
+- **`update hub` via le méta** : le Hub n'est plus mis à jour par un
+  `git pull` direct dans HUB_base. Nouveau flux : pré-checks stricts
+  (divergence/saleté git = échec propre avec remède exact) →
+  `git pull --ff-only` du méta-repo POULIDOR → `submodule update` →
+  build → up → health. Rollback étendu : pointeur méta + submodule +
+  snapshot DB (le pointeur méta est restauré AVANT le submodule).
+- **Nouveau `hubctl doctor [--fix] [--yes]`** : diagnostic des clones
+  (méta, HUB_base, apps) — divergences d'historique, pointeurs dérivés,
+  branches mergées restantes — avec remèdes exacts ; `--fix` n'applique
+  que le sûr (jamais une branche non mergée, jamais les données non
+  suivies), `--yes` pour le mode non interactif.
+- **Mode dev respecté par `update`** : `--dev`/`--prod`/`HUBCTL_MODE`
+  choisissent la cible `make up-dev` (Hub, apps, rollback) — avant :
+  `up-prod`/`up` hardcodés.
+- **`update all` : Hub bloquant** — le Hub est mis à jour en premier ;
+  s'il échoue, les apps ne sont pas touchées (dépendance M2M). Les
+  échecs d'apps restent comptés dans le code retour.
+- +20 tests (park_checks, doctor, flux méta + rollback étendu, mode dev,
+  ordre hub→apps).
+
 ## [0.11.1] - 17 octobre 2026
 
 ### ⚡ README — sous-commande update documentée avec sa cible obligatoire
