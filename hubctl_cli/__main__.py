@@ -6,7 +6,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.text import Text
 
-from hubctl_cli import actions, animation, menu
+from hubctl_cli import actions, animation, atelier_serve, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all, action_update,
     action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
@@ -74,6 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Deployer origin/main en prod puis supprimer l'atelier")
     majprod.add_argument("--close-all", action="store_true", dest="atelier_close_all", default=False,
                          help="Fermer TOUS les ateliers actifs (confirmation globale, ou --yes pour scripter)")
+    majprod.add_argument("--serve", action="store_true", dest="atelier_serve", default=False,
+                         help="Lancer le mini-serveur hôte atelier (127.0.0.1 uniquement) : "
+                              "GET /health, GET /atelier/list, POST /atelier/close-all")
+    atelier_parser.add_argument("--port", type=int, dest="atelier_port", default=8777, metavar="PORT",
+                                help="Avec --serve : port d'écoute (défaut : 8777)")
+    atelier_parser.add_argument("--token-file", type=Path, dest="atelier_token_file", default=None,
+                                metavar="CHEMIN",
+                                help="Avec --serve : fichier du token d'auth X-Atelier-Token "
+                                     "(défaut : ~/.config/hubctl/atelier_token)")
     atelier_parser.add_argument("--yes", action="store_true", dest="atelier_yes", default=False,
                                 help="Avec --close-all : fermer sans confirmation interactive")
     atelier_parser.add_argument("--ref", default=None, metavar="REF",
@@ -382,6 +391,19 @@ def _run(args) -> int:
     if args.command == "atelier":
         from rich.console import Console as RichConsole
         console = RichConsole()
+        if args.atelier_serve:
+            # Le serveur gère TOUS les ateliers : pas de slug, pas de
+            # _resolve_mode (collect_ateliers n'a pas besoin du mode).
+            if args.app is not None:
+                print("❌ --serve ne prend pas de slug d'app "
+                      "(le serveur liste et ferme tous les ateliers).")
+                return 2
+            try:
+                return atelier_serve.serve(port=args.atelier_port,
+                                           token_file=args.atelier_token_file)
+            except Exception as e:
+                print(f"❌ atelier --serve a echoue : {e}")
+                return 1
         _resolve_mode(args)
         if args.atelier_close_all:
             if args.app is not None:

@@ -1,0 +1,245 @@
+"""`hubctl atelier serve` — mini-serveur HTTP hôte pour piloter les ateliers.
+
+Brique hôte du feature « ateliers pilotables par l'agent » : le Hub proxy
+les routes /atelier/list et /atelier/close-all (shapes JSON = contrat).
+
+Contraintes (spec §4) :
+- stdlib uniquement : ThreadingHTTPServer, aucune dépendance nouvelle ;
+- bind 127.0.0.1 UNIQUEMENT (jamais exposé au réseau) ;
+- 3 routes fixes sans paramètre libre ;
+- auth par header ``X-Atelier-Token`` comparé en constant-time
+  (hmac.compare_digest) contre le contenu du fichier --token-file
+  (défaut ~/.config/hubctl/atelier_token).
+
+Routes :
+- GET  /health            → 200 {"status": "ok"} — sans auth (liveness, ne divulgue rien)
+- GET  /atelier/list      → 200 {"ateliers": [{app, ws_slug, api_port,
+                            frontend_port, containers_state}]}
+- POST /atelier/close-all → 200 (rc 0) / 207 (échec partiel) — voir _close_all
+
+Le mapping {closed, failed} du contrat est reconstruit par diff des
+.workshop.env avant/après action_atelier_close_all (qui ne renvoie qu'un
+rc + console riche, ruling R1) ; la réponse embarque aussi `rc` et
+`output` (console capturée) pour traçabilité côté Hub.
+"""
+from __future__ import annotations
+
+import hmac
+import io
+import json
+import subprocess
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from rich.console import Console
+
+from hubctl_cli import actions, hub_state
+
+DEFAULT_TOKEN_FILE = Path.home() / ".config" / "hubctl" / "atelier_token"
+
+_ROUTES_DOC = "GET /health · GET /atelier/list · POST /atelier/close-all"
+
+
+# ── Collecte des ateliers ──
+
+def _int_or_none(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_docker_ps(out: str) -> dict[str, str]:
+    """Parse la sortie de `docker ps --format '{{.Names}}\\t{{.Status}}'`."""
+    states: dict[str, str] = {}
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        name, sep, status = line.partition("\t")
+        if not sep:
+            continue
+        states[name.strip()] = status.strip()
+    return states
+
+
+def _ws_containers_state() -> dict[str, str] | None:
+    """Conteneurs docker des ateliers : {nom: statut}, None si docker injoignable.
+
+    Un seul appel `docker ps --filter name=-ws` pour toute la liste
+    (les projets atelier se nomment {slug}-ws, les conteneurs en héritent).
+    """
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "--filter", "name=-ws",
+             "--format", "{{.Names}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return _parse_docker_ps(r.stdout)
+
+
+def collect_ateliers() -> list[dict]:
+    """Liste les ateliers actifs (présence de APPS/X/.workshop.env).
+
+    Même source de vérité que actions._ws_env_path (hub_state.APPS_DIR).
+    Chaque entrée : {app, ws_slug, api_port, frontend_port, containers_state}
+    — api_port/frontend_port en int (None si absent/non numérique),
+    containers_state = {nom conteneur: statut} pour les conteneurs du
+    projet -ws, {} si docker est indisponible.
+    """
+    all_states = _ws_containers_state() or {}
+    ateliers: list[dict] = []
+    for env_path in sorted(hub_state.APPS_DIR.glob("*/.workshop.env")):
+        app = env_path.parent.name
+        if app.startswith("."):
+            continue
+        ws_slug = actions._ws_project(app)
+        ws = actions._ws_read_env(app)
+        ateliers.append({
+            "app": app,
+            "ws_slug": ws_slug,
+            "api_port": _int_or_none(ws.get("API_PORT")),
+            "frontend_port": _int_or_none(ws.get("FRONTEND_PORT")),
+            "containers_state": {n: s for n, s in all_states.items()
+                                 if ws_slug in n},
+        })
+    return ateliers
+
+
+# ── Serveur HTTP ──
+
+def _read_token(token_file: Path) -> bytes:
+    """Lit le token d'auth (sans la nouvelle ligne finale). Refuse un fichier vide."""
+    raw = Path(token_file).expanduser().read_text(encoding="utf-8")
+    token = raw.strip()
+    if not token:
+        raise ValueError("fichier token vide")
+    return token.encode("utf-8")
+
+
+def build_server(port: int, token_file: Path) -> ThreadingHTTPServer:
+    """Construit le serveur (bind 127.0.0.1, token lu au démarrage).
+
+    port=0 → port libre choisi par l'OS (utile aux tests) : le port réel
+    se lit sur server_address après construction.
+    """
+    token = _read_token(token_file)
+    server = ThreadingHTTPServer(("127.0.0.1", port), AtelierHandler)
+    server.atelier_token = token
+    return server
+
+
+class AtelierHandler(BaseHTTPRequestHandler):
+    """Handlers JSON des 3 routes. Auth X-Atelier-Token (sauf /health)."""
+
+    server_version = "hubctl-atelier/0.1"
+
+    def _send_json(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authorized(self) -> bool:
+        """401 si header absent, 403 si token invalide (comparaison constant-time)."""
+        provided = self.headers.get("X-Atelier-Token")
+        if not provided:
+            self._send_json(401, {"erreur": "header X-Atelier-Token manquant"})
+            return False
+        expected = getattr(self.server, "atelier_token", b"")
+        if not hmac.compare_digest(provided.encode("utf-8", "replace"), expected):
+            self._send_json(403, {"erreur": "token invalide"})
+            return False
+        return True
+
+    def _close_all(self) -> None:
+        """Ferme tous les ateliers ; renvoie le contrat {closed, failed} + rc/output.
+
+        {closed, failed} = diff des .workshop.env avant/après l'action
+        (action_atelier_close_all ne renvoie qu'un rc — ruling R1). 200 si
+        rc 0, 207 sinon (échec partiel).
+        """
+        before = {a["app"] for a in collect_ateliers()}
+        buf = io.StringIO()
+        console = Console(file=buf, force_terminal=False, color_system=None,
+                          width=100)
+        rc = actions.action_atelier_close_all(console, oui=True)
+        after = {a["app"] for a in collect_ateliers()}
+        payload = {
+            "closed": sorted(before - after),
+            "failed": [{"slug": slug,
+                        "erreur": "atelier toujours présent après close-all"}
+                       for slug in sorted(before & after)],
+            "rc": rc,
+            "output": buf.getvalue(),
+        }
+        self._send_json(200 if rc == 0 else 207, payload)
+
+    def _route(self) -> str:
+        return urlsplit(self.path).path
+
+    def do_GET(self) -> None:  # noqa: N802 (API http.server)
+        try:
+            route = self._route()
+            if route == "/health":
+                # Liveness publique : ne divulgue rien, évite d'imposer le
+                # token aux healthchecks/monitoring.
+                return self._send_json(200, {"status": "ok"})
+            if not self._authorized():
+                return
+            if route == "/atelier/list":
+                return self._send_json(200, {"ateliers": collect_ateliers()})
+            if route == "/atelier/close-all":
+                return self._send_json(405, {"erreur": "méthode interdite : POST requis"})
+            return self._send_json(404, {"erreur": "route inconnue"})
+        except Exception as e:  # réponse JSON propre plutôt que connexion coupée
+            return self._send_json(500, {"erreur": str(e)})
+
+    def do_POST(self) -> None:  # noqa: N802 (API http.server)
+        try:
+            route = self._route()
+            if route == "/health":
+                return self._send_json(405, {"erreur": "méthode interdite : GET requis"})
+            if not self._authorized():
+                return
+            if route == "/atelier/close-all":
+                return self._close_all()
+            if route == "/atelier/list":
+                return self._send_json(405, {"erreur": "méthode interdite : GET requis"})
+            return self._send_json(404, {"erreur": "route inconnue"})
+        except Exception as e:
+            return self._send_json(500, {"erreur": str(e)})
+
+
+def serve(port: int = 8777, token_file: Path | None = None) -> int:
+    """`hubctl atelier --serve` — bloque jusqu'à Ctrl-C.
+
+    Retour : 0 après arrêt (Ctrl-C), 2 si le token est indisponible/invalide.
+    """
+    tf = Path(token_file).expanduser() if token_file else DEFAULT_TOKEN_FILE
+    try:
+        server = build_server(port, tf)
+    except FileNotFoundError:
+        print(f"❌ Fichier token introuvable : {tf}")
+        print(f"   Créez-le (ex : openssl rand -hex 32 > {tf}) — le Hub "
+              "l'envoie ensuite comme header X-Atelier-Token.")
+        return 2
+    except ValueError as e:
+        print(f"❌ Token atelier invalide ({tf}) : {e}")
+        return 2
+    host, bound = server.server_address[:2]
+    print(f"✓ Serveur atelier : http://{host}:{bound}  (token : {tf})")
+    print(f"  Routes : {_ROUTES_DOC}")
+    print("  Ctrl-C pour arrêter.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nArrêt du serveur atelier.")
+    finally:
+        server.server_close()
+    return 0
