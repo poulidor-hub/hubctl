@@ -75,10 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
     majprod.add_argument("--close-all", action="store_true", dest="atelier_close_all", default=False,
                          help="Fermer TOUS les ateliers actifs (confirmation globale, ou --yes pour scripter)")
     majprod.add_argument("--serve", action="store_true", dest="atelier_serve", default=False,
-                         help="Lancer le mini-serveur hôte atelier (127.0.0.1 uniquement) : "
+                         help="Lancer le mini-serveur hôte atelier (bind 127.0.0.1 par défaut, cf. --host) : "
                               "GET /health, GET /atelier/list, POST /atelier/close-all")
     atelier_parser.add_argument("--port", type=int, dest="atelier_port", default=8777, metavar="PORT",
                                 help="Avec --serve : port d'écoute (défaut : 8777)")
+    atelier_parser.add_argument("--host", dest="atelier_host", default="127.0.0.1", metavar="HOST",
+                                help="Avec --serve : interface d'écoute (défaut : 127.0.0.1). "
+                                     "Ex : 172.17.0.1 (passerelle docker0) pour être joignable "
+                                     "des conteneurs via host.docker.internal, sans exposition LAN")
     atelier_parser.add_argument("--token-file", type=Path, dest="atelier_token_file", default=None,
                                 metavar="CHEMIN",
                                 help="Avec --serve : fichier du token d'auth X-Atelier-Token "
@@ -400,7 +404,8 @@ def _run(args) -> int:
                 return 2
             try:
                 return atelier_serve.serve(port=args.atelier_port,
-                                           token_file=args.atelier_token_file)
+                                           token_file=args.atelier_token_file,
+                                           host=args.atelier_host)
             except Exception as e:
                 print(f"❌ atelier --serve a echoue : {e}")
                 return 1
