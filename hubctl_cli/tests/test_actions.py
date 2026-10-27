@@ -1734,13 +1734,29 @@ def test_ensure_branch_sets_missing_upstream(tmp_path):
                     "--symbolic-full-name", "main@{u}") == "origin/main"
 
 
-def test_update_target_reattaches_detached_head_before_pull(tmp_path, monkeypatch):
-    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+def test_update_target_hub_delegue_au_flux_meta(monkeypatch):
+    """Plan unification updates (Task 3) : le Hub ne passe plus par le
+    pull-direct dans HUB_base — _update_target("hub") délègue à
+    _update_hub_via_meta (le pré-check `meta.branch` remplace l'attach)."""
+    called = {}
+    monkeypatch.setattr(
+        actions, "_update_hub_via_meta",
+        lambda con, *, dry_run: called.update(dry_run=dry_run) or True)
+    assert actions._update_target(None, "hub", dry_run=False) is True
+    assert called == {"dry_run": False}
+
+
+def test_update_target_app_reattaches_detached_head_before_pull(tmp_path, monkeypatch):
+    """Chemin APPS inchangé : branch attach avant pull (le hub, lui, passe
+    désormais par le flux méta — cf. test_update_target_hub_delegue_au_flux_meta)."""
+    app_dir = tmp_path / "exemple-app"
+    app_dir.mkdir()
+    (app_dir / "docker-compose.yml").write_text("services: {}\n")
     order = []
-    monkeypatch.setattr(actions.hub_state, "HUB_DIR", tmp_path)
+    monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc123")
-    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: "snap.sql")
+    monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
     monkeypatch.setattr(actions, "_health_check", lambda *a, **k: True)
 
     def fake_attach(path, console=None, **kw):
@@ -1753,6 +1769,6 @@ def test_update_target_reattaches_detached_head_before_pull(tmp_path, monkeypatc
         return 0
     monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
 
-    assert actions._update_target(None, "hub", dry_run=False) is True
+    assert actions._update_target(None, "exemple-app", dry_run=False) is True
     assert "attach" in order
     assert order.index("attach") < order.index("pull")

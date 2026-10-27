@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from hubctl_cli import hub_state, utils, env_manager
+from hubctl_cli import park_checks
 
 import string as _string_module
 
@@ -1283,13 +1284,35 @@ def _health_check(target: str, console=None, timeout: int = 60, port_override: s
     return False
 
 
+def _git_head_sha(path: Path) -> str | None:
+    """SHA du HEAD d'un dépôt, ou None si indisponible."""
+    r = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                       capture_output=True, text=True, timeout=10)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def _rollback(target: str, target_path: Path, prev_commit: str | None,
               snapshot: Path | None, console=None,
               db_container: str | None = None, db_name: str | None = None,
-              dry_run: bool = False) -> None:
-    """Rollback: revert git, restore DB snapshot, re-up."""
+              dry_run: bool = False,
+              meta_root: Path | None = None,
+              prev_meta_sha: str | None = None) -> None:
+    """Rollback: revert git, restore DB snapshot, re-up.
+
+    ``meta_root``/``prev_meta_sha`` (plan unification updates) : restaure
+    d'abord le pointeur du méta-repo, AVANT le reset du sous-module —
+    sinon le submodule réaligné sur l'ancien SHA réapparaîtrait comme
+    « modifié » au prochain pull méta.
+    """
     con = console or _console
     con.print(f"[bold red]↩ Rollback de « {target} »[/bold red]")
+
+    if meta_root and prev_meta_sha:
+        con.print(f"  méta reset → {prev_meta_sha[:8]} (pointeur submodule)")
+        utils.run_shell(
+            ["git", "-C", str(meta_root), "reset", "--hard", prev_meta_sha],
+            dry_run=dry_run, console=con, timeout=15,
+        )
 
     if prev_commit:
         con.print(f"  git reset → {prev_commit[:8]}")
@@ -1313,12 +1336,12 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
     if target == "hub":
         utils.run_shell(["make", "-C", str(target_path), "build"],
                         dry_run=dry_run, console=con, timeout=600)
-        rc = utils.run_shell(["make", "-C", str(target_path), "up-prod"],
+        rc = utils.run_shell(["make", "-C", str(target_path), _up_target_for(target)],
                              dry_run=dry_run, console=con, timeout=60)
     else:
         utils.run_shell(["make", "-C", str(target_path), "build"],
                         dry_run=dry_run, console=con, timeout=600)
-        rc = utils.run_shell(["make", "-C", str(target_path), "up"],
+        rc = utils.run_shell(["make", "-C", str(target_path), _up_target_for(target)],
                              dry_run=dry_run, console=con, timeout=60)
 
     if rc != 0:
@@ -1694,12 +1717,105 @@ def ensure_hub_env(console=None, *, dry_run: bool = False) -> None:
     con.print(f"[green]✓ APPS_HOST_PATH ajouté au .env du Hub : {apps_path}[/green]")
 
 
+def _up_target_for(target: str) -> str:
+    """Cible make « up » selon la cible et le mode courant (plan Task 4).
+
+    Mode dev → ``up-dev`` ; sinon ``up-prod`` pour le Hub, ``up`` pour les apps.
+    """
+    if hub_state.get_mode() == "dev":
+        return "up-dev"
+    return "up-prod" if target == "hub" else "up"
+
+
+def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
+    """Flux méta pour le Hub (plan unification updates, Task 3).
+
+    Le méta-repo POULIDOR est la source de vérité : pré-checks stricts →
+    ``git pull --ff-only`` du méta → ``submodule update`` → build → up →
+    health. Jamais de pull direct dans HUB_base. En cas d'échec après le
+    pull : rollback étendu (pointeur méta + submodule + snapshot DB).
+    """
+    meta_root = hub_state.PARC_ROOT
+    hub_path = hub_state.HUB_DIR
+
+    # Pré-checks : jamais de pull dans une divergence (échec propre)
+    problems = [f for f in park_checks.run_update_prechecks(meta_root)
+                if not f.ok]
+    if problems:
+        for f in problems:
+            con.print(f"[red]✗ {f.check} — {f.detail}[/red]")
+            if f.remedy:
+                con.print(f"    [yellow]remède : {f.remedy}[/yellow]")
+        con.print("[red]✗ pré-checks échoués — réalignez d'abord "
+                  "(`hubctl doctor --fix`).[/red]")
+        return False
+
+    ensure_hub_env(con, dry_run=dry_run)
+    compose_file = hub_path / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {hub_path}[/red]")
+        return False
+
+    prev_meta_sha = _git_head_sha(meta_root)
+    prev_hub_sha = _git_head_sha(hub_path)
+    snapshot = _db_snapshot(con) if not dry_run else None
+
+    con.print("[bold]→ git pull --ff-only du méta…[/bold]")
+    rc = utils.run_shell(["git", "-C", str(meta_root), "pull", "--ff-only"],
+                         dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print("[red]✗ git pull --ff-only du méta échoué — "
+                  "commits locaux ou divergence ?[/red]")
+        return False
+
+    con.print("[bold]→ submodule update…[/bold]")
+    rc = utils.run_shell(["git", "-C", str(meta_root), "submodule", "update",
+                          "--init", "--recursive"],
+                         dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print("[red]✗ submodule update échoué — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+
+    con.print("[bold]→ Build « hub »…[/bold]")
+    rc = utils.run_shell(["make", "-C", str(hub_path), "build"],
+                         dry_run=dry_run, console=con, timeout=600)
+    if rc != 0:
+        con.print("[red]✗ Build échoué pour « hub » — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+
+    con.print("[bold]→ Démarrage « hub »…[/bold]")
+    rc = utils.run_shell(["make", "-C", str(hub_path), _up_target_for("hub")],
+                         dry_run=dry_run, console=con, timeout=60)
+    if rc != 0:
+        con.print("[red]✗ Démarrage échoué pour « hub » — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+
+    if not _health_check("hub", con, timeout=60):
+        con.print("[red]✗ Health échoué pour « hub » — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+    return True
+
+
 def _update_target(console, target: str, *, dry_run: bool) -> bool:
     """Stop → git pull → build → up → health pour un hub ou une app. Retourne True si succès."""
     con = console or _console
     if target == "hub":
-        ensure_hub_env(con, dry_run=dry_run)
-    target_path = hub_state.HUB_DIR if target == "hub" else hub_state.active_apps_dir() / target
+        # Plan unification updates (Task 3) : le Hub passe par le méta-repo
+        # (source de vérité), jamais par un pull direct dans HUB_base.
+        return _update_hub_via_meta(con, dry_run=dry_run)
+    target_path = hub_state.active_apps_dir() / target
     compose_file = target_path / "docker-compose.yml"
     if not compose_file.exists():
         con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
@@ -1737,7 +1853,7 @@ def _update_target(console, target: str, *, dry_run: bool) -> bool:
         _rollback(target, target_path, prev_commit, snapshot, con)
         return False
 
-    up_target = "up-prod" if target == "hub" else "up"
+    up_target = _up_target_for(target)
     con.print(f"[bold]→ Démarrage « {target} »…[/bold]")
     rc = utils.run_shell(["make", "-C", str(target_path), up_target],
                          dry_run=dry_run, console=con, timeout=60)
@@ -1778,19 +1894,31 @@ def _resolve_update_targets(targets: list[str]) -> tuple[list[str], bool]:
 
 
 def _update_targets_pool(con, targets: list[str], *, dry_run: bool) -> int:
-    """Met à jour les cibles en parallèle (stop → pull → build → up → health).
+    """Met à jour les cibles (stop → pull → build → up → health).
 
-    Retourne le nombre d'échecs.
+    Plan unification updates (Task 4) : le Hub est **bloquant** — il est mis
+    à jour en premier et, s'il échoue, les apps ne sont pas touchées (elles
+    dépendent du Hub pour le M2M). Les apps restantes sont mises à jour en
+    parallèle ; leurs échecs sont comptés dans le retour.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    targets = list(targets)
+    if "hub" in targets:
+        con.print("[bold]→ Mise à jour du Hub…[/bold]")
+        if not _update_target(con, "hub", dry_run=dry_run):
+            con.print("[red]✗ Hub en échec — apps non mises à jour "
+                      "(elles dépendent du Hub).[/red]")
+            return 1
+        con.print("[green]✓ hub à jour[/green]")
+        targets = [t for t in targets if t != "hub"]
+        if not targets:
+            return 0
 
     tasks: dict = {}
     with ThreadPoolExecutor(max_workers=max(1, len(targets))) as pool:
         for name in targets:
-            if name == "hub":
-                con.print("[bold]→ Mise à jour du Hub…[/bold]")
-            else:
-                con.print(f"[bold]→ Mise à jour de « {name} »…[/bold]")
+            con.print(f"[bold]→ Mise à jour de « {name} »…[/bold]")
             tasks[pool.submit(_update_target, con, name, dry_run=dry_run)] = name
 
         ok, fail = 0, 0
@@ -1836,6 +1964,59 @@ def action_update(console=None, targets: list[str] | None = None, *,
 def action_update_all(console=None, *, dry_run: bool = False) -> None:
     """(menu) Met à jour le Hub et toutes les apps actives : git pull + rebuild."""
     action_update(console, ["*"], dry_run=dry_run)
+
+
+def action_doctor(console=None, *, fix: bool = False, assume_yes: bool = False,
+                  parc_root: Path | None = None,
+                  apps: list[str] | None = None) -> int:
+    """Diagnostic des clones du parc (plan unification updates, Task 2).
+
+    Rapport `problème → remède` sur le méta, HUB_base et les apps demandées
+    (défaut : apps actives détectées). ``fix=True`` applique les remèdes sûrs
+    via ``park_checks.apply_safe_fixes`` (confirmation interactive sauf
+    ``assume_yes``). Retour : 0 = sain (ou réaligné), 1 = problèmes restants.
+    """
+    con = console or _console
+    root = Path(parc_root) if parc_root else hub_state.PARC_ROOT
+    if apps is None:
+        apps_dir = hub_state.APPS_DIR
+        apps = sorted(
+            p.name for p in apps_dir.iterdir()
+            if p.is_dir() and (p / ".git").exists()
+        ) if apps_dir.is_dir() else []
+
+    findings = park_checks.run_checks(root, apps)
+    problems = [f for f in findings if not f.ok]
+
+    for f in findings:
+        mark = "[green]✓[/green]" if f.ok else "[red]✗[/red]"
+        line = f"{mark} {f.check} — {f.detail}"
+        if not f.ok and f.remedy:
+            line += f"\n    [yellow]remède : {f.remedy}[/yellow]"
+        con.print(line)
+
+    if not problems:
+        con.print("[green]✓ parc sain[/green]")
+        return 0
+
+    if fix:
+        applied = park_checks.apply_safe_fixes(
+            problems, root, assume_yes=assume_yes, console=con)
+        con.print(f"[bold]{applied} remède(s) appliqué(s)[/bold]")
+        remaining = [f for f in park_checks.run_checks(root, apps) if not f.ok]
+        if remaining:
+            con.print(f"[red]✗ {len(remaining)} problème(s) restant(s)[/red]")
+            for f in remaining:
+                con.print(f"  [red]✗ {f.check} — {f.detail}[/red]"
+                          + (f"\n    [yellow]remède : {f.remedy}[/yellow]"
+                             if f.remedy else ""))
+            return 1
+        con.print("[green]✓ parc sain après correction[/green]")
+        return 0
+
+    con.print(f"[red]✗ {len(problems)} problème(s) — lancez `hubctl doctor --fix` "
+              "ou appliquez les remèdes ci-dessus[/red]")
+    return 1
 
 
 # ── Workshop (ateliers Docker Compose -p) ──

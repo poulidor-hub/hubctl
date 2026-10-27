@@ -1,0 +1,275 @@
+"""Vérifications git partagées du parc (plan « unification des mises à jour »).
+
+Consommé par les pré-checks de ``hubctl update`` et par ``hubctl doctor``.
+
+Conventions :
+- Chaque vérification retourne des :class:`Finding` (check, ok, detail,
+  remedy) ; ``remedy`` = commande exacte prête à copier, ou ``None``.
+- Aucune fonction ne corrige quoi que ce soit d'elle-même : seule
+  :func:`apply_safe_fixes` agit, et uniquement sur les catégories sûres
+  (HUB_base : réalignement, pointeur submodule, branches mergées).
+- Les données non suivies (``.env``, ``secrets/``, ``certs/``, ``storage/``)
+  ne sont jamais évaluées ni touchées : la propreté regarde le suivi git.
+- Les branches portant des commits non mergés sont structurellement
+  refusées par :func:`apply_safe_fixes` (re-derivation via
+  :func:`list_merged_local_branches`).
+"""
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass
+class Finding:
+    """Résultat d'une vérification : problème éventuel + remède exact."""
+
+    check: str
+    ok: bool
+    detail: str
+    remedy: str | None = None
+
+
+def _run(*args: str, cwd: Path | None = None, timeout: int = 30) -> tuple[int, str, str]:
+    """Sous-processus git générique → (returncode, stdout, stderr)."""
+    r = subprocess.run(list(args), cwd=cwd, capture_output=True,
+                       text=True, timeout=timeout)
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def _git_out(*args: str, cwd: Path) -> str | None:
+    """stdout d'une commande git, ou None si elle échoue."""
+    rc, out, _ = _run(*args, cwd=cwd)
+    return out if rc == 0 else None
+
+
+def _current_branch(repo: Path) -> str | None:
+    """Branche courante, ou None si HEAD détaché/inexistant."""
+    out = _git_out("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=repo)
+    return None if out in (None, "HEAD") else out
+
+
+def _dirty_tracked(repo: Path, path: str | None = None) -> list[str]:
+    """Fichiers SUIVIS modifiés (ignore le non-suivi ``??``)."""
+    args = ["git", "status", "--porcelain"]
+    if path:
+        args += ["--", path]
+    out = _git_out(*args, cwd=repo)
+    if out is None:
+        return []
+    return [line for line in out.splitlines()
+            if line.strip() and not line.lstrip().startswith("??")]
+
+
+def check_meta_ready(parc_root: Path) -> list[Finding]:
+    """Méta : branche ``main`` + gitlink ``HUB_base`` propre pour un pull."""
+    parc_root = Path(parc_root)
+    findings: list[Finding] = []
+
+    branch = _current_branch(parc_root)
+    findings.append(Finding(
+        check="meta.branch",
+        ok=branch == "main",
+        detail=f"branche courante du méta : {branch or 'HEAD détaché'}",
+        remedy=None if branch == "main" else "git -C <méta> checkout main",
+    ))
+
+    dirty = _dirty_tracked(parc_root, "HUB_base")
+    gitlink_dirty = any(line.split()[-1] == "HUB_base" for line in dirty)
+    if gitlink_dirty:
+        findings.append(Finding(
+            check="meta.gitlink_clean",
+            ok=False,
+            detail="HUB_base diverge du pointeur enregistré par le méta",
+            remedy=f"git -C {parc_root} submodule update --init HUB_base",
+        ))
+    else:
+        others = [line for line in _dirty_tracked(parc_root)
+                  if line.split()[-1] != "HUB_base"]
+        detail = "gitlink HUB_base propre"
+        if others:
+            detail += (" ; avertissement : fichiers suivis modifiés sans rapport "
+                       "avec l'update : " + ", ".join(others[:5]))
+        findings.append(Finding(check="meta.gitlink_clean", ok=True, detail=detail))
+
+    return findings
+
+
+def check_hub_base(parc_root: Path) -> list[Finding]:
+    """HUB_base : alignement origin/main + HEAD == gitlink du méta."""
+    parc_root = Path(parc_root)
+    hub = parc_root / "HUB_base"
+    if not (hub / ".git").exists() and not (hub / ".git").is_file():
+        return [Finding(
+            check="hub_base.present",
+            ok=False,
+            detail="HUB_base absent ou non initialisé",
+            remedy=f"git -C {parc_root} submodule update --init --recursive",
+        )]
+
+    findings: list[Finding] = []
+    _run("git", "fetch", "--prune", "origin", cwd=hub)
+
+    local = _git_out("git", "rev-parse", "HEAD", cwd=hub)
+    remote = _git_out("git", "rev-parse", "origin/main", cwd=hub)
+
+    if local is not None and remote is not None and local == remote:
+        findings.append(Finding(check="hub_base.aligned_origin", ok=True,
+                                detail="HUB_base == origin/main"))
+    else:
+        rc, _, _ = _run("git", "merge-base", "--is-ancestor", "HEAD",
+                        "origin/main", cwd=hub)
+        if rc == 0:
+            findings.append(Finding(
+                check="hub_base.aligned_origin", ok=False,
+                detail="HUB_base en retard sur origin/main",
+                remedy=f"git -C {hub} pull --ff-only",
+            ))
+        else:
+            findings.append(Finding(
+                check="hub_base.aligned_origin", ok=False,
+                detail="historique HUB_base divergent d'origin/main "
+                       "(historique réécrit ?)",
+                remedy=(f"git -C {hub} fetch origin --prune && "
+                        f"git -C {hub} checkout main && "
+                        f"git -C {hub} reset --hard origin/main"),
+            ))
+
+    recorded = _git_out("git", "ls-tree", "HEAD", "HUB_base", cwd=parc_root)
+    recorded_sha = recorded.split()[2] if recorded else None
+    findings.append(Finding(
+        check="hub_base.pointer",
+        ok=local is not None and local == recorded_sha,
+        detail="HEAD HUB_base == pointeur méta" if local == recorded_sha
+        else "HEAD HUB_base ≠ pointeur méta",
+        remedy=None if local == recorded_sha
+        else f"git -C {parc_root} submodule update --init HUB_base",
+    ))
+    return findings
+
+
+def check_app_repo(app_path: Path) -> Finding:
+    """Une app : dépôt présent, propre (suivi), aligné sur origin/main."""
+    app_path = Path(app_path)
+    name = app_path.name
+    if not (app_path / ".git").exists():
+        return Finding(check=f"app.{name}", ok=False,
+                       detail="dépôt git absent (app posée par copie ?)",
+                       remedy=None)
+
+    _run("git", "fetch", "--prune", "origin", cwd=app_path)
+
+    dirty = _dirty_tracked(app_path)
+    if dirty:
+        return Finding(check=f"app.{name}", ok=False,
+                       detail="modifications locales non commitées : "
+                              + ", ".join(line.split()[-1] for line in dirty[:5]),
+                       remedy=f"commit ou stash dans {app_path}")
+
+    local = _git_out("git", "rev-parse", "HEAD", cwd=app_path)
+    remote = _git_out("git", "rev-parse", "origin/main", cwd=app_path)
+    if local is None or remote is None:
+        return Finding(check=f"app.{name}", ok=False,
+                       detail="branche main ou origin/main introuvable",
+                       remedy=None)
+    if local != remote:
+        rc, _, _ = _run("git", "merge-base", "--is-ancestor", "HEAD",
+                        "origin/main", cwd=app_path)
+        return Finding(check=f"app.{name}", ok=False,
+                       detail="en retard/divergent vs origin/main",
+                       remedy=f"git -C {app_path} pull --ff-only" if rc == 0
+                       else f"git -C {app_path} reset --hard origin/main")
+    return Finding(check=f"app.{name}", ok=True, detail="propre et à jour")
+
+
+def run_update_prechecks(parc_root: Path) -> list[Finding]:
+    """Pré-checks du flux ``update hub`` : méta + HUB_base."""
+    return check_meta_ready(Path(parc_root)) + check_hub_base(Path(parc_root))
+
+
+def run_checks(parc_root: Path, apps: list[str]) -> list[Finding]:
+    """Pré-checks complets : méta + HUB_base + chaque app demandée."""
+    parc_root = Path(parc_root)
+    findings = run_update_prechecks(parc_root)
+    for slug in apps:
+        findings.append(check_app_repo(parc_root / "APPS" / slug))
+    return findings
+
+
+def list_merged_local_branches(repo: Path) -> list[str]:
+    """Branches locales (hors courante) dont tous les commits sont dans
+    ``origin/main`` — les seules que ``apply_safe_fixes`` accepte de supprimer."""
+    repo = Path(repo)
+    remote_main = _git_out("git", "rev-parse", "origin/main", cwd=repo)
+    if remote_main is None:
+        return []
+    current = _current_branch(repo)
+    refs = _git_out("git", "for-each-ref", "refs/heads",
+                    "--format", "%(refname:short)", cwd=repo) or ""
+    merged: list[str] = []
+    for name in [line.strip() for line in refs.splitlines() if line.strip()]:
+        if name == current:
+            continue
+        rc, _, _ = _run("git", "merge-base", "--is-ancestor", name,
+                        "origin/main", cwd=repo)
+        if rc == 0:
+            merged.append(name)
+    return merged
+
+
+def _confirm(console, message: str, assume_yes: bool) -> bool:
+    if assume_yes:
+        return True
+    if console is None:
+        return False  # non interactif : jamais d'action sans accord explicite
+    try:
+        answer = console.input(f"{message} [o/N] ")
+    except Exception:
+        return False
+    return answer.strip().lower() in ("o", "y", "oui", "yes")
+
+
+def apply_safe_fixes(findings: list[Finding], parc_root: Path, *,
+                     assume_yes: bool, console=None) -> int:
+    """Applique les remèdes sûrs des findings en échec, par catégorie.
+
+    Catégories corrigibles : réalignement HUB_base (divergence), pointeur
+    submodule (hub_base.pointer / meta.gitlink_clean), branches locales
+    mergées de HUB_base (hub_base.branches). Les findings ``app.*`` ne sont
+    jamais auto-corrigés (rapport seul). Retourne le nombre d'actions
+    appliquées. Une branche non mergée est structurellement refusée.
+    """
+    parc_root = Path(parc_root)
+    hub = parc_root / "HUB_base"
+    failed = {f.check for f in findings if not f.ok}
+    applied = 0
+
+    if "hub_base.aligned_origin" in failed and hub.exists():
+        if _confirm(console, f"Réaligner HUB_base sur origin/main (reset --hard) ?",
+                    assume_yes):
+            rc, _, _ = _run("git", "checkout", "main", cwd=hub)
+            if rc == 0:
+                rc, _, _ = _run("git", "reset", "--hard", "origin/main", cwd=hub)
+            if rc == 0:
+                applied += 1
+
+    if failed & {"hub_base.pointer", "meta.gitlink_clean"}:
+        if _confirm(console, "Réaligner le submodule HUB_base sur le pointeur méta ?",
+                    assume_yes):
+            rc, _, _ = _run("git", "-c", "protocol.file.allow=always",
+                            "submodule", "update", "--init", "HUB_base",
+                            cwd=parc_root)
+            if rc == 0:
+                applied += 1
+
+    if "hub_base.branches" in failed and hub.exists():
+        for branch in list_merged_local_branches(hub):
+            if not _confirm(console, f"Supprimer la branche mergée « {branch} » ?",
+                            assume_yes):
+                continue
+            rc, _, _ = _run("git", "branch", "-D", branch, cwd=hub)
+            if rc == 0:
+                applied += 1
+
+    return applied
