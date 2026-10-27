@@ -1800,3 +1800,128 @@ def test_update_target_app_fails_clean_on_local_modifications(monkeypatch, tmp_p
     assert actions._update_target(None, "exemple-app", dry_run=False) is False
     rollback.assert_not_called()
     assert not any(c[0] == "make" for c in calls), "aucun stop/build avant échec propre"
+
+
+# ── action_atelier_close_all (--fermer-tous : fermeture en masse des ateliers) ──
+
+
+def _ws_app(name):
+    return actions.hub_state.AppInfo(
+        name=name, path=Path(name), version="1.0.0", git_dirty=False, size_bytes=0)
+
+
+def test_close_all_sans_ateliers(monkeypatch):
+    """Aucun atelier actif → message + rc 0, aucune suppression."""
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [])
+    removed = []
+    monkeypatch.setattr(actions, "_remove_workshop",
+                        lambda c, slug, dry_run=False: removed.append(slug) or True)
+    rc = actions.action_atelier_close_all(_mock_console())
+    assert rc == 0
+    assert removed == []
+
+
+def test_close_all_ferme_chaque_atelier(monkeypatch):
+    """Un atelier par app détectée, dans l'ordre, via _remove_workshop."""
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps",
+                        lambda: [_ws_app("exemple-app"), _ws_app("exemple-apps")])
+    monkeypatch.setattr(actions, "_ws_read_env",
+                        lambda slug: {"APP_SLUG": f"{slug}-ws", "WS_REF": "main",
+                                      "WS_COMMIT": "abc12345def67890"})
+    removed = []
+    monkeypatch.setattr(actions, "_remove_workshop",
+                        lambda c, slug, dry_run=False: removed.append(slug) or True)
+    rc = actions.action_atelier_close_all(_mock_console(), oui=True)
+    assert removed == ["exemple-app", "exemple-apps"]
+    assert rc == 0
+
+
+def test_close_all_continue_sur_echec(monkeypatch):
+    """Un atelier en échec n'interrompt pas les suivants ; rc = 1."""
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps",
+                        lambda: [_ws_app("a"), _ws_app("b")])
+    monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
+    calls = []
+
+    def fake_remove(con, slug, dry_run=False):
+        calls.append(slug)
+        return slug != "a"  # « a » échoue
+
+    monkeypatch.setattr(actions, "_remove_workshop", fake_remove)
+    rc = actions.action_atelier_close_all(_mock_console(), oui=True)
+    assert calls == ["a", "b"], "l'échec de « a » ne doit pas bloquer « b »"
+    assert rc == 1
+
+
+def test_close_all_exception_compte_comme_echec(monkeypatch):
+    """Une exception de _remove_workshop est capturée, comptée, rc = 1."""
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps",
+                        lambda: [_ws_app("a"), _ws_app("b")])
+    monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
+
+    def boom(con, slug, dry_run=False):
+        if slug == "a":
+            raise RuntimeError("docker down")
+        return True
+
+    monkeypatch.setattr(actions, "_remove_workshop", boom)
+    rc = actions.action_atelier_close_all(_mock_console(), oui=True)
+    assert rc == 1
+
+
+def test_close_all_refuse_non_interactif_sans_oui(monkeypatch):
+    """Non-TTY sans --oui → refus (rc 2), aucune suppression."""
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
+    removed = []
+    monkeypatch.setattr(actions, "_remove_workshop",
+                        lambda c, slug, dry_run=False: removed.append(slug) or True)
+    rc = actions.action_atelier_close_all(_mock_console())
+    assert removed == []
+    assert rc == 2
+
+
+def test_close_all_confirmation_negative(monkeypatch):
+    """Réponse négative à la confirmation → annulation propre (rc 0)."""
+    import builtins
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(builtins, "input", lambda *a: "n")
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
+    removed = []
+    monkeypatch.setattr(actions, "_remove_workshop",
+                        lambda c, slug, dry_run=False: removed.append(slug) or True)
+    rc = actions.action_atelier_close_all(_mock_console())
+    assert removed == []
+    assert rc == 0
+
+
+def test_close_all_confirmation_positive(monkeypatch):
+    """Réponse positive à la confirmation → fermeture."""
+    import builtins
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(builtins, "input", lambda *a: "o")
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
+    removed = []
+    monkeypatch.setattr(actions, "_remove_workshop",
+                        lambda c, slug, dry_run=False: removed.append(slug) or True)
+    rc = actions.action_atelier_close_all(_mock_console())
+    assert removed == ["exemple-app"]
+    assert rc == 0
+
+
+def test_close_all_dry_run_propage_dry_run(monkeypatch):
+    """--dry-run global : _remove_workshop appelé avec dry_run=True."""
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
+    calls = []
+    monkeypatch.setattr(actions, "_remove_workshop",
+                        lambda c, slug, dry_run=False: calls.append((slug, dry_run)) or True)
+    rc = actions.action_atelier_close_all(_mock_console(), dry_run=True, oui=True)
+    assert calls == [("exemple-app", True)]
+    assert rc == 0

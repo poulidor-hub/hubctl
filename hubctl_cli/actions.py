@@ -2992,6 +2992,68 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False,
     else:
         con.print("[dim]Annulé.[/dim]")
 
+
+def action_atelier_close_all(console, *, dry_run: bool = False, oui: bool = False) -> int:
+    """Ferme TOUS les ateliers actifs (`./hubctl atelier --fermer-tous`).
+
+    Récapitulatif des ateliers détectés (``.workshop.env``), confirmation globale
+    unique, puis ``_remove_workshop`` pour chacun (seul lieu légitime du
+    ``down -v`` — la prod n'est jamais touchée). Un atelier en échec
+    n'interrompt pas les suivants.
+
+    Retour : 0 = fermés (ou rien à faire / annulation), 1 = au moins un échec,
+    2 = refusé (non interactif sans --oui).
+    """
+    con = console or _console
+    import sys as _sys
+
+    apps = hub_state.get_workshop_apps()
+    if not apps:
+        con.print("[green]✓ Aucun atelier actif — base déjà propre.[/green]")
+        return 0
+
+    # Récapitulatif avant confirmation
+    con.print(f"[bold]{len(apps)} atelier(s) actif(s) :[/bold]")
+    for app in apps:
+        ws = _ws_read_env(app.name)
+        ws_ref = ws.get("WS_REF", "?")
+        ws_commit = (ws.get("WS_COMMIT") or "")[:8] or "?"
+        con.print(f"  • [bold]{app.name}[/bold] → {_ws_project(app.name)}"
+                  f" (teste {ws_ref} @ {ws_commit}, code {app.version})")
+
+    if not oui:
+        if not _sys.stdin.isatty():
+            con.print("[red]✗ Mode non interactif : ajoutez --oui pour confirmer "
+                      "la fermeture en masse.[/red]")
+            return 2
+        try:
+            answer = input(f"Fermer {len(apps)} atelier(s) ? Les DB des clones seront "
+                           "détruites (la prod reste intacte) [o/N] : ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            con.print("[dim]Annulé.[/dim]")
+            return 0
+        if answer not in ("o", "oui", "y", "yes"):
+            con.print("[dim]Annulé — aucun atelier fermé.[/dim]")
+            return 0
+
+    failures = 0
+    for app in apps:
+        try:
+            if _remove_workshop(con, app.name, dry_run=dry_run):
+                continue
+            con.print(f"[red]✗ {app.name} : suppression en échec.[/red]")
+            failures += 1
+        except Exception as e:
+            con.print(f"[red]✗ {app.name} : {e}[/red]")
+            failures += 1
+
+    if failures:
+        con.print(f"[yellow]⚠ {failures} atelier(s) en échec sur {len(apps)} — "
+                  "relancez la commande pour les restants.[/yellow]")
+        return 1
+    con.print(f"[green]✓ {len(apps)} atelier(s) fermé(s) — base propre.[/green]")
+    return 0
+
 # ── Task 2: nouvelles actions (start_all, stop_all, update_all, atelier) ──
 
 VPN_VOLUME = "hub_base_vpn-config"

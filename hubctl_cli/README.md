@@ -48,6 +48,8 @@ absent ou non synchronisé depuis 7+ jours.
 ./hubctl atelier <app> --maj            # MAJ atelier : git fetch + checkout origin/main + rebuild -ws
 ./hubctl atelier <app> --maj --ref R    # idem sur une branche/tag (défaut: main)
 ./hubctl atelier <app> --prod           # déployer origin/main validé en prod + supprimer l'atelier
+./hubctl atelier --fermer-tous          # fermer TOUS les ateliers actifs (confirmation globale O/N)
+./hubctl atelier --fermer-tous --oui    # idem, sans confirmation (scriptable)
 ./hubctl --dry-run atelier <app> --maj  # simuler — --dry-run est un flag GLOBAL (avant le subcommand)
 ```
 
