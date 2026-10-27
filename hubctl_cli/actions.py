@@ -1336,12 +1336,12 @@ def _rollback(target: str, target_path: Path, prev_commit: str | None,
     if target == "hub":
         utils.run_shell(["make", "-C", str(target_path), "build"],
                         dry_run=dry_run, console=con, timeout=600)
-        rc = utils.run_shell(["make", "-C", str(target_path), "up-prod"],
+        rc = utils.run_shell(["make", "-C", str(target_path), _up_target_for(target)],
                              dry_run=dry_run, console=con, timeout=60)
     else:
         utils.run_shell(["make", "-C", str(target_path), "build"],
                         dry_run=dry_run, console=con, timeout=600)
-        rc = utils.run_shell(["make", "-C", str(target_path), "up"],
+        rc = utils.run_shell(["make", "-C", str(target_path), _up_target_for(target)],
                              dry_run=dry_run, console=con, timeout=60)
 
     if rc != 0:
@@ -1717,6 +1717,16 @@ def ensure_hub_env(console=None, *, dry_run: bool = False) -> None:
     con.print(f"[green]✓ APPS_HOST_PATH ajouté au .env du Hub : {apps_path}[/green]")
 
 
+def _up_target_for(target: str) -> str:
+    """Cible make « up » selon la cible et le mode courant (plan Task 4).
+
+    Mode dev → ``up-dev`` ; sinon ``up-prod`` pour le Hub, ``up`` pour les apps.
+    """
+    if hub_state.get_mode() == "dev":
+        return "up-dev"
+    return "up-prod" if target == "hub" else "up"
+
+
 def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
     """Flux méta pour le Hub (plan unification updates, Task 3).
 
@@ -1780,7 +1790,7 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
         return False
 
     con.print("[bold]→ Démarrage « hub »…[/bold]")
-    rc = utils.run_shell(["make", "-C", str(hub_path), "up-prod"],
+    rc = utils.run_shell(["make", "-C", str(hub_path), _up_target_for("hub")],
                          dry_run=dry_run, console=con, timeout=60)
     if rc != 0:
         con.print("[red]✗ Démarrage échoué pour « hub » — rollback.[/red]")
@@ -1843,7 +1853,7 @@ def _update_target(console, target: str, *, dry_run: bool) -> bool:
         _rollback(target, target_path, prev_commit, snapshot, con)
         return False
 
-    up_target = "up-prod" if target == "hub" else "up"
+    up_target = _up_target_for(target)
     con.print(f"[bold]→ Démarrage « {target} »…[/bold]")
     rc = utils.run_shell(["make", "-C", str(target_path), up_target],
                          dry_run=dry_run, console=con, timeout=60)
@@ -1884,19 +1894,31 @@ def _resolve_update_targets(targets: list[str]) -> tuple[list[str], bool]:
 
 
 def _update_targets_pool(con, targets: list[str], *, dry_run: bool) -> int:
-    """Met à jour les cibles en parallèle (stop → pull → build → up → health).
+    """Met à jour les cibles (stop → pull → build → up → health).
 
-    Retourne le nombre d'échecs.
+    Plan unification updates (Task 4) : le Hub est **bloquant** — il est mis
+    à jour en premier et, s'il échoue, les apps ne sont pas touchées (elles
+    dépendent du Hub pour le M2M). Les apps restantes sont mises à jour en
+    parallèle ; leurs échecs sont comptés dans le retour.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    targets = list(targets)
+    if "hub" in targets:
+        con.print("[bold]→ Mise à jour du Hub…[/bold]")
+        if not _update_target(con, "hub", dry_run=dry_run):
+            con.print("[red]✗ Hub en échec — apps non mises à jour "
+                      "(elles dépendent du Hub).[/red]")
+            return 1
+        con.print("[green]✓ hub à jour[/green]")
+        targets = [t for t in targets if t != "hub"]
+        if not targets:
+            return 0
 
     tasks: dict = {}
     with ThreadPoolExecutor(max_workers=max(1, len(targets))) as pool:
         for name in targets:
-            if name == "hub":
-                con.print("[bold]→ Mise à jour du Hub…[/bold]")
-            else:
-                con.print(f"[bold]→ Mise à jour de « {name} »…[/bold]")
+            con.print(f"[bold]→ Mise à jour de « {name} »…[/bold]")
             tasks[pool.submit(_update_target, con, name, dry_run=dry_run)] = name
 
         ok, fail = 0, 0

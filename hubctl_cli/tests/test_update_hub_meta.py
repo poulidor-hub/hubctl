@@ -45,6 +45,8 @@ def _setup(monkeypatch, *, precheck_problems=None, run_shell_side=None,
                         if Path(path) == actions.hub_state.PARC_ROOT else HUB_SHA)
     monkeypatch.setattr(actions, "ensure_hub_env",
                         lambda con=None, dry_run=False: None)
+    # mode déterministe (le _mode global peut fuiter d'autres tests)
+    monkeypatch.setattr(actions.hub_state, "_mode", "prod")
     rollback = mock.Mock()
     monkeypatch.setattr(actions, "_rollback", rollback)
     return calls, rollback
