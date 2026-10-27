@@ -1,3 +1,25 @@
+## [0.13.0] - 27 octobre 2026
+
+### 📣 Pour les utilisateurs
+- **Ajouté** : `./hubctl atelier --fermer-tous` — ferme tous les ateliers ouverts
+  en une seule commande (récapitulatif + confirmation unique), pour repartir
+  d'une base propre sans fermer chaque atelier à la main. `--oui` permet de
+  scripter la fermeture ; si un atelier pose problème, les autres sont
+  quand même fermés. La production n'est jamais touchée.
+
+### ⚡ `atelier --fermer-tous` : fermeture en masse des ateliers
+
+- Nouvelle `action_atelier_close_all` (actions.py) : liste les ateliers actifs
+  (`get_workshop_apps`), récapitulatif `app → X-ws (WS_REF @ WS_COMMIT, code)`,
+  confirmation globale unique, puis `_remove_workshop` pour chacun (seul lieu
+  légitime du `down -v`).
+- Parser : `app` devient optionnel (`nargs="?"`) ; `--fermer-tous` rejoint le
+  groupe exclusif `--maj`/`--prod` ; nouveau flag `--oui` (scriptable).
+- Refus propre en non-TTY sans `--oui` (rc 2) ; rc propagé au shell
+  (0 = ok / annulation, 1 = échecs partiels, 2 = refus/usage) ; un atelier en
+  échec n'interrompt pas la boucle ; `--dry-run` global supporté.
+- +16 tests (parser, dispatch, action) ; doc README.md + hubctl_cli/README.md.
+
 ## [0.12.1] - 27 octobre 2026
 
 ### ⚡ Findings de la revue finale (sécurité du rollback et fiabilité du diagnostic)
