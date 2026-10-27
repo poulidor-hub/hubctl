@@ -52,6 +52,16 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("targets", nargs="*", metavar="CIBLE",
                                help='hub | <slug app> | "*" ou all (Hub + toutes les apps)')
 
+    # doctor — diagnostic des clones du parc
+    doctor_parser = sub.add_parser(
+        "doctor",
+        help="Diagnostic des clones (méta, HUB_base, apps) : divergences, saleté git")
+    doctor_parser.add_argument("--fix", dest="doctor_fix", action="store_true",
+                               help="Appliquer les remèdes sûrs (réalignement HUB_base, "
+                                    "branches mergées)")
+    doctor_parser.add_argument("--yes", dest="doctor_yes", action="store_true",
+                               help="Appliquer sans confirmation interactive")
+
     # atelier
     atelier_parser = sub.add_parser(
         "atelier", help="Creer, mettre a jour, deployer en prod ou supprimer l'atelier d'une app")
@@ -333,6 +343,16 @@ def _run(args) -> int:
                                  dry_run=global_dry_run)
         except Exception as e:
             print(f"❌ update a echoue : {e}")
+            return 1
+
+    if args.command == "doctor":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        try:
+            return action_doctor(console=console, fix=args.doctor_fix,
+                                 assume_yes=args.doctor_yes)
+        except Exception as e:
+            print(f"❌ doctor a échoué : {e}")
             return 1
 
     if args.command == "atelier":

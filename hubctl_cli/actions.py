@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from hubctl_cli import hub_state, utils, env_manager
+from hubctl_cli import park_checks
 
 import string as _string_module
 
@@ -1836,6 +1837,59 @@ def action_update(console=None, targets: list[str] | None = None, *,
 def action_update_all(console=None, *, dry_run: bool = False) -> None:
     """(menu) Met à jour le Hub et toutes les apps actives : git pull + rebuild."""
     action_update(console, ["*"], dry_run=dry_run)
+
+
+def action_doctor(console=None, *, fix: bool = False, assume_yes: bool = False,
+                  parc_root: Path | None = None,
+                  apps: list[str] | None = None) -> int:
+    """Diagnostic des clones du parc (plan unification updates, Task 2).
+
+    Rapport `problème → remède` sur le méta, HUB_base et les apps demandées
+    (défaut : apps actives détectées). ``fix=True`` applique les remèdes sûrs
+    via ``park_checks.apply_safe_fixes`` (confirmation interactive sauf
+    ``assume_yes``). Retour : 0 = sain (ou réaligné), 1 = problèmes restants.
+    """
+    con = console or _console
+    root = Path(parc_root) if parc_root else hub_state.PARC_ROOT
+    if apps is None:
+        apps_dir = hub_state.APPS_DIR
+        apps = sorted(
+            p.name for p in apps_dir.iterdir()
+            if p.is_dir() and (p / ".git").exists()
+        ) if apps_dir.is_dir() else []
+
+    findings = park_checks.run_checks(root, apps)
+    problems = [f for f in findings if not f.ok]
+
+    for f in findings:
+        mark = "[green]✓[/green]" if f.ok else "[red]✗[/red]"
+        line = f"{mark} {f.check} — {f.detail}"
+        if not f.ok and f.remedy:
+            line += f"\n    [yellow]remède : {f.remedy}[/yellow]"
+        con.print(line)
+
+    if not problems:
+        con.print("[green]✓ parc sain[/green]")
+        return 0
+
+    if fix:
+        applied = park_checks.apply_safe_fixes(
+            problems, root, assume_yes=assume_yes, console=con)
+        con.print(f"[bold]{applied} remède(s) appliqué(s)[/bold]")
+        remaining = [f for f in park_checks.run_checks(root, apps) if not f.ok]
+        if remaining:
+            con.print(f"[red]✗ {len(remaining)} problème(s) restant(s)[/red]")
+            for f in remaining:
+                con.print(f"  [red]✗ {f.check} — {f.detail}[/red]"
+                          + (f"\n    [yellow]remède : {f.remedy}[/yellow]"
+                             if f.remedy else ""))
+            return 1
+        con.print("[green]✓ parc sain après correction[/green]")
+        return 0
+
+    con.print(f"[red]✗ {len(problems)} problème(s) — lancez `hubctl doctor --fix` "
+              "ou appliquez les remèdes ci-dessus[/red]")
+    return 1
 
 
 # ── Workshop (ateliers Docker Compose -p) ──
