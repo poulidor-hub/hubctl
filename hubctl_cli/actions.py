@@ -1284,13 +1284,35 @@ def _health_check(target: str, console=None, timeout: int = 60, port_override: s
     return False
 
 
+def _git_head_sha(path: Path) -> str | None:
+    """SHA du HEAD d'un dépôt, ou None si indisponible."""
+    r = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                       capture_output=True, text=True, timeout=10)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def _rollback(target: str, target_path: Path, prev_commit: str | None,
               snapshot: Path | None, console=None,
               db_container: str | None = None, db_name: str | None = None,
-              dry_run: bool = False) -> None:
-    """Rollback: revert git, restore DB snapshot, re-up."""
+              dry_run: bool = False,
+              meta_root: Path | None = None,
+              prev_meta_sha: str | None = None) -> None:
+    """Rollback: revert git, restore DB snapshot, re-up.
+
+    ``meta_root``/``prev_meta_sha`` (plan unification updates) : restaure
+    d'abord le pointeur du méta-repo, AVANT le reset du sous-module —
+    sinon le submodule réaligné sur l'ancien SHA réapparaîtrait comme
+    « modifié » au prochain pull méta.
+    """
     con = console or _console
     con.print(f"[bold red]↩ Rollback de « {target} »[/bold red]")
+
+    if meta_root and prev_meta_sha:
+        con.print(f"  méta reset → {prev_meta_sha[:8]} (pointeur submodule)")
+        utils.run_shell(
+            ["git", "-C", str(meta_root), "reset", "--hard", prev_meta_sha],
+            dry_run=dry_run, console=con, timeout=15,
+        )
 
     if prev_commit:
         con.print(f"  git reset → {prev_commit[:8]}")
@@ -1695,12 +1717,95 @@ def ensure_hub_env(console=None, *, dry_run: bool = False) -> None:
     con.print(f"[green]✓ APPS_HOST_PATH ajouté au .env du Hub : {apps_path}[/green]")
 
 
+def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
+    """Flux méta pour le Hub (plan unification updates, Task 3).
+
+    Le méta-repo POULIDOR est la source de vérité : pré-checks stricts →
+    ``git pull --ff-only`` du méta → ``submodule update`` → build → up →
+    health. Jamais de pull direct dans HUB_base. En cas d'échec après le
+    pull : rollback étendu (pointeur méta + submodule + snapshot DB).
+    """
+    meta_root = hub_state.PARC_ROOT
+    hub_path = hub_state.HUB_DIR
+
+    # Pré-checks : jamais de pull dans une divergence (échec propre)
+    problems = [f for f in park_checks.run_update_prechecks(meta_root)
+                if not f.ok]
+    if problems:
+        for f in problems:
+            con.print(f"[red]✗ {f.check} — {f.detail}[/red]")
+            if f.remedy:
+                con.print(f"    [yellow]remède : {f.remedy}[/yellow]")
+        con.print("[red]✗ pré-checks échoués — réalignez d'abord "
+                  "(`hubctl doctor --fix`).[/red]")
+        return False
+
+    ensure_hub_env(con, dry_run=dry_run)
+    compose_file = hub_path / "docker-compose.yml"
+    if not compose_file.exists():
+        con.print(f"[red]✗ docker-compose.yml introuvable dans {hub_path}[/red]")
+        return False
+
+    prev_meta_sha = _git_head_sha(meta_root)
+    prev_hub_sha = _git_head_sha(hub_path)
+    snapshot = _db_snapshot(con) if not dry_run else None
+
+    con.print("[bold]→ git pull --ff-only du méta…[/bold]")
+    rc = utils.run_shell(["git", "-C", str(meta_root), "pull", "--ff-only"],
+                         dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print("[red]✗ git pull --ff-only du méta échoué — "
+                  "commits locaux ou divergence ?[/red]")
+        return False
+
+    con.print("[bold]→ submodule update…[/bold]")
+    rc = utils.run_shell(["git", "-C", str(meta_root), "submodule", "update",
+                          "--init", "--recursive"],
+                         dry_run=dry_run, console=con)
+    if rc != 0:
+        con.print("[red]✗ submodule update échoué — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+
+    con.print("[bold]→ Build « hub »…[/bold]")
+    rc = utils.run_shell(["make", "-C", str(hub_path), "build"],
+                         dry_run=dry_run, console=con, timeout=600)
+    if rc != 0:
+        con.print("[red]✗ Build échoué pour « hub » — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+
+    con.print("[bold]→ Démarrage « hub »…[/bold]")
+    rc = utils.run_shell(["make", "-C", str(hub_path), "up-prod"],
+                         dry_run=dry_run, console=con, timeout=60)
+    if rc != 0:
+        con.print("[red]✗ Démarrage échoué pour « hub » — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+
+    if not _health_check("hub", con, timeout=60):
+        con.print("[red]✗ Health échoué pour « hub » — rollback.[/red]")
+        _rollback("hub", hub_path, prev_hub_sha, snapshot, con,
+                  dry_run=dry_run, meta_root=meta_root,
+                  prev_meta_sha=prev_meta_sha)
+        return False
+    return True
+
+
 def _update_target(console, target: str, *, dry_run: bool) -> bool:
     """Stop → git pull → build → up → health pour un hub ou une app. Retourne True si succès."""
     con = console or _console
     if target == "hub":
-        ensure_hub_env(con, dry_run=dry_run)
-    target_path = hub_state.HUB_DIR if target == "hub" else hub_state.active_apps_dir() / target
+        # Plan unification updates (Task 3) : le Hub passe par le méta-repo
+        # (source de vérité), jamais par un pull direct dans HUB_base.
+        return _update_hub_via_meta(con, dry_run=dry_run)
+    target_path = hub_state.active_apps_dir() / target
     compose_file = target_path / "docker-compose.yml"
     if not compose_file.exists():
         con.print(f"[red]✗ docker-compose.yml introuvable dans {target_path}[/red]")
