@@ -1,3 +1,12 @@
+## [0.14.0] - 27 octobre 2026
+
+### ✨ Ateliers pilotables par le Hub — `hubctl atelier serve`
+
+- **Ajouté** : `hubctl atelier --serve [--port 8777] [--token-file PATH]` — mini-serveur HTTP **stdlib** sur **127.0.0.1** uniquement : `GET /health`, `GET /atelier/list` (markers `.workshop.env` + état des conteneurs `-ws`), `POST /atelier/close-all` (appelle `action_atelier_close_all(oui=True)`) ; auth header `X-Atelier-Token` constant-time contre le fichier token
+- **Ajouté** : unit systemd durcie `packaging/hubctl-atelier.service` (Restart=on-failure, NoNewPrivileges, ProtectSystem=strict, PrivateTmp) + génération conditionnelle du token (`openssl rand -hex 32`, jamais écrasé) et rappel de copie vers `HUB_base/secrets/atelier_token`
+- **Shape close-all** : `{"closed": [...], "failed": [...], "rc", "output"}` — 200 / **207** échec partiel ; verrou anti-close-all concurrent
+- Tests : 26 nouveaux (serveur réel sur port 0 + httpx), suite complète verte
+
 ## [0.13.1] - 27 octobre 2026
 
 ### 📣 Pour les utilisateurs
