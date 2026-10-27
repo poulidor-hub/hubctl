@@ -1,3 +1,19 @@
+## [0.13.1] - 27 octobre 2026
+
+### 📣 Pour les utilisateurs
+- **Modifié** : les options de fermeture en masse s'écrivent désormais en
+  anglais : `./hubctl atelier --close-all` (au lieu de `--fermer-tous`) et
+  `--yes` (au lieu de `--oui`), alignées sur le `--yes` existant de `doctor`.
+  Comportement et codes retour inchangés.
+
+### ⚡ Renommage des options atelier --close-all / --yes
+
+- `--fermer-tous` → `--close-all`, `--oui` → `--yes` (dest `atelier_yes`,
+  cohérent avec `doctor_yes`) ; dest interne `atelier_close_all` inchangé ;
+  messages d'erreur et README ajustés.
+- Les 16 tests de la feature passent sous les nouveaux noms (rouge vérifié
+  avant renommage : 6 échecs parser/dispatch attendus).
+
 ## [0.13.0] - 27 octobre 2026
 
 ### 📣 Pour les utilisateurs
