@@ -1,3 +1,10 @@
+## [0.14.1] - 27 octobre 2026
+
+### 🐛 Fix — atelier serve joignable depuis hub-api
+
+- **Corrigé** : `--host` paramètre le bind (défaut 127.0.0.1 inchangé) — l'unit systemd passe `--host 172.17.0.1` (passerelle docker0) : le conteneur hub-api atteint le service via `host.docker.internal` (E2E réelle : 503 systématique avec le bind loopback, token inchangé)
+- Tests : 28 (nouveau test bind paramétré sur 127.0.0.2 — absence de hardcode prouvée)
+
 ## [0.14.0] - 27 octobre 2026
 
 ### ✨ Ateliers pilotables par le Hub — `hubctl atelier serve`
