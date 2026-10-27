@@ -58,7 +58,7 @@ Dépôts voisins : [POULIDOR](https://github.com/POULIDOR-Audit-Developpement/PO
 | `stop [all\|prod\|dev]` | Tout arrêter |
 | `update <cible…>` | Mettre à jour une cible : `hub`, un ou plusieurs slugs d'app, `*`/`all` = Hub + toutes les apps (git pull + rebuild + rollback auto ; sans cible : usage, rien n'exécuté) |
 | `atelier <app> [--maj] [--prod]` | Cycle atelier d'une app (créer, tester, déployer) |
-| `atelier --fermer-tous [--oui]` | Fermer TOUS les ateliers actifs (confirmation globale ; `--oui` pour scripter) |
+| `atelier --close-all [--yes]` | Fermer TOUS les ateliers actifs (confirmation globale ; `--yes` pour scripter) |
 | `init [--force]` | Bootstrap du Hub (.env, démarrage, health check) |
 | `export` / `restore <archive>` | Archive chiffrée du parc complet / restauration |
 | `pra-restore [kit]` | Restauration PRA sur serveur neuf (assistant) |

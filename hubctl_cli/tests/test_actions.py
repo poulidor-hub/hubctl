@@ -1802,7 +1802,7 @@ def test_update_target_app_fails_clean_on_local_modifications(monkeypatch, tmp_p
     assert not any(c[0] == "make" for c in calls), "aucun stop/build avant échec propre"
 
 
-# ── action_atelier_close_all (--fermer-tous : fermeture en masse des ateliers) ──
+# ── action_atelier_close_all (--close-all : fermeture en masse des ateliers) ──
 
 
 def _ws_app(name):
@@ -1870,7 +1870,7 @@ def test_close_all_exception_compte_comme_echec(monkeypatch):
 
 
 def test_close_all_refuse_non_interactif_sans_oui(monkeypatch):
-    """Non-TTY sans --oui → refus (rc 2), aucune suppression."""
+    """Non-TTY sans --yes → refus (rc 2), aucune suppression."""
     import sys
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])

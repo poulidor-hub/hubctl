@@ -41,22 +41,22 @@ class TestAtelierFlags:
         a = build_parser().parse_args(["--prod", "atelier", "X"])
         assert a.prod is True and a.atelier_prod is False
 
-    def test_fermer_tous(self):
-        a = build_parser().parse_args(["atelier", "--fermer-tous"])
+    def test_close_all(self):
+        a = build_parser().parse_args(["atelier", "--close-all"])
         assert a.atelier_close_all is True and a.app is None
-        assert a.atelier_oui is False and a.atelier_maj is False and a.atelier_prod is False
+        assert a.atelier_yes is False and a.atelier_maj is False and a.atelier_prod is False
 
-    def test_fermer_tous_oui(self):
-        a = build_parser().parse_args(["atelier", "--fermer-tous", "--oui"])
-        assert a.atelier_close_all is True and a.atelier_oui is True
+    def test_close_all_oui(self):
+        a = build_parser().parse_args(["atelier", "--close-all", "--yes"])
+        assert a.atelier_close_all is True and a.atelier_yes is True
 
-    def test_fermer_tous_exclusif_avec_maj(self):
+    def test_close_all_exclusif_avec_maj(self):
         with pytest.raises(SystemExit):
-            build_parser().parse_args(["atelier", "--fermer-tous", "--maj"])
+            build_parser().parse_args(["atelier", "--close-all", "--maj"])
 
-    def test_fermer_tous_exclusif_avec_prod(self):
+    def test_close_all_exclusif_avec_prod(self):
         with pytest.raises(SystemExit):
-            build_parser().parse_args(["atelier", "--fermer-tous", "--prod"])
+            build_parser().parse_args(["atelier", "--close-all", "--prod"])
 
     def test_app_optionnel(self):
         a = build_parser().parse_args(["atelier"])
@@ -360,33 +360,33 @@ def test_dispatch_atelier_calls_action_atelier(monkeypatch):
     assert fn.call_args.kwargs["app_slug"] == "shop"
 
 
-def test_dispatch_atelier_fermer_tous(monkeypatch):
+def test_dispatch_atelier_close_all(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
     with mock.patch.object(m, "action_atelier_close_all", return_value=0) as fn:
-        rc = m.main(["atelier", "--fermer-tous"])
+        rc = m.main(["atelier", "--close-all"])
     assert rc == 0
     fn.assert_called_once()
     assert fn.call_args.kwargs["oui"] is False
     assert fn.call_args.kwargs["dry_run"] is False
 
 
-def test_dispatch_atelier_fermer_tous_oui(monkeypatch):
+def test_dispatch_atelier_close_all_oui(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
     with mock.patch.object(m, "action_atelier_close_all", return_value=0) as fn:
-        rc = m.main(["atelier", "--fermer-tous", "--oui"])
+        rc = m.main(["atelier", "--close-all", "--yes"])
     assert rc == 0
     assert fn.call_args.kwargs["oui"] is True
 
 
-def test_dispatch_atelier_fermer_tous_refuse_app(monkeypatch):
+def test_dispatch_atelier_close_all_refuse_app(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
     with mock.patch.object(m, "action_atelier_close_all") as fn:
-        rc = m.main(["atelier", "X", "--fermer-tous"])
+        rc = m.main(["atelier", "X", "--close-all"])
     assert rc == 2
     fn.assert_not_called()
 
 
-def test_dispatch_atelier_sans_app_ni_fermer_tous(monkeypatch):
+def test_dispatch_atelier_sans_app_ni_close_all(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
     with mock.patch.object(m, "action_atelier") as fn:
         rc = m.main(["atelier"])
@@ -394,11 +394,11 @@ def test_dispatch_atelier_sans_app_ni_fermer_tous(monkeypatch):
     fn.assert_not_called()
 
 
-def test_dispatch_atelier_fermer_tous_retourne_rc_action(monkeypatch):
-    """Le rc de --fermer-tous remonte tel quel (1 = échecs partiels)."""
+def test_dispatch_atelier_close_all_retourne_rc_action(monkeypatch):
+    """Le rc de --close-all remonte tel quel (1 = échecs partiels)."""
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "dev")
     with mock.patch.object(m, "action_atelier_close_all", return_value=1):
-        rc = m.main(["atelier", "--fermer-tous", "--oui"])
+        rc = m.main(["atelier", "--close-all", "--yes"])
     assert rc == 1
 
 

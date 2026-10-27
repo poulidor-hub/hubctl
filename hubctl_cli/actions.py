@@ -2994,7 +2994,7 @@ def action_atelier(console, app_slug: str, *, dry_run: bool = False,
 
 
 def action_atelier_close_all(console, *, dry_run: bool = False, oui: bool = False) -> int:
-    """Ferme TOUS les ateliers actifs (`./hubctl atelier --fermer-tous`).
+    """Ferme TOUS les ateliers actifs (`./hubctl atelier --close-all`).
 
     Récapitulatif des ateliers détectés (``.workshop.env``), confirmation globale
     unique, puis ``_remove_workshop`` pour chacun (seul lieu légitime du
@@ -3023,7 +3023,7 @@ def action_atelier_close_all(console, *, dry_run: bool = False, oui: bool = Fals
 
     if not oui:
         if not _sys.stdin.isatty():
-            con.print("[red]✗ Mode non interactif : ajoutez --oui pour confirmer "
+            con.print("[red]✗ Mode non interactif : ajoutez --yes pour confirmer "
                       "la fermeture en masse.[/red]")
             return 2
         try:
