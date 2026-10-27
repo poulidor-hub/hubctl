@@ -9,7 +9,7 @@ from rich.text import Text
 from hubctl_cli import actions, animation, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all, action_update,
-    action_atelier, action_bootstrap, action_vpn, action_seed,
+    action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
     action_seed_export,
 )
 from hubctl_cli.canvas import Canvas
@@ -65,12 +65,17 @@ def build_parser() -> argparse.ArgumentParser:
     # atelier
     atelier_parser = sub.add_parser(
         "atelier", help="Creer, mettre a jour, deployer en prod ou supprimer l'atelier d'une app")
-    atelier_parser.add_argument("app", help="Slug de l'app")
+    atelier_parser.add_argument("app", nargs="?", default=None,
+                                help="Slug de l'app (omettre avec --fermer-tous)")
     majprod = atelier_parser.add_mutually_exclusive_group()
     majprod.add_argument("--maj", action="store_true", dest="atelier_maj", default=False,
                          help="Mettre a jour l'atelier : git fetch + checkout + rebuild -ws")
     majprod.add_argument("--prod", action="store_true", dest="atelier_prod", default=False,
                          help="Deployer origin/main en prod puis supprimer l'atelier")
+    majprod.add_argument("--fermer-tous", action="store_true", dest="atelier_close_all", default=False,
+                         help="Fermer TOUS les ateliers actifs (confirmation globale, ou --oui pour scripter)")
+    atelier_parser.add_argument("--oui", action="store_true", dest="atelier_oui", default=False,
+                                help="Avec --fermer-tous : fermer sans confirmation interactive")
     atelier_parser.add_argument("--ref", default=None, metavar="REF",
                                 help="Branche ou tag a tester avec --maj (defaut: main)")
 
@@ -378,6 +383,19 @@ def _run(args) -> int:
         from rich.console import Console as RichConsole
         console = RichConsole()
         _resolve_mode(args)
+        if args.atelier_close_all:
+            if args.app is not None:
+                print("❌ --fermer-tous ne prend pas de slug d'app (elle agit sur tous les ateliers).")
+                return 2
+            try:
+                return action_atelier_close_all(console=console, dry_run=global_dry_run,
+                                                oui=args.atelier_oui)
+            except Exception as e:
+                print(f"❌ atelier --fermer-tous a echoue : {e}")
+                return 1
+        if args.app is None:
+            print("❌ precisez un slug d'app, ou --fermer-tous pour fermer tous les ateliers actifs.")
+            return 2
         try:
             action_atelier(console=console, app_slug=args.app, dry_run=global_dry_run,
                            maj=args.atelier_maj, prod=args.atelier_prod, ref=args.ref)
