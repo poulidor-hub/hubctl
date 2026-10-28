@@ -1,14 +1,15 @@
 """`hubctl atelier serve` — mini-serveur HTTP hôte pour piloter les ateliers.
 
 Brique hôte du feature « ateliers pilotables par l'agent » : le Hub proxy
-les routes /atelier/list et /atelier/close-all (shapes JSON = contrat).
+les routes /atelier/list, /atelier/close-all et /vault/* (shapes JSON =
+contrat).
 
 Contraintes (spec §4) :
 - stdlib uniquement : ThreadingHTTPServer, aucune dépendance nouvelle ;
 - bind 127.0.0.1 par défaut (--host pour l'ouvrir au strict nécessaire :
   p. ex. 172.17.0.1, passerelle docker0, pour la joignabilité des
   conteneurs via host.docker.internal — l'auth token reste le garde-fou) ;
-- 3 routes fixes sans paramètre libre ;
+- routes fixes sans paramètre libre (5) ;
 - auth par header ``X-Atelier-Token`` comparé en constant-time
   (hmac.compare_digest) contre le contenu du fichier --token-file
   (défaut ~/.config/hubctl/atelier_token).
@@ -18,6 +19,11 @@ Routes :
 - GET  /atelier/list      → 200 {"ateliers": [{app, ws_slug, api_port,
                             frontend_port, containers_state}]}
 - POST /atelier/close-all → 200 (rc 0) / 207 (échec partiel) — voir _close_all
+- GET  /vault/status      → 200 {"status": "ok"|"locked", "locked", "last_backup",
+                            "vault_size", "entries" {env, files, apps, db_dump},
+                            "divergences", "pra"} — voir _vault_state
+- POST /vault/backup      → 200 {"status": "ok"|"locked", …} / 409 (déjà en cours)
+                            / 500 (> 110 s) — voir _run_backup
 
 Le mapping {closed, failed} du contrat est reconstruit par diff des
 .workshop.env avant/après action_atelier_close_all (qui ne renvoie qu'un
@@ -31,6 +37,9 @@ import io
 import json
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -41,12 +50,21 @@ from hubctl_cli import actions, hub_state
 
 DEFAULT_TOKEN_FILE = Path.home() / ".config" / "hubctl" / "atelier_token"
 
-_ROUTES_DOC = "GET /health · GET /atelier/list · POST /atelier/close-all"
+_ROUTES_DOC = ("GET /health · GET /atelier/list · POST /atelier/close-all · "
+               "GET /vault/status · POST /vault/backup")
 
 # close-all = `docker compose down -v` successifs : deux exécutions en
 # parallèle sur le même atelier seraient imprévisibles (retry du Hub pendant
 # qu'une fermeture tourne). ThreadingHTTPServer = 1 thread/requête → sérialiser.
 _close_all_lock = threading.Lock()
+
+# Backup vault = lecture disque + dump DB + réplication PRA : potentiellement
+# long (dizaines de secondes). Un seul à la fois (409 sinon) ; le job tourne
+# dans un worker unique et l'appelant attend au plus _VAULT_BACKUP_TIMEOUT —
+# au-delà : 500, mais le verrou reste tenu par le worker jusqu'au bout.
+_vault_backup_lock = threading.Lock()
+_vault_backup_pool = ThreadPoolExecutor(max_workers=1)
+_VAULT_BACKUP_TIMEOUT = 110.0
 
 
 # ── Collecte des ateliers ──
@@ -119,6 +137,105 @@ def collect_ateliers() -> list[dict]:
     return ateliers
 
 
+# ── Coffre (vault) ──
+
+def _pra_info() -> dict:
+    """{"configured": bool, "location": str|None} — jamais fatal (try/except large)."""
+    from hubctl_cli import pra_config  # lazy : voir actions._get_vault
+    try:
+        cfg = pra_config.load_config()
+    except Exception:
+        return {"configured": False, "location": None}
+    if not cfg:
+        return {"configured": False, "location": None}
+    # location = champ "path" de pra_location.json (dict) ; getattr si objet.
+    loc = cfg.get("path") if isinstance(cfg, dict) else getattr(cfg, "path", None)
+    return {"configured": True, "location": str(loc) if loc is not None else None}
+
+
+def _vault_state() -> dict:
+    """État du coffre pour GET /vault/status (contrat consommé par le Hub).
+
+    Verrouillé (clé locale absente/invalide, coffre absent) → {"status":
+    "locked", "locked": True, "last_backup", "vault_size", "pra"} — sans
+    entries/divergences (non calculables sans déverrouillage).
+    Déverrouillé → contrat complet : entries {env, files, apps, db_dump},
+    divergences (targets triés), pra, métadonnées du fichier coffre
+    (last_backup = mtime en ISO UTC, vault_size en octets).
+    """
+    from hubctl_cli.coffre import Vault  # lazy : voir actions._get_vault
+    from hubctl_cli.vault_manager import VaultManager
+
+    path = hub_state.vault_path()
+    vault = Vault(path)
+    vault.unlock_stored()
+    st = path.stat() if path.exists() else None
+    meta = {
+        "last_backup": (datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+                        if st else None),
+        "vault_size": st.st_size if st else 0,
+    }
+    if vault.is_locked:
+        return {"status": "locked", "locked": True, **meta, "pra": _pra_info()}
+    mgr = VaultManager(vault)
+    files = vault.list_files()
+    # __apps__ = liste de métadonnées posée par sync() — get_entry ferait
+    # dict() d'une liste ; lecture directe, comme vault_manager.
+    apps = vault._data.get("__apps__") or []
+    return {
+        "status": "ok",
+        "locked": False,
+        **meta,
+        "entries": {
+            "env": sum(1 for k in vault.list_entries() if not k.startswith("__")),
+            "files": len(files),
+            "apps": len(apps),
+            "db_dump": "HUB_base/backup/hub_dump.sql" in files,
+        },
+        "divergences": sorted(mgr.check_divergence().keys()),
+        "pra": _pra_info(),
+    }
+
+
+def _backup_job() -> tuple[int, dict]:
+    """Le backup lui-même (thread worker) : détient _vault_backup_lock."""
+    from hubctl_cli.coffre import Vault  # lazy : voir actions._get_vault
+    from hubctl_cli.vault_manager import VaultManager
+
+    if not _vault_backup_lock.acquire(blocking=False):
+        return 409, {"erreur": "backup déjà en cours"}
+    try:
+        vault = Vault(hub_state.vault_path())
+        if not vault.unlock_stored() or vault.is_locked:
+            return 200, {"status": "locked"}
+        result = VaultManager(vault).backup_all()
+        return 200, {"status": "ok", **result}
+    finally:
+        _vault_backup_lock.release()
+
+
+def _run_backup() -> tuple[int, dict]:
+    """POST /vault/backup → (rc, payload) (contrat consommé par le Hub).
+
+    Fast-path : verrou tenu (backup en cours) → 409 immédiat, sans attendre.
+    Sinon le backup tourne dans le worker unique (_vault_backup_pool), qui
+    acquiert et détient le verrou ; l'appelant attend au plus
+    _VAULT_BACKUP_TIMEOUT (110 s) : au-delà → 500, le verrou restant tenu
+    par le worker jusqu'à la fin du job (les requêtes suivantes continuent
+    de prendre 409). La sonde non-bloquante initiale est relâchée avant le
+    submit : c'est le job qui détient le verrou pendant toute la durée.
+    """
+    if not _vault_backup_lock.acquire(blocking=False):
+        return 409, {"erreur": "backup déjà en cours"}
+    _vault_backup_lock.release()  # simple sonde : le job re-prend le verrou
+    future = _vault_backup_pool.submit(_backup_job)
+    try:
+        return future.result(timeout=_VAULT_BACKUP_TIMEOUT)
+    except FutureTimeoutError:
+        return 500, {"erreur": f"backup > {int(_VAULT_BACKUP_TIMEOUT)} s "
+                               "(toujours en cours côté hôte)"}
+
+
 # ── Serveur HTTP ──
 
 def _read_token(token_file: Path) -> bytes:
@@ -148,7 +265,7 @@ def build_server(port: int, token_file: Path,
 
 
 class AtelierHandler(BaseHTTPRequestHandler):
-    """Handlers JSON des 3 routes. Auth X-Atelier-Token (sauf /health)."""
+    """Handlers JSON des 5 routes. Auth X-Atelier-Token (sauf /health)."""
 
     server_version = "hubctl-atelier/0.1"
 
@@ -212,6 +329,10 @@ class AtelierHandler(BaseHTTPRequestHandler):
                 return self._send_json(200, {"ateliers": collect_ateliers()})
             if route == "/atelier/close-all":
                 return self._send_json(405, {"erreur": "méthode interdite : POST requis"})
+            if route == "/vault/status":
+                return self._send_json(200, _vault_state())
+            if route == "/vault/backup":
+                return self._send_json(405, {"erreur": "méthode interdite : POST requis"})
             return self._send_json(404, {"erreur": "route inconnue"})
         except Exception as e:  # réponse JSON propre plutôt que connexion coupée
             return self._send_json(500, {"erreur": str(e)})
@@ -226,6 +347,11 @@ class AtelierHandler(BaseHTTPRequestHandler):
             if route == "/atelier/close-all":
                 return self._close_all()
             if route == "/atelier/list":
+                return self._send_json(405, {"erreur": "méthode interdite : GET requis"})
+            if route == "/vault/backup":
+                rc, payload = _run_backup()
+                return self._send_json(rc, payload)
+            if route == "/vault/status":
                 return self._send_json(405, {"erreur": "méthode interdite : GET requis"})
             return self._send_json(404, {"erreur": "route inconnue"})
         except Exception as e:
