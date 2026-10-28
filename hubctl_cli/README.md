@@ -59,8 +59,9 @@ absent ou non synchronisé depuis 7+ jours.
 
 ### Serveur hôte (`atelier --serve`) et service systemd
 
-Mini-serveur HTTP que le Hub proxy pour piloter les ateliers :
-`GET /health`, `GET /atelier/list`, `POST /atelier/close-all`. Toute route
+Mini-serveur HTTP que le Hub proxy pour piloter les ateliers et le coffre :
+`GET /health`, `GET /atelier/list`, `POST /atelier/close-all`,
+`GET /vault/status`, `POST /vault/backup`. Toute route
 sauf `/health` exige le header `X-Atelier-Token` (le vrai garde-fou
 d'exposition). Bind `127.0.0.1` par défaut ; `--host` permet de l'ouvrir au
 strict nécessaire — ex. `172.17.0.1` (passerelle docker0) pour être joignable
@@ -87,8 +88,9 @@ chmod 600 ~/.config/hubctl/atelier_token
 cp ~/.config/hubctl/atelier_token ~/MyCOMPANY/HUB_stack/POULIDOR/HUB_base/secrets/atelier_token
 
 # 3. Prérequis : le venv hubctl_cli/.venv doit exister (créé par n'importe
-#    quel lancement de ./hubctl). L'unit, en lecture seule stricte, ne peut
-#    pas le construire — sans lui, le service échoue en boucle.
+#    quel lancement de ./hubctl). L'unit, en lecture seule stricte hors
+#    coffre (ReadWritePaths), ne peut pas le construire — sans lui, le
+#    service échoue en boucle.
 
 # 4. Activer le service
 sudo cp packaging/hubctl-atelier.service /etc/systemd/system/
@@ -100,9 +102,12 @@ journalctl -u hubctl-atelier -f     # suivi ; si le token est absent,
 
 L'unit durcit l'exécution (`Restart=on-failure`, `NoNewPrivileges`,
 `ProtectSystem=strict`, `PrivateTmp=true`, utilisateur `admin`) : le serveur
-n'écrit nulle part, il lit le token et le code et interroge Docker via son
-socket. Chemins supposés : parc à `~/MyCOMPANY/HUB_stack/POULIDOR`
-(spécificateur `%h`) — adapter l'unit copiée sinon.
+n'écrit QUE dans le coffre via `POST /vault/backup` — `ReadWritePaths` ouvre
+l'écriture sur `hubctl_cli/vault` (parc.vault.enc, `.bak`, artefact dump
+DB), tout le reste du système reste en lecture seule ; il lit le token et le
+code et interroge Docker via son socket. Chemins supposés : parc à
+`~/MyCOMPANY/HUB_stack/POULIDOR` (spécificateur `%h`) — adapter l'unit
+copiée sinon.
 
 > **Note** : les anciennes docs référencent les commandes `work`, `ship`,
 > `deploy`, multi-slug et `--copy-db`. **Aucune de ces commandes n'est
