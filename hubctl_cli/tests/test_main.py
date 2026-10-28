@@ -486,6 +486,8 @@ def test_bootstrap_does_not_leak_password(monkeypatch, tmp_path):
     monkeypatch.setattr(actions, "_sync_db_password_if_needed", lambda *a, **kw: None)
     # Ne pas écrire dans le vrai ~/.bashrc du user qui lance les tests
     monkeypatch.setattr(actions, "_install_shell_marker", lambda *a, **kw: None)
+    # Ni toucher au token hôte / à l'unit systemd hubctl-atelier réels
+    monkeypatch.setattr(actions, "_ensure_atelier_service", lambda *a, **kw: None)
     # Ne PAS détruire les conteneurs hub-* réels (force-remove par nom dans
     # _cleanup_existing_hub_containers n'est pas isolée du HUB_DIR mocké).
     monkeypatch.setattr(actions, "_cleanup_existing_hub_containers", lambda *a, **kw: None)
