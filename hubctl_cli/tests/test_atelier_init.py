@@ -84,6 +84,18 @@ def test_hub_token_not_overwritten(tmp_path, monkeypatch):
     assert hub_tf.read_text() == "token-hub-existant"
 
 
+def test_hub_token_not_copied_if_host_write_fails(tmp_path, monkeypatch):
+    """Écriture hôte KO → token=None : la copie Hub ne doit PAS se faire
+    (sinon mismatch permanent : régénéré différemment au run suivant)."""
+    _patch_env(tmp_path, monkeypatch)
+    # Parent du token hôte = un fichier → mkdir lève NotADirectoryError (OSError)
+    (tmp_path / "config").write_text("pas un dossier")
+    hub_tf = hub_state.HUB_DIR / "secrets" / "atelier_token"
+    actions._ensure_atelier_service(mock.Mock())  # ne doit JAMAIS lever
+    assert not atelier_serve.DEFAULT_TOKEN_FILE.exists()
+    assert not hub_tf.exists()
+
+
 # ── Unit systemd : exécution sudo vs rappel manuel ──
 
 def test_no_tty_prints_commands_without_failure(tmp_path, monkeypatch):
@@ -132,6 +144,26 @@ def test_already_active_is_noop(tmp_path, monkeypatch):
     run_shell.assert_not_called()
     assert "✓" in _printed(con)
     assert "hubctl-atelier" in _printed(con)
+
+
+def test_unit_present_but_inactive_runs_enable_only(tmp_path, monkeypatch):
+    """Unit installée mais service inactif → seul `enable --now` relancé
+    (pas de cp / daemon-reload)."""
+    _patch_env(tmp_path, monkeypatch)
+    unit = actions._ATELIER_UNIT
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Unit]\n")
+    monkeypatch.setattr(
+        actions.subprocess, "run",
+        mock.Mock(return_value=types.SimpleNamespace(
+            returncode=3, stdout="inactive\n", stderr="")))
+    run_shell = mock.Mock(return_value=0)
+    monkeypatch.setattr(actions.utils, "run_shell", run_shell)
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    actions._ensure_atelier_service(mock.Mock())
+    calls = run_shell.call_args_list
+    assert len(calls) == 1
+    assert calls[0].args[0] == ["sudo", "systemctl", "enable", "--now", "hubctl-atelier"]
 
 
 # ── dry-run : impression seule, zéro écriture ──

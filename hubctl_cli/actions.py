@@ -476,13 +476,24 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
             con.print(f"[green]✓ Token atelier déjà présent : {token_file}[/green]")
         elif not dry_run:
             token = _secrets.token_hex(32)
-            token_file.parent.mkdir(parents=True, exist_ok=True)
-            token_file.write_text(token, encoding="utf-8")
-            token_file.chmod(0o600)
+            try:
+                if token_file.exists() and token_file.stat().st_size == 0:
+                    token_file.unlink()  # vide = inutilisable → recréation
+                token_file.parent.mkdir(parents=True, exist_ok=True)
+                # os.open O_EXCL + 0o600 : créé d'emblée owner-only, pas de
+                # fenêtre umask (write_text+chmod laisserait un 644 lue).
+                fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(token)
+            except FileExistsError:
+                # Course (autre process vient de créer le token) : on ne
+                # touche JAMAIS à l'existant, on adopte le sien.
+                token = token_file.read_text(encoding="utf-8")
             con.print(f"[green]✓ Token atelier généré : {token_file}[/green]")
         else:
             con.print(f"[dim](dry-run) génération du token {token_file}[/dim]")
     except OSError as e:
+        token = None  # écriture KO : ne PAS copier un token absent de l'hôte
         con.print(f"[yellow]⚠ Token atelier ({token_file}) : {e}[/yellow]")
 
     # ── 2. Token Hub (HUB_base/secrets/atelier_token) : copie si absent ──
@@ -523,20 +534,25 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
         ]
 
     # ── 4. Exécution (TTY requis pour le prompt sudo) ou rappel manuel ──
-    if dry_run or _sys.stdin.isatty():
-        failed = False
-        for cmd in cmds:
-            if utils.run_shell(cmd, dry_run=dry_run, console=con) != 0:
-                failed = True
-                break
-        if not failed:
-            if dry_run:
-                con.print("[dim](dry-run) service hubctl-atelier installé + activé[/dim]")
-            else:
-                con.print("[green]✓ Service atelier hubctl-atelier actif[/green]")
-            return
+    # Filet jamais-fatal : stdin peut être None (daemon), l'étape système ne
+    # doit JAMAIS casser l'init — toute imprévue → rappel des commandes.
+    try:
+        if dry_run or _sys.stdin.isatty():
+            failed = False
+            for cmd in cmds:
+                if utils.run_shell(cmd, dry_run=dry_run, console=con) != 0:
+                    failed = True
+                    break
+            if not failed:
+                if dry_run:
+                    con.print("[dim](dry-run) service hubctl-atelier installé + activé[/dim]")
+                else:
+                    con.print("[green]✓ Service atelier hubctl-atelier actif[/green]")
+                return
+    except Exception as e:
+        con.print(f"[yellow]⚠ Service atelier (étape système) : {e}[/yellow]")
 
-    # Pas de TTY (ou échec sudo) : ne jamais faire échouer l'init —
+    # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
     # rappeler les commandes à lancer à la main.
     con.print("[yellow]⚠ Service atelier : commandes à lancer à la main :[/yellow]")
     for cmd in cmds:
