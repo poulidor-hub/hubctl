@@ -1,3 +1,12 @@
+## [0.16.0] - 28 octobre 2026
+
+### ✨ Service hôte hubctl-atelier automatique au init
+
+- **Ajouté** : `hubctl init` met en place le service hôte `hubctl-atelier` tout seul (étape `_ensure_atelier_service`, ensure idempotent) — plus besoin de suivre la section manuelle du README : token `~/.config/hubctl/atelier_token` auto-généré (`secrets.token_hex`, chmod 600) s'il est absent ou vide et **jamais écrasé**, copie vers `HUB_base/secrets/atelier_token` (créée seulement si absente, jamais écrasée)
+- **Ajouté** : installation/activation systemd automatiques — unit `packaging/hubctl-atelier.service` copiée + `daemon-reload` + `enable --now` si un TTY est disponible (sudo interactif, sortie streamée) ; service déjà actif → aucun sudo, simple ✓ ; unit présente mais inactive → seul `enable --now` est relancé
+- Sans TTY (ou échec sudo) : simple rappel des commandes à lancer à la main, l'étape n'échoue **jamais** — l'init ne casse pas si sudo est indisponible ; `--dry-run` imprime les commandes sans rien écrire
+- Tests : 8 nouveaux (génération/idempotence du token hôte, copie `HUB_base/secrets`, TTY vs non-TTY, déjà-actif noop, dry-run sans écriture) ; isolation des tests bootstrap existants durcie (token/units sous tmp_path)
+
 ## [0.15.0] - 28 octobre 2026
 
 ### ✨ Coffre pilotable par le Hub — routes vault du serveur atelier
