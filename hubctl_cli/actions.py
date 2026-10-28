@@ -444,6 +444,105 @@ def _install_shell_marker(console) -> None:
         con.print(f"[yellow]⚠ Impossible d'écrire dans {bashrc} : {e}[/yellow]")
 
 
+_ATELIER_UNIT = Path("/etc/systemd/system/hubctl-atelier.service")
+
+
+def _ensure_atelier_service(console, dry_run: bool = False) -> None:
+    """Étape `hubctl init` : service hôte hubctl-atelier (« ensure » idempotent).
+
+    1. Token hôte ~/.config/hubctl/atelier_token — généré (secrets.token_hex,
+       chmod 600) s'il est absent ou vide, JAMAIS écrasé sinon ;
+    2. Copié vers HUB_base/secrets/atelier_token (créé seulement s'il manque) ;
+    3. Unit systemd packaging/hubctl-atelier.service installée (sudo) si
+       absente, service activé (`enable --now`) si inactif, rien si actif.
+
+    N'échoue JAMAIS : sans TTY (prompt sudo impossible) ou en cas d'échec
+    sudo, les commandes sont rappelées à la main — l'init ne doit pas casser
+    à cause de cette étape.
+    """
+    con = console or _console
+    import secrets as _secrets
+    import sys as _sys
+    # Import tardif : atelier_serve importe actions (routes du serveur) →
+    # circularité si importé au niveau module.
+    from hubctl_cli import atelier_serve
+
+    # ── 1. Token hôte (chemin défini par atelier_serve.DEFAULT_TOKEN_FILE) ──
+    token_file = atelier_serve.DEFAULT_TOKEN_FILE
+    token: str | None = None
+    try:
+        if token_file.exists() and token_file.stat().st_size > 0:
+            token = token_file.read_text(encoding="utf-8")
+            con.print(f"[green]✓ Token atelier déjà présent : {token_file}[/green]")
+        elif not dry_run:
+            token = _secrets.token_hex(32)
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(token, encoding="utf-8")
+            token_file.chmod(0o600)
+            con.print(f"[green]✓ Token atelier généré : {token_file}[/green]")
+        else:
+            con.print(f"[dim](dry-run) génération du token {token_file}[/dim]")
+    except OSError as e:
+        con.print(f"[yellow]⚠ Token atelier ({token_file}) : {e}[/yellow]")
+
+    # ── 2. Token Hub (HUB_base/secrets/atelier_token) : copie si absent ──
+    hub_token = hub_state.HUB_DIR / "secrets" / "atelier_token"
+    try:
+        if dry_run:
+            con.print(f"[dim](dry-run) copie du token vers {hub_token} (si absent)[/dim]")
+        elif token is None:
+            pass  # token hôte absent/illisible : rien à copier
+        elif hub_token.exists():
+            con.print(f"[green]✓ Token Hub déjà présent : {hub_token}[/green]")
+        else:
+            hub_token.parent.mkdir(parents=True, exist_ok=True)
+            hub_token.write_text(token, encoding="utf-8")
+            hub_token.chmod(0o600)
+            con.print(f"[green]✓ Token copié vers {hub_token}[/green]")
+    except OSError as e:
+        con.print(f"[yellow]⚠ Token Hub ({hub_token}) : {e}[/yellow]")
+
+    # ── 3. Unit systemd : installer / activer / rien ──
+    gabarit = Path(__file__).resolve().parent.parent / "packaging" / "hubctl-atelier.service"
+    if _ATELIER_UNIT.exists():
+        try:
+            st = subprocess.run(
+                ["systemctl", "is-active", "hubctl-atelier"],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            st = None
+        if st is not None and st.returncode == 0 and st.stdout.strip() == "active":
+            con.print("[green]✓ Service atelier hubctl-atelier actif[/green]")
+            return
+        cmds = [["sudo", "systemctl", "enable", "--now", "hubctl-atelier"]]
+    else:
+        cmds = [
+            ["sudo", "cp", str(gabarit), str(_ATELIER_UNIT)],
+            ["sudo", "systemctl", "daemon-reload"],
+            ["sudo", "systemctl", "enable", "--now", "hubctl-atelier"],
+        ]
+
+    # ── 4. Exécution (TTY requis pour le prompt sudo) ou rappel manuel ──
+    if dry_run or _sys.stdin.isatty():
+        failed = False
+        for cmd in cmds:
+            if utils.run_shell(cmd, dry_run=dry_run, console=con) != 0:
+                failed = True
+                break
+        if not failed:
+            if dry_run:
+                con.print("[dim](dry-run) service hubctl-atelier installé + activé[/dim]")
+            else:
+                con.print("[green]✓ Service atelier hubctl-atelier actif[/green]")
+            return
+
+    # Pas de TTY (ou échec sudo) : ne jamais faire échouer l'init —
+    # rappeler les commandes à lancer à la main.
+    con.print("[yellow]⚠ Service atelier : commandes à lancer à la main :[/yellow]")
+    for cmd in cmds:
+        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+
+
 def _summary_urls(host_ip: str) -> list[tuple[str, str]]:
     """Lignes d'accès du résumé post-init, avec les ports réels du .env."""
     front = _read_hub_env_value("HUB_FRONTEND_PORT", "80")
@@ -505,6 +604,9 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     # ── 6b. Installer le marker shell portable (sourcing .secrets) ──
     if not dry_run:
         _install_shell_marker(con)
+
+    # ── 6c. Service hôte hubctl-atelier (token + unit systemd, ensure) ──
+    _ensure_atelier_service(con, dry_run=dry_run)
 
     # ── 7. Résumé ──
     admin_username = credentials["admin_username"]
