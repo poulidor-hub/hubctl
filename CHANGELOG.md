@@ -1,3 +1,13 @@
+## [0.15.0] - 28 octobre 2026
+
+### ✨ Coffre pilotable par le Hub — routes vault du serveur atelier
+
+- **Ajouté** : `GET /vault/status` — état du coffre pour le Hub : `{"status": "ok"|"locked", "locked", "last_backup" (mtime ISO UTC), "vault_size" (octets), "entries" {env, files, apps, db_dump}, "divergences", "pra"}` — lecture directe du coffre (déverrouillage via token stocké), aucune écriture
+- **Ajouté** : `POST /vault/backup` — backup complet délégué à `VaultManager.backup_all()` dans un worker unique (ThreadPoolExecutor 1 thread) : 200 `{"status": "ok"|"locked", …}` / **409** si un backup est déjà en cours (verrou non-bloquant — retry sûr côté Hub) / **500** au-delà de la garde `_VAULT_BACKUP_TIMEOUT` (110 s : lecture disque + dump DB + réplication PRA, verrou laissé au worker)
+- **Ajouté** : unit systemd durcie — `ReadWritePaths` restreint l'écriture du service au seul coffre (`…/hubctl_cli/vault` : parc.vault.enc + artefact dump DB), le reste du système reste en lecture seule
+- Auth inchangée (header `X-Atelier-Token` constant-time contre le fichier token) ; docs mises à jour (README hubctl_cli, aide `--routes`)
+- Tests : 11 nouveaux (39 sur le fichier atelier_serve — shapes status ok/locked, 409 concurrence, timeout 110 s → 500 puis récupération, échec PRA non fatal, coffre réel verrouillé), suite complète verte
+
 ## [0.14.1] - 27 octobre 2026
 
 ### 🐛 Fix — atelier serve joignable depuis hub-api

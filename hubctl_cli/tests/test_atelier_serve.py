@@ -1,20 +1,25 @@
-"""Tests de `hubctl atelier serve` — mini-serveur HTTP hôte (list/close-all).
+"""Tests de `hubctl atelier serve` — mini-serveur HTTP hôte (list/close-all/vault).
 
 Serveur de test lancé sur un port libre (0) dans un thread, APPS_DIR isolé
 dans tmp_path, requêtes via httpx. Contrat JSON (proxifié par le Hub) :
 - GET  /health            → 200 {"status": "ok"} (sans auth, liveness)
 - GET  /atelier/list      → 200 {"ateliers": [...]} (auth X-Atelier-Token)
 - POST /atelier/close-all → 200/207 {"closed": [...], "failed": [...], "rc", "output"}
+- GET  /vault/status      → 200 {"status": "ok"|"locked", …} (voir _vault_state)
+- POST /vault/backup      → 200 {"status": …} / 409 / 500 (voir _run_backup)
 """
+import json
 import threading
+import time
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 import pytest
 
 from hubctl_cli import __main__ as m
-from hubctl_cli import atelier_serve, hub_state
+from hubctl_cli import atelier_serve, hub_state, vault_manager
 
 TOKEN = "test-token-1234"
 
@@ -167,6 +172,245 @@ def test_close_all_rejects_get(serve_env):
 
 def test_list_rejects_post(serve_env):
     assert _post(serve_env.base, "/atelier/list").status_code == 405
+
+
+# ── Routes vault : /vault/status + /vault/backup ──
+
+def _make_unlocked_vault(tmp_path, monkeypatch, passphrase="test-vault-pw"):
+    """Vrai coffre chiffré (vide) + clé dans tmp_path ; hub_state.vault_path patché.
+
+    Pour les tests qui exécutent le VRAI _run_backup (seul backup_all est
+    faked au niveau classe) : unlock_stored() doit réussir sans jamais
+    toucher au coffre réel du parc.
+    """
+    from hubctl_cli.coffre import Vault
+    vp = tmp_path / "parc.vault.enc"
+    v = Vault(vp)
+    assert v.unlock(passphrase)  # coffre neuf : data {} en mémoire
+    v.save()
+    v.store_passphrase(passphrase)
+    monkeypatch.setattr(hub_state, "vault_path", lambda: vp)
+    return vp
+
+
+def test_vault_status_ok(serve_env, monkeypatch):
+    """GET /vault/status déverrouillé : payload complet du contrat, relayé tel quel."""
+    fake = {
+        "status": "ok",
+        "locked": False,
+        "last_backup": "2026-10-28T09:30:00+00:00",
+        "vault_size": 4096,
+        "entries": {"env": 3, "files": 5, "apps": 2, "db_dump": True},
+        "divergences": ["app:canari", "hub"],
+        "pra": {"configured": True, "location": "/mnt/pra"},
+    }
+    monkeypatch.setattr(atelier_serve, "_vault_state", lambda: fake)
+    r = _get(serve_env.base, "/vault/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == fake
+    # shape exact consommé par le Hub (Task 4/5)
+    assert set(body["entries"]) == {"env", "files", "apps", "db_dump"}
+    assert body["divergences"] == sorted(body["divergences"])
+
+
+def test_vault_status_locked(serve_env, monkeypatch):
+    """Coffre verrouillé → 200 {"status": "locked", "locked": True}."""
+    fake = {"status": "locked", "locked": True, "last_backup": None,
+            "vault_size": 0, "pra": {"configured": False, "location": None}}
+    monkeypatch.setattr(atelier_serve, "_vault_state", lambda: fake)
+    r = _get(serve_env.base, "/vault/status")
+    assert r.status_code == 200
+    assert r.json()["status"] == "locked"
+    assert r.json()["locked"] is True
+
+
+def test_vault_status_auth(serve_env):
+    """/vault/status sous auth : 401 sans header, 403 mauvais token, 405 en POST."""
+    assert _get(serve_env.base, "/vault/status", token=None).status_code == 401
+    assert _get(serve_env.base, "/vault/status", token="wrong").status_code == 403
+    assert _post(serve_env.base, "/vault/status").status_code == 405
+
+
+def test_vault_backup_ok(serve_env, monkeypatch):
+    """POST /vault/backup (helper faked) → 200 {"status": "ok", **résultat}."""
+    monkeypatch.setattr(atelier_serve, "_run_backup", lambda: (
+        200, {"status": "ok", "env": 3, "files": 5, "db": True, "pra": None}))
+    r = _post(serve_env.base, "/vault/backup")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "env": 3, "files": 5, "db": True,
+                        "pra": None}
+
+
+def test_vault_backup_locked(serve_env, monkeypatch):
+    """Coffre verrouillé au moment du backup → 200 {"status": "locked"}."""
+    monkeypatch.setattr(atelier_serve, "_run_backup",
+                        lambda: (200, {"status": "locked"}))
+    r = _post(serve_env.base, "/vault/backup")
+    assert r.status_code == 200
+    assert r.json() == {"status": "locked"}
+
+
+def test_vault_backup_conflict_409(serve_env, monkeypatch):
+    """Un backup déjà en cours → 409 immédiat (pas de mise en file), puis reprise.
+
+    backup_all faked bloqué sur un Event ; le 1er POST part dans un thread
+    (il bloque tant que le backup tourne), le démarrage effectif est
+    signalé par un 2e Event, le 2e POST doit prendre le 409 sans attendre.
+    """
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_backup_all(self, *, on_log=None):
+        started.set()
+        release.wait(timeout=30)  # cap anti-blocage si une assert échoue avant
+        return {"env": 1, "files": 0, "db": True, "pra": None}
+
+    monkeypatch.setattr(vault_manager.VaultManager, "backup_all", fake_backup_all)
+    _make_unlocked_vault(serve_env.tmp, monkeypatch)
+
+    results = {}
+
+    def post_first():
+        results["r1"] = _post(serve_env.base, "/vault/backup")
+
+    t = threading.Thread(target=post_first)
+    t.start()
+    try:
+        assert started.wait(timeout=10), "backup_all jamais démarré"
+        r2 = _post(serve_env.base, "/vault/backup")
+        assert r2.status_code == 409
+        assert r2.json() == {"erreur": "backup déjà en cours"}
+    finally:
+        release.set()
+        t.join(timeout=10)
+    assert results["r1"].status_code == 200
+    assert results["r1"].json() == {"status": "ok", "env": 1, "files": 0,
+                                    "db": True, "pra": None}
+
+
+def test_vault_backup_pra_failure_not_fatal(serve_env, monkeypatch):
+    """pra en échec dans backup_all → 200 status ok, pra.error relayé (non fatal).
+
+    Vrai _run_backup (backup_all faked au niveau classe) : valide la fusion
+    {"status": "ok", **résultat} sur le chemin réel du worker.
+    """
+    def fake_backup_all(self, *, on_log=None):
+        return {"env": 2, "files": 1, "db": True, "pra": {"error": "kop absent"}}
+
+    monkeypatch.setattr(vault_manager.VaultManager, "backup_all", fake_backup_all)
+    _make_unlocked_vault(serve_env.tmp, monkeypatch)
+    r = _post(serve_env.base, "/vault/backup")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "env": 2, "files": 1, "db": True,
+                        "pra": {"error": "kop absent"}}
+
+
+def test_vault_backup_timeout_500_then_recovery(serve_env, monkeypatch):
+    """Backup qui dépasse la garde → 500, verrou tenu (409) jusqu'à la fin du job.
+
+    Garde raccourcie à 0.2 s par monkeypatch (le contrat reste > 110 s en
+    prod) : le POST n°1 expire côté appelant (500), mais le worker détient
+    toujours le verrou — un POST immédiat prend 409 — puis le verrou est
+    libéré à la fin du job et un POST ultérieur repasse à 200.
+    """
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_backup_all(self, *, on_log=None):
+        started.set()
+        release.wait(timeout=30)  # cap anti-blocage
+        return {"env": 0, "files": 0, "db": False, "pra": None}
+
+    monkeypatch.setattr(vault_manager.VaultManager, "backup_all", fake_backup_all)
+    monkeypatch.setattr(atelier_serve, "_VAULT_BACKUP_TIMEOUT", 0.2)
+    _make_unlocked_vault(serve_env.tmp, monkeypatch)
+
+    results = {}
+
+    def post_first():
+        results["r1"] = _post(serve_env.base, "/vault/backup")
+
+    t = threading.Thread(target=post_first)
+    t.start()
+    try:
+        assert started.wait(timeout=10), "backup_all jamais démarré"
+        t.join(timeout=10)
+        r1 = results["r1"]
+        assert r1.status_code == 500
+        assert "toujours en cours" in r1.json()["erreur"]
+        # Le verrou reste tenu par le worker malgré le 500 déjà répondu.
+        r2 = _post(serve_env.base, "/vault/backup")
+        assert r2.status_code == 409
+    finally:
+        release.set()
+    # Fin du job → verrou libéré : on sonde jusqu'au retour à la normale
+    # (409 transitoires admis pendant que le worker se termine).
+    deadline = time.monotonic() + 10
+    r3 = _post(serve_env.base, "/vault/backup")
+    while r3.status_code != 200 and time.monotonic() < deadline:
+        assert r3.status_code == 409
+        time.sleep(0.05)
+        r3 = _post(serve_env.base, "/vault/backup")
+    assert r3.status_code == 200
+    assert r3.json()["status"] == "ok"
+
+
+def test_vault_backup_rejects_get(serve_env):
+    """backup = mutation → POST obligatoire (GET → 405)."""
+    r = _get(serve_env.base, "/vault/backup")
+    assert r.status_code == 405
+
+
+# ── Helpers vault réels (sans HTTP) ──
+
+def test_vault_state_real_vault(monkeypatch, tmp_path):
+    """_vault_state sur un vrai coffre déverrouillé : comptages + divergences + pra."""
+    from hubctl_cli.coffre import Vault
+    vp = tmp_path / "parc.vault.enc"
+    v = Vault(vp)
+    assert v.unlock("pw")
+    v.set_entry("hub", {"SECRET_HUB": "1"})
+    v.set_entry("app:canari", {"SECRET": "1"})
+    v.set_file("HUB_base/backup/hub_dump.sql", b"-- dump")
+    v._data["__apps__"] = [{"slug": "canari", "git_url": None, "version": None}]
+    v.save()
+    v.store_passphrase("pw")
+    monkeypatch.setattr(hub_state, "vault_path", lambda: vp)
+    monkeypatch.setattr(hub_state, "vault_dir", lambda: tmp_path)
+    monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    app_dir = tmp_path / "APPS" / "canari"
+    app_dir.mkdir(parents=True)
+    (app_dir / ".env").write_text("SECRET=2\n", encoding="utf-8")  # ≠ coffre → divergence
+    (tmp_path / "pra_location.json").write_text(
+        json.dumps({"path": "/mnt/pra"}), encoding="utf-8")
+
+    state = atelier_serve._vault_state()
+    assert state["status"] == "ok" and state["locked"] is False
+    assert state["entries"] == {"env": 2, "files": 1, "apps": 1, "db_dump": True}
+    assert state["divergences"] == ["app:canari"]
+    assert state["vault_size"] == vp.stat().st_size
+    assert state["last_backup"] == datetime.fromtimestamp(
+        vp.stat().st_mtime, tz=timezone.utc).isoformat()
+    assert state["pra"] == {"configured": True, "location": "/mnt/pra"}
+
+
+def test_vault_state_locked_no_key(monkeypatch, tmp_path):
+    """Coffre présent mais clé absente → locked, sans entries ni divergences."""
+    from hubctl_cli.coffre import Vault
+    vp = tmp_path / "parc.vault.enc"
+    v = Vault(vp)
+    assert v.unlock("pw")
+    v.save()  # pas de store_passphrase : unlock_stored() échouera
+    monkeypatch.setattr(hub_state, "vault_path", lambda: vp)
+    monkeypatch.setattr(hub_state, "vault_dir", lambda: tmp_path)
+    state = atelier_serve._vault_state()
+    assert state["status"] == "locked" and state["locked"] is True
+    assert "entries" not in state and "divergences" not in state
+    assert state["vault_size"] == vp.stat().st_size
+    assert state["last_backup"]
+    assert state["pra"] == {"configured": False, "location": None}
 
 
 # ── collect_ateliers / docker ──

@@ -76,7 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Fermer TOUS les ateliers actifs (confirmation globale, ou --yes pour scripter)")
     majprod.add_argument("--serve", action="store_true", dest="atelier_serve", default=False,
                          help="Lancer le mini-serveur hôte atelier (bind 127.0.0.1 par défaut, cf. --host) : "
-                              "GET /health, GET /atelier/list, POST /atelier/close-all")
+                              "GET /health, GET /atelier/list, POST /atelier/close-all, "
+                              "GET /vault/status, POST /vault/backup")
     atelier_parser.add_argument("--port", type=int, dest="atelier_port", default=8777, metavar="PORT",
                                 help="Avec --serve : port d'écoute (défaut : 8777)")
     atelier_parser.add_argument("--host", dest="atelier_host", default="127.0.0.1", metavar="HOST",
