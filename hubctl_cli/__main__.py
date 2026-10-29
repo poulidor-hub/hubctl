@@ -121,11 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
     pra_parser.add_argument("--snapshot", default=None,
                             help="Nom ou chemin du snapshot à restaurer (défaut: plus récent du kit)")
     pra_parser.add_argument("--apps", default=None,
-                            help="all | none | slugs séparés par virgule (défaut: interactif)")
-    pra_parser.add_argument("--admin-user", default=None)
+                            help="all | none | slugs CSV (défaut: interactif). Scriptable : "
+                                 "ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all")
+    pra_parser.add_argument("--admin-user", default=None,
+                            help="Login admin pour la réinjection (défaut: ADMIN_USERNAME/.env/admin)")
     pra_parser.add_argument("--yes", action="store_true", help="Saute les confirmations")
     pra_parser.add_argument("--force", action="store_true",
-                            help="Autoriser même sur un parc non vide")
+                            help="Autoriser même sur un parc non vide (re-PRA)")
     pra_parser.add_argument("--dry-run", action="store_true",
                             help="Afficher le plan sans rien exécuter")
 

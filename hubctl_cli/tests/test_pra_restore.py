@@ -618,6 +618,56 @@ def test_argparse_has_pra_restore():
     assert args.apps == "all" and args.yes and args.force and args.dry_run
 
 
+# ── BUG B : stdin fermé au prompt apps (pipeline) + voie scriptable documentée ──
+
+
+def test_select_apps_interactive_eof_warns_and_selects_nothing(tmp_path, monkeypatch):
+    """stdin avalé par le pipeline → EOF au prompt : avertissement explicite
+    (voie scriptable) + sélection vide — jamais de « none » silencieux."""
+    import io
+    from rich.console import Console
+    buf = io.StringIO()
+    console = Console(file=buf)
+    apps = [{"slug": "app-a", "backup_id": "bk1"},
+            {"slug": "app-b", "backup_id": None}]
+
+    def _eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+    selection = pra_restore._select_apps_interactive(console, apps, None)
+    assert selection == []
+    out = buf.getvalue()
+    assert "stdin fermé" in out
+    assert "--apps all" in out
+    assert "ADMIN_PASSWORD" in out
+
+
+def test_select_apps_interactive_apps_arg_skips_prompt(tmp_path, monkeypatch):
+    """--apps fourni → aucun prompt (voie scriptable primordiale en pipeline)."""
+    import io
+    from rich.console import Console
+
+    def _no_prompt(prompt=""):
+        raise AssertionError("prompt appelé alors que --apps est fourni")
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    apps = [{"slug": "app-a", "backup_id": None},
+            {"slug": "app-b", "backup_id": None}]
+    assert pra_restore._select_apps_interactive(Console(file=io.StringIO()),
+                                                apps, "all") == ["app-a", "app-b"]
+    assert pra_restore._select_apps_interactive(Console(file=io.StringIO()),
+                                                apps, "none") == []
+
+
+def test_pra_restore_docstring_documents_scriptable_path():
+    """La docstring d'en-tête documente la restauration scriptable (pipeline)."""
+    doc = pra_restore.__doc__ or ""
+    assert "Restauration scriptable" in doc
+    assert "--apps all" in doc
+    assert "ADMIN_PASSWORD" in doc
+    assert "--force" in doc
+
+
 # ── restore_files_from_kit : clé du kit d'abord ──
 
 

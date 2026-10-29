@@ -3,6 +3,17 @@
 
 Chaque étape détecte l'état existant → idempotent/resumable : une relance
 après un crash à mi-parcours ne refait rien deux fois.
+
+Restauration scriptable (pipeline, cron, stdin fermé) — exemple complet :
+
+    ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all
+
+- `--apps all|none|slug1,slug2` : apps à reconstruire/réinjecter après le
+  restore (défaut : prompt interactif — en pipeline, stdin fermé = aucune
+  app sélectionnée, avec avertissement explicite).
+- `--force` : autorise la restauration sur un parc non vide (re-PRA).
+- `ADMIN_PASSWORD` / `ADMIN_USERNAME` (env, ou `.env` du hub) : credentials
+  admin pour la réinjection des données apps (sinon getpass interactif).
 """
 from __future__ import annotations
 
@@ -403,6 +414,31 @@ def rebuild_app(slug: str, console, *, dry_run: bool = False) -> bool:
     return ok_build and ok_up
 
 
+def _select_apps_interactive(console, all_apps: list[dict],
+                             apps: str | None) -> list[str]:
+    """Sélection des apps à restaurer : --apps prioritaire, sinon prompt.
+    stdin fermé au prompt (pipeline) → avertissement explicite + liste vide
+    (incident VM 28/10/2026 : « none » silencieux, aucune app restaurée)."""
+    slugs = [a["slug"] for a in all_apps]
+    if apps is not None:
+        return parse_selection(apps, slugs)
+    if not all_apps:
+        console.print("Aucune app active en base — étape apps ignorée.")
+        return []
+    console.print("Apps actives (dernier backup) :")
+    for i, a in enumerate(all_apps, 1):
+        backup_info = f"backup {a['backup_id'][:8]}…" if a["backup_id"] else "aucun backup"
+        console.print(f"  {i}. {a['slug']}  ({backup_info})")
+    try:
+        raw = input("Apps à restaurer (ex: 1,3 | all | none) : ")
+    except EOFError:
+        console.print("[yellow]⚠ stdin fermé — aucune app sélectionnée. "
+                      "Relance avec --apps all (et ADMIN_PASSWORD=… pour la "
+                      "réinjection des données).[/yellow]")
+        raw = "none"
+    return parse_selection(raw, slugs)
+
+
 # ── Flux complet ──
 
 def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
@@ -457,22 +493,7 @@ def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
 
     # Étape 6 — apps : liste + sélection + rebuild + réinjection
     all_apps = [] if dry_run else list_apps_with_backups()
-    slugs = [a["slug"] for a in all_apps]
-    if apps is not None:
-        selection = parse_selection(apps, slugs)
-    elif not all_apps:
-        console.print("Aucune app active en base — étape apps ignorée.")
-        selection = []
-    else:
-        console.print("Apps actives (dernier backup) :")
-        for i, a in enumerate(all_apps, 1):
-            backup_info = f"backup {a['backup_id'][:8]}…" if a["backup_id"] else "aucun backup"
-            console.print(f"  {i}. {a['slug']}  ({backup_info})")
-        try:
-            raw = input("Apps à restaurer (ex: 1,3 | all | none) : ")
-        except EOFError:
-            raw = "none"
-        selection = parse_selection(raw, slugs)
+    selection = _select_apps_interactive(console, all_apps, apps)
 
     todo = [a for a in all_apps if a["slug"] in selection]
     token: str | None = None
@@ -512,12 +533,16 @@ if __name__ == "__main__":
     _p = argparse.ArgumentParser(prog="pra-restore",
                                  description="Restauration PRA depuis un kit POULIDOR")
     _p.add_argument("kit", nargs="?", default=None, help="Chemin du kit PRA (scan auto si omis)")
-    _p.add_argument("--snapshot", default=None)
-    _p.add_argument("--apps", default=None, help="all | none | slugs séparés par virgule")
-    _p.add_argument("--admin-user", default=None)
-    _p.add_argument("--yes", action="store_true")
-    _p.add_argument("--force", action="store_true")
-    _p.add_argument("--dry-run", action="store_true")
+    _p.add_argument("--snapshot", default=None, help="Nom ou chemin du snapshot (défaut: plus récent du kit)")
+    _p.add_argument("--apps", default=None,
+                    help="all | none | slugs CSV (défaut: interactif). Scriptable : "
+                         "ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all")
+    _p.add_argument("--admin-user", default=None,
+                    help="Login admin pour la réinjection (défaut: ADMIN_USERNAME/.env/admin)")
+    _p.add_argument("--yes", action="store_true", help="Saute les confirmations")
+    _p.add_argument("--force", action="store_true",
+                    help="Autorise la restauration sur un parc non vide (re-PRA)")
+    _p.add_argument("--dry-run", action="store_true", help="Affiche le plan sans rien exécuter")
     _a = _p.parse_args()
     raise SystemExit(run_pra_restore(
         _a.kit, snapshot=_a.snapshot, apps=_a.apps, admin_user=_a.admin_user,
