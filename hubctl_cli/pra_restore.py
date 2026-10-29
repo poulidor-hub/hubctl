@@ -265,14 +265,51 @@ def restart_hub_api(console, *, dry_run: bool = False) -> None:
 
 # ── Étape 5 : attente du restore ──
 
+RESTORE_FAILURE_MARKERS = ("Restauration ECHEC", "RESTAURATION ECHEC")
+
+
+def _scan_hub_api_failure_logs(since: str) -> str | None:
+    """Cherche un marqueur d'échec de restauration dans les logs hub-api
+    publiés depuis `since` (RFC3339). Retourne la ligne fautive, sinon None."""
+    r = subprocess.run(
+        ["docker", "logs", "--since", since, HUB_API_CONTAINER],
+        capture_output=True, text=True)
+    output = (r.stdout or "") + (r.stderr or "")
+    for line in output.splitlines():
+        for marker in RESTORE_FAILURE_MARKERS:
+            if marker in line:
+                return line.strip()
+    return None
+
+
 def wait_restore_done(snap_id: str, console, timeout_s: int = RESTORE_TIMEOUT_S) -> bool:
-    """True quand pending_restore.txt a disparu (restore terminé)."""
+    """True quand pending_restore.txt a disparu (restore terminé).
+
+    False en cas d'échec détecté (marqueur « Restauration ECHEC » dans les
+    logs hub-api depuis le début de l'attente — motif affiché) ou de timeout.
+    Pending parti sans aucun marqueur → succès (faux-négatif écarté : le
+    marqueur peut être écrit juste avant la suppression du pending, d'où le
+    re-scan final)."""
+    from datetime import datetime
+    since = datetime.now().astimezone().isoformat(timespec="seconds")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        failure = _scan_hub_api_failure_logs(since)
+        if failure:
+            if console:
+                console.print(f"[red]⚠ Marqueur d'échec détecté dans les logs "
+                              f"hub-api : {failure}[/red]")
+            return False
         r = subprocess.run(
             ["docker", "exec", HUB_API_CONTAINER, "sh", "-c",
              "test -f /code/storage/pending_restore.txt"], capture_output=True)
         if r.returncode != 0:
+            failure = _scan_hub_api_failure_logs(since)  # rattrape la course
+            if failure:
+                if console:
+                    console.print(f"[red]⚠ Marqueur d'échec détecté dans les logs "
+                                  f"hub-api : {failure}[/red]")
+                return False
             return True
         time.sleep(5)
     return False
@@ -411,7 +448,8 @@ def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
     if not dry_run:
         if not wait_restore_done(snap_id, console):
             _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
-            raise SystemExit("❌ Restore non terminé (pending_restore.txt toujours présent)")
+            raise SystemExit("❌ Restauration du snapshot en échec côté hub-api — "
+                             "voir logs ci-dessus")
         if not wait_healthy(console):
             raise SystemExit("❌ hub-api pas healthy après restore")
         n = count_apps()

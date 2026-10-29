@@ -452,6 +452,8 @@ def test_wait_restore_done_when_file_gone(monkeypatch):
 
     class FakeProc:
         returncode = 1  # test -f → absent
+        stdout = ""
+        stderr = ""
 
     monkeypatch.setattr(sp, "run", lambda *a, **kw: FakeProc())
     monkeypatch.setattr("time.sleep", lambda s: None)
@@ -463,10 +465,105 @@ def test_wait_restore_done_timeout(monkeypatch):
 
     class FakeProc:
         returncode = 0  # fichier toujours présent
+        stdout = ""
+        stderr = ""
 
     monkeypatch.setattr(sp, "run", lambda *a, **kw: FakeProc())
     monkeypatch.setattr("time.sleep", lambda s: None)
     assert pra_restore.wait_restore_done("abc", None, timeout_s=0) is False
+
+
+# ── BUG C : détection de l'échec de restauration dans les logs hub-api ──
+
+
+def _fake_run_recording(logs_output: str, *, pending_code: int):
+    """Fake sp.run : docker logs → logs_output ; test -f pending → pending_code."""
+    calls = []
+
+    class FakeProc:
+        def __init__(self, code=0, out=""):
+            self.returncode, self.stdout, self.stderr = code, out, ""
+
+    def fake_run(cmd, *a, **kw):
+        calls.append([str(x) for x in cmd])
+        if cmd[:2] == ["docker", "logs"]:
+            return FakeProc(out=logs_output)
+        return FakeProc(code=pending_code)
+
+    return fake_run, calls
+
+
+def test_wait_restore_done_failure_marker_returns_false(monkeypatch):
+    """Pending parti + marqueur « Restauration ECHEC » dans les logs → False."""
+    import subprocess as sp
+    fake_run, calls = _fake_run_recording(
+        "… Restauration ECHEC — snapshot abc introuvable …", pending_code=1)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) is False
+    # le scan part de --since <début du wait> et vise hub-api
+    assert any(c[:3] == ["docker", "logs", "--since"] and c[-1] == "hub-api"
+               for c in calls)
+
+
+def test_wait_restore_done_failure_marker_case_insensitive(monkeypatch):
+    import subprocess as sp
+    fake_run, _ = _fake_run_recording(
+        "hub-api | RESTAURATION ECHEC — données incohérentes", pending_code=1)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) is False
+
+
+def test_wait_restore_done_pending_gone_no_marker_success(monkeypatch):
+    """Faux-négatif écarté : pending parti, aucun marqueur → succès (True)."""
+    import subprocess as sp
+    fake_run, _ = _fake_run_recording("2026-10-28 Restore termine ✓", pending_code=1)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) is True
+
+
+def test_wait_restore_done_failure_while_pending_still_there(monkeypatch):
+    """Marqueur détecté PENDANT l'attente (pending encore présent) → False."""
+    import subprocess as sp
+    fake_run, _ = _fake_run_recording(
+        "Restauration ECHEC — pg_restore exit 3", pending_code=0)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) is False
+
+
+def test_run_pra_restore_wait_failure_exits_before_apps(tmp_path, monkeypatch):
+    """wait_restore_done False → SystemExit (échec) AVANT l'étape apps ;
+    « PRA terminé. » réservé au succès."""
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    monkeypatch.setattr(pra_restore, "preflight_docker", lambda: None)
+    monkeypatch.setattr(pra_restore, "check_parc_empty", lambda f: None)
+    monkeypatch.setattr(pra_restore, "find_kit", lambda a: kit)
+    monkeypatch.setattr(pra_restore, "pick_snapshot",
+                        lambda k, s: k / "snapshot_abc123.tar.zst.enc")
+    monkeypatch.setattr(pra_restore, "restore_files_from_kit",
+                        lambda k, c, dry_run=False: None)
+    monkeypatch.setattr(pra_restore, "build_stack", lambda c, dry_run=False: None)
+    monkeypatch.setattr(pra_restore, "wait_healthy",
+                        lambda c, timeout_s=300: True)
+    monkeypatch.setattr(pra_restore, "inject_snapshot",
+                        lambda k, s, c, dry_run=False: "abc123")
+    monkeypatch.setattr(pra_restore, "restart_hub_api", lambda c, dry_run=False: None)
+    monkeypatch.setattr(pra_restore, "wait_restore_done",
+                        lambda sid, c, timeout_s=180: False)
+    monkeypatch.setattr(pra_restore, "_run", lambda cmd, **kw: True)
+
+    def _must_not_run():
+        raise AssertionError("étape apps ne doit pas être atteinte après un échec")
+    monkeypatch.setattr(pra_restore, "list_apps_with_backups", _must_not_run)
+
+    with pytest.raises(SystemExit) as e:
+        pra_restore.run_pra_restore(str(kit), yes=True)
+    assert "échec" in str(e.value).lower()
+    assert "hub-api" in str(e.value).lower()
 
 
 def test_run_pra_restore_dry_run_full_flow(tmp_path, monkeypatch):
