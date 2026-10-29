@@ -11,7 +11,11 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
   introuvable » côté hub-api sur un état que le hub ne peut pas restaurer) ;
   l'INSERT passe par `psql` avec stderr capté et affiché (le returncode était
   ignoré), et le check/INSERT/vérification partagent le même `cwd` (`_psql`
-  gagne un paramètre `cwd`, défaut `HUB_DIR`)
+  gagne un paramètre `cwd`, défaut `HUB_DIR`) ; re-test VM 29/10 : le SELECT de
+  présence et la vérification sont en **tuples-only** (`-t -A`, comparaison du
+  contenu « 1 ») — sans quoi l'en-tête psql (« ?column? / (0 rows) », émis même
+  sur table vide) faisait croire à une « ligne déjà présente » sur une table
+  vidée : jamais d'INSERT et protection de vérification neutralisée
 - **Corrigé** : un échec de restauration côté hub-api est détecté —
   `wait_restore_done` scanne `docker logs --since <début de l'attente> hub-api`
   (marqueurs `Restauration ECHEC`/`RESTAURATION ECHEC`, re-scan final pour
@@ -38,10 +42,10 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
   (ex. `./hubctl init`), boot sans secrets légitime — les clés du coffre
   écrasent ensuite la paire à chaud (état final cohérent) ; à documenter côté
   procédure PRA, aucun fix code nécessaire
-- Tests : 14 nouveaux (51 sur le fichier pra-restore — séquence
+- Tests : 16 nouveaux (53 sur le fichier pra-restore — séquence
   SELECT→INSERT→vérif→pending, abandon avant pending sur INSERT KO,
-  marqueurs d'échec logs y compris échec lent post-healthy, EOF prompt,
-  docstring), suite verte
+  check tuples-only vs en-tête psql « (0 rows) », marqueurs d'échec logs
+  y compris échec lent post-healthy, EOF prompt, docstring), suite verte
 
 ## [0.16.0] - 28 octobre 2026
 

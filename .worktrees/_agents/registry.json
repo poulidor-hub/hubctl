@@ -1,0 +1,60 @@
+{
+  "agents": [
+    {
+      "branch": "fix/atelier-subnet-dedie",
+      "path": ".worktrees/_agents/fix-atelier-subnet-dedie",
+      "agent_id": "jellycode-3093f140",
+      "status": "merged",
+      "created_at": "2026-10-12T06:08:15Z",
+      "task": "Atelier : subnet dédié garanti (fail-hard), suppression du repli subnet prod"
+    },
+    {
+      "branch": "feat/unification-updates-hubctl",
+      "path": "/home/kkleskk/MyCOMPANY/HUB_stack/POULIDOR/hubctl_src/.worktrees/_agents/feat-unification-updates-hubctl",
+      "agent_id": "jellycode-d4804a3c",
+      "status": "merged",
+      "created_at": "2026-10-27T01:31:43.281770+00:00",
+      "task": "Unification updates: park_checks + doctor + update hub via méta + mode dev"
+    },
+    {
+      "branch": "feat/atelier-fermer-tous",
+      "path": "/home/kkleskk/MyCOMPANY/HUB_stack/POULIDOR/hubctl_src/.worktrees/_agents/feat-atelier-fermer-tous",
+      "agent_id": "jellycode-56eee744",
+      "status": "merged",
+      "created_at": "2026-10-27T16:48:42.226920+00:00",
+      "task": "hubctl atelier --fermer-tous : fermeture en masse des ateliers actifs"
+    },
+    {
+      "branch": "feat/atelier-close-all",
+      "path": "/home/kkleskk/MyCOMPANY/HUB_stack/POULIDOR/hubctl_src/.worktrees/_agents/feat-atelier-close-all",
+      "agent_id": "jellycode-168e8173",
+      "status": "merged",
+      "created_at": "2026-10-27T18:52:50.220803+00:00",
+      "task": "Renommage flags atelier : --fermer-tous/--oui → --close-all/--yes"
+    },
+    {
+      "branch": "feat/atelier-serve",
+      "path": "/home/kkleskk/MyCOMPANY/HUB_stack/POULIDOR/hubctl_src/.worktrees/_agents/feat-atelier-serve",
+      "agent_id": "jellycode-e8d87739",
+      "status": "merged",
+      "created_at": "2026-10-27T21:05:34.484242+00:00",
+      "task": "atelier serve — service hôte localhost (list/close-all) + unit systemd"
+    },
+    {
+      "branch": "fix/atelier-serve-host",
+      "path": "/home/kkleskk/MyCOMPANY/HUB_stack/POULIDOR/hubctl_src/.worktrees/_agents/fix-atelier-serve-host",
+      "agent_id": "jellycode-1f0595d4",
+      "status": "merged",
+      "created_at": "2026-10-27T23:11:56.819603+00:00",
+      "task": "atelier serve : bind paramétrable (--host) pour joignabilité hub-api via host-gateway"
+    },
+    {
+      "branch": "fix/pra-restore-robustesse",
+      "path": "/home/kkleskk/MyCOMPANY/HUB_stack/POULIDOR/hubctl_src/.worktrees/_agents/fix-pra-restore-robustesse",
+      "agent_id": "jellycode-60daed4f",
+      "status": "active",
+      "created_at": "2026-10-29T13:48:27.493866+00:00",
+      "task": "pra-restore : insertion ligne hub_snapshots, propagation d'erreur, voie scriptable"
+    }
+  ]
+}
