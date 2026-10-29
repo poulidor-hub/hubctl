@@ -314,19 +314,136 @@ def test_inject_snapshot_copies_and_inserts(tmp_path, monkeypatch):
     kit = _kit(tmp_path)
     snap = kit / "snapshot_abc123.tar.zst.enc"
     commands = []
+    state = {"selects": 0}
 
     class FakeProc:
-        def __init__(self):
-            self.returncode = 0
-            self.stdout = ""  # SELECT 1 → vide = ligne absente
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
 
-    monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
+    def fake_run(cmd, *a, **kw):
+        joined = " ".join(str(x) for x in cmd)
+        commands.append(joined)
+        if "SELECT 1 FROM hub_snapshots" in joined:
+            state["selects"] += 1
+            # 1er SELECT : absent ; SELECT de vérification : présent
+            return FakeProc(out="1" if state["selects"] >= 2 else "")
+        return FakeProc()  # INSERT ok, echo pending
+
+    monkeypatch.setattr(sp, "run", fake_run)
     sid = pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
     assert sid == "abc123"
     dest = hub_state.HUB_DIR / "storage" / "snapshots" / snap.name
     assert dest.exists() and dest.read_bytes() == b"S1"
+    assert any("INSERT INTO hub_snapshots" in c and "abc123" in c for c in commands)
+    assert any("pending_restore.txt" in c for c in commands)
+
+
+# ── BUG A : ligne hub_snapshots vérifiée AVANT pending_restore ──
+
+
+def test_inject_snapshot_insert_then_verify_before_pending(tmp_path, monkeypatch):
+    """Ligne absente → INSERT → re-SELECT de vérification → PUIS seulement
+    pending_restore (séquence stricte, cf. incident VM 28/10/2026)."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+    state = {"selects": 0}
+
+    class FakeProc:
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def fake_run(cmd, *a, **kw):
+        joined = " ".join(str(x) for x in cmd)
+        commands.append(joined)
+        if "SELECT 1 FROM hub_snapshots" in joined:
+            state["selects"] += 1
+            return FakeProc(out="1" if state["selects"] >= 2 else "")
+        return FakeProc()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    sid = pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert sid == "abc123"
+    assert len(commands) == 4  # SELECT → INSERT → SELECT vérif → echo pending
+    assert "SELECT 1 FROM hub_snapshots" in commands[0]
+    assert "INSERT INTO hub_snapshots" in commands[1]
+    assert "SELECT 1 FROM hub_snapshots" in commands[2]
+    pending_idx = next(i for i, c in enumerate(commands) if "pending_restore.txt" in c)
+    assert pending_idx == 3  # pending écrit APRÈS la vérification
+
+
+def test_inject_snapshot_insert_failure_exits_before_pending(tmp_path, monkeypatch, capsys):
+    """INSERT en échec → SystemExit AVANT toute écriture de pending_restore,
+    stderr SQL affiché."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+
+    class FakeProc:
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def fake_run(cmd, *a, **kw):
+        joined = " ".join(str(x) for x in cmd)
+        commands.append(joined)
+        if "SELECT 1 FROM hub_snapshots" in joined:
+            return FakeProc()  # ligne absente
+        if "INSERT INTO hub_snapshots" in joined:
+            return FakeProc(code=1, err='ERROR: relation "hub_snapshots" does not exist')
+        return FakeProc()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    with pytest.raises(SystemExit) as e:
+        pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert "hub_snapshots" in str(e.value)
+    assert "pending_restore" in str(e.value)
+    assert all("pending_restore.txt" not in c for c in commands)  # JAMAIS écrit
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_inject_snapshot_unverifiable_row_exits_before_pending(tmp_path, monkeypatch):
+    """INSERT « ok » mais la ligne reste absente au re-SELECT → SystemExit,
+    pending jamais écrit (l'état serait irreversible côté hub)."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""  # SELECT toujours vide : la ligne n'apparaît jamais
+        stderr = ""
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
+    with pytest.raises(SystemExit) as e:
+        pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert "hub_snapshots" in str(e.value)
+    assert all("pending_restore.txt" not in " ".join(str(x) for x in c) for c in commands)
+
+
+def test_inject_snapshot_already_present_skips_insert(tmp_path, monkeypatch):
+    """Ligne déjà présente → aucun INSERT, pending écrit."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = "1"  # SELECT → ligne présente
+        stderr = ""
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
+    sid = pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert sid == "abc123"
     joined = [" ".join(str(x) for x in c) for c in commands]
-    assert any("INSERT INTO hub_snapshots" in c and "abc123" in c for c in joined)
+    assert not any("INSERT INTO hub_snapshots" in c for c in joined)
     assert any("pending_restore.txt" in c for c in joined)
 
 
@@ -335,10 +452,13 @@ def test_wait_restore_done_when_file_gone(monkeypatch):
 
     class FakeProc:
         returncode = 1  # test -f → absent
+        stdout = ""
+        stderr = ""
 
     monkeypatch.setattr(sp, "run", lambda *a, **kw: FakeProc())
     monkeypatch.setattr("time.sleep", lambda s: None)
-    assert pra_restore.wait_restore_done("abc", None, timeout_s=1) is True
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=1) \
+        is pra_restore.RestoreWaitStatus.DONE
 
 
 def test_wait_restore_done_timeout(monkeypatch):
@@ -346,10 +466,182 @@ def test_wait_restore_done_timeout(monkeypatch):
 
     class FakeProc:
         returncode = 0  # fichier toujours présent
+        stdout = ""
+        stderr = ""
 
     monkeypatch.setattr(sp, "run", lambda *a, **kw: FakeProc())
     monkeypatch.setattr("time.sleep", lambda s: None)
-    assert pra_restore.wait_restore_done("abc", None, timeout_s=0) is False
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=0) \
+        is pra_restore.RestoreWaitStatus.TIMEOUT
+
+
+# ── BUG C : détection de l'échec de restauration dans les logs hub-api ──
+
+
+def _fake_run_recording(logs_output: str, *, pending_code: int):
+    """Fake sp.run : docker logs → logs_output ; test -f pending → pending_code."""
+    calls = []
+
+    class FakeProc:
+        def __init__(self, code=0, out=""):
+            self.returncode, self.stdout, self.stderr = code, out, ""
+
+    def fake_run(cmd, *a, **kw):
+        calls.append([str(x) for x in cmd])
+        if cmd[:2] == ["docker", "logs"]:
+            return FakeProc(out=logs_output)
+        return FakeProc(code=pending_code)
+
+    return fake_run, calls
+
+
+def test_wait_restore_done_failure_marker_returns_failed(monkeypatch):
+    """Pending parti + marqueur « Restauration ECHEC » dans les logs → FAILED."""
+    import subprocess as sp
+    fake_run, calls = _fake_run_recording(
+        "… Restauration ECHEC — snapshot abc introuvable …", pending_code=1)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) \
+        is pra_restore.RestoreWaitStatus.FAILED
+    # le scan part de --since <début du wait> et vise hub-api
+    assert any(c[:3] == ["docker", "logs", "--since"] and c[-1] == "hub-api"
+               for c in calls)
+
+
+def test_wait_restore_done_failure_marker_case_insensitive(monkeypatch):
+    import subprocess as sp
+    fake_run, _ = _fake_run_recording(
+        "hub-api | RESTAURATION ECHEC — données incohérentes", pending_code=1)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) \
+        is pra_restore.RestoreWaitStatus.FAILED
+
+
+def test_wait_restore_done_pending_gone_no_marker_done(monkeypatch):
+    """Faux-négatif écarté : pending parti, aucun marqueur → DONE."""
+    import subprocess as sp
+    fake_run, _ = _fake_run_recording("2026-10-28 Restore termine ✓", pending_code=1)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) \
+        is pra_restore.RestoreWaitStatus.DONE
+
+
+def test_wait_restore_done_failure_while_pending_still_there(monkeypatch):
+    """Marqueur détecté PENDANT l'attente (pending encore présent) → FAILED."""
+    import subprocess as sp
+    fake_run, _ = _fake_run_recording(
+        "Restauration ECHEC — pg_restore exit 3", pending_code=0)
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert pra_restore.wait_restore_done("abc", None, timeout_s=5) \
+        is pra_restore.RestoreWaitStatus.FAILED
+
+
+def _mock_pra_flow(tmp_path, monkeypatch, kit):
+    """Mocke le flux run_pra_restore jusqu'à (hors) l'attente du restore."""
+    monkeypatch.setattr(pra_restore, "preflight_docker", lambda: None)
+    monkeypatch.setattr(pra_restore, "check_parc_empty", lambda f: None)
+    monkeypatch.setattr(pra_restore, "find_kit", lambda a: kit)
+    monkeypatch.setattr(pra_restore, "pick_snapshot",
+                        lambda k, s: k / "snapshot_abc123.tar.zst.enc")
+    monkeypatch.setattr(pra_restore, "restore_files_from_kit",
+                        lambda k, c, dry_run=False: None)
+    monkeypatch.setattr(pra_restore, "build_stack", lambda c, dry_run=False: None)
+    monkeypatch.setattr(pra_restore, "wait_healthy", lambda c, timeout_s=300: True)
+    monkeypatch.setattr(pra_restore, "inject_snapshot",
+                        lambda k, s, c, dry_run=False: "abc123")
+    monkeypatch.setattr(pra_restore, "restart_hub_api", lambda c, dry_run=False: None)
+    monkeypatch.setattr(pra_restore, "_run", lambda cmd, **kw: True)
+
+
+def test_run_pra_restore_wait_failure_exits_before_apps(tmp_path, monkeypatch):
+    """wait_restore_done FAILED → SystemExit (échec) AVANT l'étape apps ;
+    « PRA terminé. » réservé au succès."""
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    _mock_pra_flow(tmp_path, monkeypatch, kit)
+    monkeypatch.setattr(pra_restore, "wait_restore_done",
+                        lambda sid, c, timeout_s=180, since=None:
+                        pra_restore.RestoreWaitStatus.FAILED)
+
+    def _must_not_run():
+        raise AssertionError("étape apps ne doit pas être atteinte après un échec")
+    monkeypatch.setattr(pra_restore, "list_apps_with_backups", _must_not_run)
+
+    with pytest.raises(SystemExit) as e:
+        pra_restore.run_pra_restore(str(kit), yes=True)
+    assert "échec" in str(e.value).lower()
+    assert "hub-api" in str(e.value).lower()
+
+
+def test_run_pra_restore_wait_timeout_message_distinct(tmp_path, monkeypatch):
+    """TIMEOUT d'attente → message « non terminé », distinct du message d'échec."""
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    _mock_pra_flow(tmp_path, monkeypatch, kit)
+    monkeypatch.setattr(pra_restore, "wait_restore_done",
+                        lambda sid, c, timeout_s=180, since=None:
+                        pra_restore.RestoreWaitStatus.TIMEOUT)
+
+    def _must_not_run():
+        raise AssertionError("étape apps ne doit pas être atteinte après un timeout")
+    monkeypatch.setattr(pra_restore, "list_apps_with_backups", _must_not_run)
+
+    with pytest.raises(SystemExit) as e:
+        pra_restore.run_pra_restore(str(kit), yes=True)
+    assert "non terminé" in str(e.value).lower()
+    assert "échec" not in str(e.value).lower()
+
+
+def test_run_pra_restore_slow_failure_detected_after_healthy(tmp_path, monkeypatch):
+    """Échec lent : le hub supprime pending_restore.txt AVANT run_restore
+    (HUB_base/hub/app/restore_snapshot.py) → l'attente voit DONE pendant que
+    le pg_restore tourne encore, et le marqueur d'échec n'apparaît dans les
+    logs qu'APRÈS wait_healthy. Le re-scan post-healthy doit SystemExit avec
+    un message distinct AVANT « ✓ Restore terminé » / « PRA terminé. »."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    state = {"phase": "wait"}
+
+    class FakeProc:
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["docker", "logs"]:
+            if state["phase"] == "post-healthy":
+                return FakeProc(out="… Restauration ECHEC — pg_restore exit 3 …")
+            return FakeProc(out="")  # pendant l'attente : aucun marqueur
+        return FakeProc(code=1)  # test -f : pending déjà parti (début du restore)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    _mock_pra_flow(tmp_path, monkeypatch, kit)
+    # wait_healthy est appelé 2× (post-build étape 3, post-restore étape 5) :
+    # la bascule de phase simule le pg_restore lent qui échoue PENDANT le
+    # second healthy — les logs ne gagnent le marqueur qu'après.
+    healthy_calls = {"n": 0}
+
+    def _healthy(console, timeout_s=300):
+        healthy_calls["n"] += 1
+        if healthy_calls["n"] >= 2:
+            state["phase"] = "post-healthy"
+        return True
+    monkeypatch.setattr(pra_restore, "wait_healthy", _healthy)
+
+    def _must_not_run():
+        raise AssertionError("succès déclaré malgré le marqueur d'échec post-healthy")
+    monkeypatch.setattr(pra_restore, "count_apps", _must_not_run)
+
+    with pytest.raises(SystemExit) as e:
+        pra_restore.run_pra_restore(str(kit), yes=True)
+    assert "échec" in str(e.value).lower()
+    assert "hub-api" in str(e.value).lower()
+    assert "après" in str(e.value).lower()  # message distinct du cas immédiat
 
 
 def test_run_pra_restore_dry_run_full_flow(tmp_path, monkeypatch):
@@ -402,6 +694,56 @@ def test_argparse_has_pra_restore():
     assert args.command == "pra-restore"
     assert args.kit == "/mnt/kit" and args.snapshot == "s.tar.zst.enc"
     assert args.apps == "all" and args.yes and args.force and args.dry_run
+
+
+# ── BUG B : stdin fermé au prompt apps (pipeline) + voie scriptable documentée ──
+
+
+def test_select_apps_interactive_eof_warns_and_selects_nothing(tmp_path, monkeypatch):
+    """stdin avalé par le pipeline → EOF au prompt : avertissement explicite
+    (voie scriptable) + sélection vide — jamais de « none » silencieux."""
+    import io
+    from rich.console import Console
+    buf = io.StringIO()
+    console = Console(file=buf)
+    apps = [{"slug": "app-a", "backup_id": "bk1"},
+            {"slug": "app-b", "backup_id": None}]
+
+    def _eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+    selection = pra_restore._select_apps_interactive(console, apps, None)
+    assert selection == []
+    out = buf.getvalue()
+    assert "stdin fermé" in out
+    assert "--apps all" in out
+    assert "ADMIN_PASSWORD" in out
+
+
+def test_select_apps_interactive_apps_arg_skips_prompt(tmp_path, monkeypatch):
+    """--apps fourni → aucun prompt (voie scriptable primordiale en pipeline)."""
+    import io
+    from rich.console import Console
+
+    def _no_prompt(prompt=""):
+        raise AssertionError("prompt appelé alors que --apps est fourni")
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    apps = [{"slug": "app-a", "backup_id": None},
+            {"slug": "app-b", "backup_id": None}]
+    assert pra_restore._select_apps_interactive(Console(file=io.StringIO()),
+                                                apps, "all") == ["app-a", "app-b"]
+    assert pra_restore._select_apps_interactive(Console(file=io.StringIO()),
+                                                apps, "none") == []
+
+
+def test_pra_restore_docstring_documents_scriptable_path():
+    """La docstring d'en-tête documente la restauration scriptable (pipeline)."""
+    doc = pra_restore.__doc__ or ""
+    assert "Restauration scriptable" in doc
+    assert "--apps all" in doc
+    assert "ADMIN_PASSWORD" in doc
+    assert "--force" in doc
 
 
 # ── restore_files_from_kit : clé du kit d'abord ──

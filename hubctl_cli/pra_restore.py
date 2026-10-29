@@ -3,13 +3,26 @@
 
 Chaque étape détecte l'état existant → idempotent/resumable : une relance
 après un crash à mi-parcours ne refait rien deux fois.
+
+Restauration scriptable (pipeline, cron, stdin fermé) — exemple complet :
+
+    ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all
+
+- `--apps all|none|slug1,slug2` : apps à reconstruire/réinjecter après le
+  restore (défaut : prompt interactif — en pipeline, stdin fermé = aucune
+  app sélectionnée, avec avertissement explicite).
+- `--force` : autorise la restauration sur un parc non vide (re-PRA).
+- `ADMIN_PASSWORD` / `ADMIN_USERNAME` (env, ou `.env` du hub) : credentials
+  admin pour la réinjection des données apps (sinon getpass interactif).
 """
 from __future__ import annotations
 
+import enum
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -184,19 +197,38 @@ def snapshot_id_from(filename: str) -> str:
     return filename[len("snapshot_"):-len(".tar.zst.enc")]
 
 
-def _psql(sql: str, *, tty_out: bool = False) -> subprocess.CompletedProcess:
-    """docker compose exec db psql (retourne CompletedProcess)."""
+def _psql(sql: str, *, tty_out: bool = False,
+          cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """docker compose exec db psql (retourne CompletedProcess). cwd par
+    défaut : HUB_DIR (même contexte que les autres commandes compose)."""
     cmd = ["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
            "-d", "hub_auth"]
     if tty_out:
         cmd += ["-t", "-A", "-F", "|"]
     cmd += ["-c", sql]
-    return subprocess.run(cmd, cwd=str(hub_state.HUB_DIR), capture_output=True, text=True)
+    return subprocess.run(cmd, cwd=str(cwd or hub_state.HUB_DIR),
+                          capture_output=True, text=True)
+
+
+def _report_psql_error(proc: subprocess.CompletedProcess, console) -> None:
+    """Affiche le stderr d'une commande psql (console si dispo, sinon stderr)."""
+    err = (proc.stderr or "").strip()
+    if not err:
+        return
+    if console:
+        console.print(f"[red]{err}[/red]")
+    else:
+        print(err, file=sys.stderr)
 
 
 def inject_snapshot(kit: Path, snap: Path, console, *, dry_run: bool = False) -> str:
-    """Copie l'archive, crée la ligne hub_snapshots si absente, écrit
-    pending_restore.txt. Retourne le snapshot_id."""
+    """Copie l'archive, crée la ligne hub_snapshots si absente (et la
+    VÉRIFIE par re-SELECT), écrit pending_restore.txt. Retourne le snapshot_id.
+
+    Garde-fou (incident VM 28/10/2026) : si la ligne ne peut pas être créée
+    ou vérifiée, on abandonne AVANT d'écrire pending_restore — le hub
+    refuserait sinon le restore (« Snapshot introuvable ») sans que hubctl
+    le voie."""
     import shutil
     snap_id = snapshot_id_from(snap.name)
     if dry_run:
@@ -207,17 +239,31 @@ def inject_snapshot(kit: Path, snap: Path, console, *, dry_run: bool = False) ->
     dest_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(snap, dest_dir / snap.name)
 
-    exists = _psql(f"SELECT 1 FROM hub_snapshots WHERE snapshot_id = '{snap_id}'")
+    select = f"SELECT 1 FROM hub_snapshots WHERE snapshot_id = '{snap_id}'"
+    exists = _psql(select, cwd=hub_state.HUB_DIR)
     if exists.returncode == 0 and exists.stdout.strip():
         if console:
             console.print(f"• Ligne hub_snapshots déjà présente ({snap_id})")
     else:
-        _run(["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
-              "-d", "hub_auth", "-c",
-              f"INSERT INTO hub_snapshots (snapshot_id, status, created_by, created_at, local_path) "
-              f"VALUES ('{snap_id}', 'success', 'pra', now(), "
-              f"'/code/storage/snapshots/{snap.name}')"],
-              cwd=hub_state.HUB_DIR, console=console)
+        _report_psql_error(exists, console)
+        insert = _psql(
+            f"INSERT INTO hub_snapshots (snapshot_id, status, created_by, created_at, local_path) "
+            f"VALUES ('{snap_id}', 'success', 'pra', now(), "
+            f"'/code/storage/snapshots/{snap.name}')",
+            cwd=hub_state.HUB_DIR)
+        if insert.returncode != 0:
+            _report_psql_error(insert, console)
+        # Vérification post-écriture : on n'écrit JAMAIS pending_restore pour
+        # un état que le hub ne peut pas restaurer.
+        verified = _psql(select, cwd=hub_state.HUB_DIR)
+        if verified.returncode != 0 or not verified.stdout.strip():
+            _report_psql_error(verified, console)
+            raise SystemExit(
+                "❌ Impossible d'enregistrer le snapshot dans hub_snapshots — abandon "
+                "AVANT pending_restore (le hub refuserait le restore). "
+                "Voir erreur ci-dessus.")
+        if console:
+            console.print(f"✓ Ligne hub_snapshots créée et vérifiée ({snap_id})")
     # pending_restore.txt vit dans le conteneur (pas de montage hôte) :
     # écriture via docker exec, comme dans BACKUP.md.
     _run(["docker", "exec", HUB_API_CONTAINER, "sh", "-c",
@@ -232,17 +278,66 @@ def restart_hub_api(console, *, dry_run: bool = False) -> None:
 
 # ── Étape 5 : attente du restore ──
 
-def wait_restore_done(snap_id: str, console, timeout_s: int = RESTORE_TIMEOUT_S) -> bool:
-    """True quand pending_restore.txt a disparu (restore terminé)."""
+RESTORE_FAILURE_MARKERS = ("Restauration ECHEC", "RESTAURATION ECHEC")
+
+
+class RestoreWaitStatus(enum.Enum):
+    """Résultat de l'attente du restore interne (tri-state)."""
+    DONE = "done"        # pending parti, aucun marqueur d'échec
+    FAILED = "failed"    # marqueur « Restauration ECHEC » dans les logs hub-api
+    TIMEOUT = "timeout"  # pending toujours présent après timeout_s
+
+
+def _scan_hub_api_failure_logs(since: str) -> str | None:
+    """Cherche un marqueur d'échec de restauration dans les logs hub-api
+    publiés depuis `since` (RFC3339). Retourne la ligne fautive, sinon None."""
+    r = subprocess.run(
+        ["docker", "logs", "--since", since, HUB_API_CONTAINER],
+        capture_output=True, text=True)
+    output = (r.stdout or "") + (r.stderr or "")
+    for line in output.splitlines():
+        for marker in RESTORE_FAILURE_MARKERS:
+            if marker in line:
+                return line.strip()
+    return None
+
+
+def _check_restore_failure(since: str, console) -> str | None:
+    """Scan des logs hub-api depuis `since` ; affiche le motif si trouvé.
+    Utilisée par wait_restore_done ET par le re-scan post-healthy du flux
+    (même fonction de scan pour les deux fenêtres de détection)."""
+    failure = _scan_hub_api_failure_logs(since)
+    if failure and console:
+        console.print(f"[red]⚠ Marqueur d'échec détecté dans les logs "
+                      f"hub-api : {failure}[/red]")
+    return failure
+
+
+def wait_restore_done(snap_id: str, console, timeout_s: int = RESTORE_TIMEOUT_S,
+                      *, since: str | None = None) -> RestoreWaitStatus:
+    """DONE quand pending_restore.txt a disparu sans marqueur d'échec,
+    FAILED si un marqueur « Restauration ECHEC » apparaît dans les logs
+    hub-api (motif affiché), TIMEOUT en cas de dépassement.
+
+    since : RFC3339 — défaut : début de l'attente. L'appelant le réutilise
+    pour le re-scan post-healthy : le hub supprime pending_restore.txt AVANT
+    de lancer le restore, donc un échec lent (pg_restore en cours) se logge
+    APRÈS la disparition du pending — invisible pour cette attente, d'où le
+    re-scan du flux une fois hub-api healthy."""
+    since = since or datetime.now().astimezone().isoformat(timespec="seconds")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        if _check_restore_failure(since, console):
+            return RestoreWaitStatus.FAILED
         r = subprocess.run(
             ["docker", "exec", HUB_API_CONTAINER, "sh", "-c",
              "test -f /code/storage/pending_restore.txt"], capture_output=True)
         if r.returncode != 0:
-            return True
+            if _check_restore_failure(since, console):  # rattrape la course
+                return RestoreWaitStatus.FAILED
+            return RestoreWaitStatus.DONE
         time.sleep(5)
-    return False
+    return RestoreWaitStatus.TIMEOUT
 
 
 def count_apps() -> int:
@@ -333,6 +428,31 @@ def rebuild_app(slug: str, console, *, dry_run: bool = False) -> bool:
     return ok_build and ok_up
 
 
+def _select_apps_interactive(console, all_apps: list[dict],
+                             apps: str | None) -> list[str]:
+    """Sélection des apps à restaurer : --apps prioritaire, sinon prompt.
+    stdin fermé au prompt (pipeline) → avertissement explicite + liste vide
+    (incident VM 28/10/2026 : « none » silencieux, aucune app restaurée)."""
+    slugs = [a["slug"] for a in all_apps]
+    if apps is not None:
+        return parse_selection(apps, slugs)
+    if not all_apps:
+        console.print("Aucune app active en base — étape apps ignorée.")
+        return []
+    console.print("Apps actives (dernier backup) :")
+    for i, a in enumerate(all_apps, 1):
+        backup_info = f"backup {a['backup_id'][:8]}…" if a["backup_id"] else "aucun backup"
+        console.print(f"  {i}. {a['slug']}  ({backup_info})")
+    try:
+        raw = input("Apps à restaurer (ex: 1,3 | all | none) : ")
+    except EOFError:
+        console.print("[yellow]⚠ stdin fermé — aucune app sélectionnée. "
+                      "Relance avec --apps all (et ADMIN_PASSWORD=… pour la "
+                      "réinjection des données).[/yellow]")
+        raw = "none"
+    return parse_selection(raw, slugs)
+
+
 # ── Flux complet ──
 
 def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
@@ -376,32 +496,33 @@ def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
 
     # Étape 5 — attente du restore interne
     if not dry_run:
-        if not wait_restore_done(snap_id, console):
+        since = datetime.now().astimezone().isoformat(timespec="seconds")
+        status = wait_restore_done(snap_id, console, since=since)
+        if status is RestoreWaitStatus.FAILED:
             _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
-            raise SystemExit("❌ Restore non terminé (pending_restore.txt toujours présent)")
+            raise SystemExit("❌ Restauration du snapshot en échec côté hub-api — "
+                             "voir logs ci-dessus")
+        if status is RestoreWaitStatus.TIMEOUT:
+            _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
+            raise SystemExit("❌ Restore non terminé (pending_restore.txt toujours "
+                             "présent) — voir logs ci-dessus")
         if not wait_healthy(console):
             raise SystemExit("❌ hub-api pas healthy après restore")
+        # Le hub supprime pending_restore.txt AVANT de lancer le restore : un
+        # échec lent (pg_restore en cours) se logge APRÈS la disparition du
+        # pending — invisible pour l'attente ci-dessus. Re-scan unique sur la
+        # fenêtre complète (attente + healthy) avant de déclarer le succès.
+        if _check_restore_failure(since, console):
+            _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
+            raise SystemExit("❌ Restauration du snapshot en échec côté hub-api "
+                             "(échec lent détecté après restore) — voir logs "
+                             "ci-dessus")
         n = count_apps()
         console.print(f"✓ Restore terminé — {n} app(s) en base")
 
     # Étape 6 — apps : liste + sélection + rebuild + réinjection
     all_apps = [] if dry_run else list_apps_with_backups()
-    slugs = [a["slug"] for a in all_apps]
-    if apps is not None:
-        selection = parse_selection(apps, slugs)
-    elif not all_apps:
-        console.print("Aucune app active en base — étape apps ignorée.")
-        selection = []
-    else:
-        console.print("Apps actives (dernier backup) :")
-        for i, a in enumerate(all_apps, 1):
-            backup_info = f"backup {a['backup_id'][:8]}…" if a["backup_id"] else "aucun backup"
-            console.print(f"  {i}. {a['slug']}  ({backup_info})")
-        try:
-            raw = input("Apps à restaurer (ex: 1,3 | all | none) : ")
-        except EOFError:
-            raw = "none"
-        selection = parse_selection(raw, slugs)
+    selection = _select_apps_interactive(console, all_apps, apps)
 
     todo = [a for a in all_apps if a["slug"] in selection]
     token: str | None = None
@@ -441,12 +562,16 @@ if __name__ == "__main__":
     _p = argparse.ArgumentParser(prog="pra-restore",
                                  description="Restauration PRA depuis un kit POULIDOR")
     _p.add_argument("kit", nargs="?", default=None, help="Chemin du kit PRA (scan auto si omis)")
-    _p.add_argument("--snapshot", default=None)
-    _p.add_argument("--apps", default=None, help="all | none | slugs séparés par virgule")
-    _p.add_argument("--admin-user", default=None)
-    _p.add_argument("--yes", action="store_true")
-    _p.add_argument("--force", action="store_true")
-    _p.add_argument("--dry-run", action="store_true")
+    _p.add_argument("--snapshot", default=None, help="Nom ou chemin du snapshot (défaut: plus récent du kit)")
+    _p.add_argument("--apps", default=None,
+                    help="all | none | slugs CSV (défaut: interactif). Scriptable : "
+                         "ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all")
+    _p.add_argument("--admin-user", default=None,
+                    help="Login admin pour la réinjection (défaut: ADMIN_USERNAME/.env/admin)")
+    _p.add_argument("--yes", action="store_true", help="Saute les confirmations")
+    _p.add_argument("--force", action="store_true",
+                    help="Autorise la restauration sur un parc non vide (re-PRA)")
+    _p.add_argument("--dry-run", action="store_true", help="Affiche le plan sans rien exécuter")
     _a = _p.parse_args()
     raise SystemExit(run_pra_restore(
         _a.kit, snapshot=_a.snapshot, apps=_a.apps, admin_user=_a.admin_user,

@@ -198,3 +198,14 @@ secrets/.env → build & start de la stack → injection du snapshot →
 attente du restore interne → sélection des apps à rebuilder/réinjecter.
 Arguments : `kit` (positionnel, scan auto si omis) ; fanions `--snapshot`,
 `--apps all|none|a,b`, `--admin-user`, `--yes`, `--force`, `--dry-run`.
+
+### Restauration scriptable (pipeline)
+
+Les prompts attendent un TTY — en pipeline/cron, stdin est avalé par les
+commandes du processus : passer les choix en fanions et variables d'env
+(`ADMIN_PASSWORD`/`ADMIN_USERNAME` pour la réinjection des données) :
+
+```bash
+# interactif : ./hubctl pra-restore
+ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all
+```
