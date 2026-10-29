@@ -314,19 +314,136 @@ def test_inject_snapshot_copies_and_inserts(tmp_path, monkeypatch):
     kit = _kit(tmp_path)
     snap = kit / "snapshot_abc123.tar.zst.enc"
     commands = []
+    state = {"selects": 0}
 
     class FakeProc:
-        def __init__(self):
-            self.returncode = 0
-            self.stdout = ""  # SELECT 1 → vide = ligne absente
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
 
-    monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
+    def fake_run(cmd, *a, **kw):
+        joined = " ".join(str(x) for x in cmd)
+        commands.append(joined)
+        if "SELECT 1 FROM hub_snapshots" in joined:
+            state["selects"] += 1
+            # 1er SELECT : absent ; SELECT de vérification : présent
+            return FakeProc(out="1" if state["selects"] >= 2 else "")
+        return FakeProc()  # INSERT ok, echo pending
+
+    monkeypatch.setattr(sp, "run", fake_run)
     sid = pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
     assert sid == "abc123"
     dest = hub_state.HUB_DIR / "storage" / "snapshots" / snap.name
     assert dest.exists() and dest.read_bytes() == b"S1"
+    assert any("INSERT INTO hub_snapshots" in c and "abc123" in c for c in commands)
+    assert any("pending_restore.txt" in c for c in commands)
+
+
+# ── BUG A : ligne hub_snapshots vérifiée AVANT pending_restore ──
+
+
+def test_inject_snapshot_insert_then_verify_before_pending(tmp_path, monkeypatch):
+    """Ligne absente → INSERT → re-SELECT de vérification → PUIS seulement
+    pending_restore (séquence stricte, cf. incident VM 28/10/2026)."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+    state = {"selects": 0}
+
+    class FakeProc:
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def fake_run(cmd, *a, **kw):
+        joined = " ".join(str(x) for x in cmd)
+        commands.append(joined)
+        if "SELECT 1 FROM hub_snapshots" in joined:
+            state["selects"] += 1
+            return FakeProc(out="1" if state["selects"] >= 2 else "")
+        return FakeProc()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    sid = pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert sid == "abc123"
+    assert len(commands) == 4  # SELECT → INSERT → SELECT vérif → echo pending
+    assert "SELECT 1 FROM hub_snapshots" in commands[0]
+    assert "INSERT INTO hub_snapshots" in commands[1]
+    assert "SELECT 1 FROM hub_snapshots" in commands[2]
+    pending_idx = next(i for i, c in enumerate(commands) if "pending_restore.txt" in c)
+    assert pending_idx == 3  # pending écrit APRÈS la vérification
+
+
+def test_inject_snapshot_insert_failure_exits_before_pending(tmp_path, monkeypatch, capsys):
+    """INSERT en échec → SystemExit AVANT toute écriture de pending_restore,
+    stderr SQL affiché."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+
+    class FakeProc:
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def fake_run(cmd, *a, **kw):
+        joined = " ".join(str(x) for x in cmd)
+        commands.append(joined)
+        if "SELECT 1 FROM hub_snapshots" in joined:
+            return FakeProc()  # ligne absente
+        if "INSERT INTO hub_snapshots" in joined:
+            return FakeProc(code=1, err='ERROR: relation "hub_snapshots" does not exist')
+        return FakeProc()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    with pytest.raises(SystemExit) as e:
+        pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert "hub_snapshots" in str(e.value)
+    assert "pending_restore" in str(e.value)
+    assert all("pending_restore.txt" not in c for c in commands)  # JAMAIS écrit
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_inject_snapshot_unverifiable_row_exits_before_pending(tmp_path, monkeypatch):
+    """INSERT « ok » mais la ligne reste absente au re-SELECT → SystemExit,
+    pending jamais écrit (l'état serait irreversible côté hub)."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""  # SELECT toujours vide : la ligne n'apparaît jamais
+        stderr = ""
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
+    with pytest.raises(SystemExit) as e:
+        pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert "hub_snapshots" in str(e.value)
+    assert all("pending_restore.txt" not in " ".join(str(x) for x in c) for c in commands)
+
+
+def test_inject_snapshot_already_present_skips_insert(tmp_path, monkeypatch):
+    """Ligne déjà présente → aucun INSERT, pending écrit."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = "1"  # SELECT → ligne présente
+        stderr = ""
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
+    sid = pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert sid == "abc123"
     joined = [" ".join(str(x) for x in c) for c in commands]
-    assert any("INSERT INTO hub_snapshots" in c and "abc123" in c for c in joined)
+    assert not any("INSERT INTO hub_snapshots" in c for c in joined)
     assert any("pending_restore.txt" in c for c in joined)
 
 

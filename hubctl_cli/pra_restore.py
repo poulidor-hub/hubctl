@@ -184,19 +184,38 @@ def snapshot_id_from(filename: str) -> str:
     return filename[len("snapshot_"):-len(".tar.zst.enc")]
 
 
-def _psql(sql: str, *, tty_out: bool = False) -> subprocess.CompletedProcess:
-    """docker compose exec db psql (retourne CompletedProcess)."""
+def _psql(sql: str, *, tty_out: bool = False,
+          cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """docker compose exec db psql (retourne CompletedProcess). cwd par
+    défaut : HUB_DIR (même contexte que les autres commandes compose)."""
     cmd = ["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
            "-d", "hub_auth"]
     if tty_out:
         cmd += ["-t", "-A", "-F", "|"]
     cmd += ["-c", sql]
-    return subprocess.run(cmd, cwd=str(hub_state.HUB_DIR), capture_output=True, text=True)
+    return subprocess.run(cmd, cwd=str(cwd or hub_state.HUB_DIR),
+                          capture_output=True, text=True)
+
+
+def _report_psql_error(proc: subprocess.CompletedProcess, console) -> None:
+    """Affiche le stderr d'une commande psql (console si dispo, sinon stderr)."""
+    err = (proc.stderr or "").strip()
+    if not err:
+        return
+    if console:
+        console.print(f"[red]{err}[/red]")
+    else:
+        print(err, file=sys.stderr)
 
 
 def inject_snapshot(kit: Path, snap: Path, console, *, dry_run: bool = False) -> str:
-    """Copie l'archive, crée la ligne hub_snapshots si absente, écrit
-    pending_restore.txt. Retourne le snapshot_id."""
+    """Copie l'archive, crée la ligne hub_snapshots si absente (et la
+    VÉRIFIE par re-SELECT), écrit pending_restore.txt. Retourne le snapshot_id.
+
+    Garde-fou (incident VM 28/10/2026) : si la ligne ne peut pas être créée
+    ou vérifiée, on abandonne AVANT d'écrire pending_restore — le hub
+    refuserait sinon le restore (« Snapshot introuvable ») sans que hubctl
+    le voie."""
     import shutil
     snap_id = snapshot_id_from(snap.name)
     if dry_run:
@@ -207,17 +226,31 @@ def inject_snapshot(kit: Path, snap: Path, console, *, dry_run: bool = False) ->
     dest_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(snap, dest_dir / snap.name)
 
-    exists = _psql(f"SELECT 1 FROM hub_snapshots WHERE snapshot_id = '{snap_id}'")
+    select = f"SELECT 1 FROM hub_snapshots WHERE snapshot_id = '{snap_id}'"
+    exists = _psql(select, cwd=hub_state.HUB_DIR)
     if exists.returncode == 0 and exists.stdout.strip():
         if console:
             console.print(f"• Ligne hub_snapshots déjà présente ({snap_id})")
     else:
-        _run(["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
-              "-d", "hub_auth", "-c",
-              f"INSERT INTO hub_snapshots (snapshot_id, status, created_by, created_at, local_path) "
-              f"VALUES ('{snap_id}', 'success', 'pra', now(), "
-              f"'/code/storage/snapshots/{snap.name}')"],
-              cwd=hub_state.HUB_DIR, console=console)
+        _report_psql_error(exists, console)
+        insert = _psql(
+            f"INSERT INTO hub_snapshots (snapshot_id, status, created_by, created_at, local_path) "
+            f"VALUES ('{snap_id}', 'success', 'pra', now(), "
+            f"'/code/storage/snapshots/{snap.name}')",
+            cwd=hub_state.HUB_DIR)
+        if insert.returncode != 0:
+            _report_psql_error(insert, console)
+        # Vérification post-écriture : on n'écrit JAMAIS pending_restore pour
+        # un état que le hub ne peut pas restaurer.
+        verified = _psql(select, cwd=hub_state.HUB_DIR)
+        if verified.returncode != 0 or not verified.stdout.strip():
+            _report_psql_error(verified, console)
+            raise SystemExit(
+                "❌ Impossible d'enregistrer le snapshot dans hub_snapshots — abandon "
+                "AVANT pending_restore (le hub refuserait le restore). "
+                "Voir erreur ci-dessus.")
+        if console:
+            console.print(f"✓ Ligne hub_snapshots créée et vérifiée ({snap_id})")
     # pending_restore.txt vit dans le conteneur (pas de montage hôte) :
     # écriture via docker exec, comme dans BACKUP.md.
     _run(["docker", "exec", HUB_API_CONTAINER, "sh", "-c",
