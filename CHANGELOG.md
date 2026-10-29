@@ -1,3 +1,12 @@
+## [0.16.2] - 29 octobre 2026
+
+### 🐛 Fix — réplication PRA : le « dernier snapshot » est désigné par la DB
+
+- **Corrigé** : `latest_snapshot()` interroge désormais `hub_snapshots` (status=success, ORDER BY created_at) au lieu de trier les fichiers par mtime — en réel, un snapshot créé le jour même portait un mtime d'août (le hub préserve un mtime ancien à l'écriture) et n'était **jamais répliqué** dans le kit
+- Fallback mtime conservé si la DB est injoignable ou si le fichier désigné est absent
+- Tests : 3 nouveaux (DB gagne sur mtime · fallback DB injoignable · fallback ligne sans fichier)
+
+---
 ## [0.16.1] - 29 octobre 2026
 
 ### 🐛 pra-restore : fiabilisation du sinistre

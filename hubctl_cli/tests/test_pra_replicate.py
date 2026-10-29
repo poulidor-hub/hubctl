@@ -181,3 +181,65 @@ def test_replicate_copies_vault_key_with_vault(tmp_path, monkeypatch):
     # 2e run : rien n'a changé → aucune recopie (préservation flash USB)
     result2 = pra_replicate.replicate()
     assert result2["status"] == "ok" and result2["copied"] == []
+
+
+# ── latest_snapshot : sélection par DB (le mtime est trompeur) ──
+
+def _mk_snap(snapshots_dir, snap_id, mtime_epoch):
+    import os
+    f = snapshots_dir / f"snapshot_{snap_id}.tar.zst.enc"
+    f.write_bytes(b"x")
+    os.utime(f, (mtime_epoch, mtime_epoch))
+    return f
+
+
+def test_latest_snapshot_prefers_db_over_mtime(tmp_path, monkeypatch):
+    """La DB désigne le dernier snapshot — même si un AUTRE fichier a un
+    mtime plus récent (mtimes menteurs du hub : copies, montages)."""
+    from hubctl_cli import pra_replicate, hub_state
+    d = tmp_path / "HUB_base" / "storage" / "snapshots"
+    d.mkdir(parents=True)
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    old = _mk_snap(d, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 2_000_000_000)
+    new = _mk_snap(d, "eb426bf1-4747-4d4b-82a1-6ba719ffd3de", 1_500_000_000)
+
+    class R:
+        returncode = 0
+        stdout = "eb426bf1-4747-4d4b-82a1-6ba719ffd3de\n"
+        stderr = ""
+    monkeypatch.setattr(pra_replicate.subprocess, "run", lambda *a, **k: R())
+    assert pra_replicate.latest_snapshot() == new
+    assert old.exists()
+
+
+def test_latest_snapshot_falls_back_when_db_unreachable(tmp_path, monkeypatch):
+    """DB injoignable → fallback mtime (comportement historique préservé)."""
+    from hubctl_cli import pra_replicate, hub_state
+    d = tmp_path / "HUB_base" / "storage" / "snapshots"
+    d.mkdir(parents=True)
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    newest = _mk_snap(d, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", 2_000_000_000)
+    _mk_snap(d, "cccccccc-cccc-cccc-cccc-cccccccccccc", 1_500_000_000)
+
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "oops"
+    monkeypatch.setattr(pra_replicate.subprocess, "run", lambda *a, **k: R())
+    assert pra_replicate.latest_snapshot() == newest
+
+
+def test_latest_snapshot_falls_back_when_db_row_has_no_file(tmp_path, monkeypatch):
+    """Ligne en base mais fichier absent (hub purge localement) → mtime."""
+    from hubctl_cli import pra_replicate, hub_state
+    d = tmp_path / "HUB_base" / "storage" / "snapshots"
+    d.mkdir(parents=True)
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    newest = _mk_snap(d, "dddddddd-dddd-dddd-dddd-dddddddddddd", 2_000_000_000)
+
+    class R:
+        returncode = 0
+        stdout = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee\n"  # pas de fichier
+        stderr = ""
+    monkeypatch.setattr(pra_replicate.subprocess, "run", lambda *a, **k: R())
+    assert pra_replicate.latest_snapshot() == newest
