@@ -17,10 +17,12 @@ Restauration scriptable (pipeline, cron, stdin fermé) — exemple complet :
 """
 from __future__ import annotations
 
+import enum
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -279,6 +281,13 @@ def restart_hub_api(console, *, dry_run: bool = False) -> None:
 RESTORE_FAILURE_MARKERS = ("Restauration ECHEC", "RESTAURATION ECHEC")
 
 
+class RestoreWaitStatus(enum.Enum):
+    """Résultat de l'attente du restore interne (tri-state)."""
+    DONE = "done"        # pending parti, aucun marqueur d'échec
+    FAILED = "failed"    # marqueur « Restauration ECHEC » dans les logs hub-api
+    TIMEOUT = "timeout"  # pending toujours présent après timeout_s
+
+
 def _scan_hub_api_failure_logs(since: str) -> str | None:
     """Cherche un marqueur d'échec de restauration dans les logs hub-api
     publiés depuis `since` (RFC3339). Retourne la ligne fautive, sinon None."""
@@ -293,37 +302,42 @@ def _scan_hub_api_failure_logs(since: str) -> str | None:
     return None
 
 
-def wait_restore_done(snap_id: str, console, timeout_s: int = RESTORE_TIMEOUT_S) -> bool:
-    """True quand pending_restore.txt a disparu (restore terminé).
+def _check_restore_failure(since: str, console) -> str | None:
+    """Scan des logs hub-api depuis `since` ; affiche le motif si trouvé.
+    Utilisée par wait_restore_done ET par le re-scan post-healthy du flux
+    (même fonction de scan pour les deux fenêtres de détection)."""
+    failure = _scan_hub_api_failure_logs(since)
+    if failure and console:
+        console.print(f"[red]⚠ Marqueur d'échec détecté dans les logs "
+                      f"hub-api : {failure}[/red]")
+    return failure
 
-    False en cas d'échec détecté (marqueur « Restauration ECHEC » dans les
-    logs hub-api depuis le début de l'attente — motif affiché) ou de timeout.
-    Pending parti sans aucun marqueur → succès (faux-négatif écarté : le
-    marqueur peut être écrit juste avant la suppression du pending, d'où le
-    re-scan final)."""
-    from datetime import datetime
-    since = datetime.now().astimezone().isoformat(timespec="seconds")
+
+def wait_restore_done(snap_id: str, console, timeout_s: int = RESTORE_TIMEOUT_S,
+                      *, since: str | None = None) -> RestoreWaitStatus:
+    """DONE quand pending_restore.txt a disparu sans marqueur d'échec,
+    FAILED si un marqueur « Restauration ECHEC » apparaît dans les logs
+    hub-api (motif affiché), TIMEOUT en cas de dépassement.
+
+    since : RFC3339 — défaut : début de l'attente. L'appelant le réutilise
+    pour le re-scan post-healthy : le hub supprime pending_restore.txt AVANT
+    de lancer le restore, donc un échec lent (pg_restore en cours) se logge
+    APRÈS la disparition du pending — invisible pour cette attente, d'où le
+    re-scan du flux une fois hub-api healthy."""
+    since = since or datetime.now().astimezone().isoformat(timespec="seconds")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        failure = _scan_hub_api_failure_logs(since)
-        if failure:
-            if console:
-                console.print(f"[red]⚠ Marqueur d'échec détecté dans les logs "
-                              f"hub-api : {failure}[/red]")
-            return False
+        if _check_restore_failure(since, console):
+            return RestoreWaitStatus.FAILED
         r = subprocess.run(
             ["docker", "exec", HUB_API_CONTAINER, "sh", "-c",
              "test -f /code/storage/pending_restore.txt"], capture_output=True)
         if r.returncode != 0:
-            failure = _scan_hub_api_failure_logs(since)  # rattrape la course
-            if failure:
-                if console:
-                    console.print(f"[red]⚠ Marqueur d'échec détecté dans les logs "
-                                  f"hub-api : {failure}[/red]")
-                return False
-            return True
+            if _check_restore_failure(since, console):  # rattrape la course
+                return RestoreWaitStatus.FAILED
+            return RestoreWaitStatus.DONE
         time.sleep(5)
-    return False
+    return RestoreWaitStatus.TIMEOUT
 
 
 def count_apps() -> int:
@@ -482,12 +496,27 @@ def run_pra_restore(kit: str | None = None, *, snapshot: str | None = None,
 
     # Étape 5 — attente du restore interne
     if not dry_run:
-        if not wait_restore_done(snap_id, console):
+        since = datetime.now().astimezone().isoformat(timespec="seconds")
+        status = wait_restore_done(snap_id, console, since=since)
+        if status is RestoreWaitStatus.FAILED:
             _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
             raise SystemExit("❌ Restauration du snapshot en échec côté hub-api — "
                              "voir logs ci-dessus")
+        if status is RestoreWaitStatus.TIMEOUT:
+            _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
+            raise SystemExit("❌ Restore non terminé (pending_restore.txt toujours "
+                             "présent) — voir logs ci-dessus")
         if not wait_healthy(console):
             raise SystemExit("❌ hub-api pas healthy après restore")
+        # Le hub supprime pending_restore.txt AVANT de lancer le restore : un
+        # échec lent (pg_restore en cours) se logge APRÈS la disparition du
+        # pending — invisible pour l'attente ci-dessus. Re-scan unique sur la
+        # fenêtre complète (attente + healthy) avant de déclarer le succès.
+        if _check_restore_failure(since, console):
+            _run(["docker", "logs", "--tail", "50", HUB_API_CONTAINER], console=console)
+            raise SystemExit("❌ Restauration du snapshot en échec côté hub-api "
+                             "(échec lent détecté après restore) — voir logs "
+                             "ci-dessus")
         n = count_apps()
         console.print(f"✓ Restore terminé — {n} app(s) en base")
 
