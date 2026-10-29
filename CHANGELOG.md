@@ -1,3 +1,52 @@
+## [0.16.1] - 29 octobre 2026
+
+### 🐛 pra-restore : fiabilisation du sinistre
+
+Retours d'un test PRA réel sur VM vierge (28/10/2026) : le pipeline échouait
+silencieusement en conditions réelles. Trois corrections + une investigation.
+
+- **Corrigé (bloquant)** : la ligne `hub_snapshots` est désormais **vérifiée par
+  re-SELECT après l'INSERT** — si elle ne peut pas être créée, `pra-restore`
+  abandonne **avant** d'écrire `pending_restore.txt` (fini le « Snapshot
+  introuvable » côté hub-api sur un état que le hub ne peut pas restaurer) ;
+  l'INSERT passe par `psql` avec stderr capté et affiché (le returncode était
+  ignoré), et le check/INSERT/vérification partagent le même `cwd` (`_psql`
+  gagne un paramètre `cwd`, défaut `HUB_DIR`) ; re-test VM 29/10 : le SELECT de
+  présence et la vérification sont en **tuples-only** (`-t -A`, comparaison du
+  contenu « 1 ») — sans quoi l'en-tête psql (« ?column? / (0 rows) », émis même
+  sur table vide) faisait croire à une « ligne déjà présente » sur une table
+  vidée : jamais d'INSERT et protection de vérification neutralisée
+- **Corrigé** : un échec de restauration côté hub-api est détecté —
+  `wait_restore_done` scanne `docker logs --since <début de l'attente> hub-api`
+  (marqueurs `Restauration ECHEC`/`RESTAURATION ECHEC`, re-scan final pour
+  rattraper la course avec la suppression du pending) → « ❌ Restauration du
+  snapshot en échec côté hub-api » + code ≠ 0 au lieu de « PRA terminé. » rc 0 ;
+  pending parti sans marqueur → succès inchangé
+- **Renforcé** (review) : re-scan post-healthy des échecs de restauration lente —
+  le hub supprime `pending_restore.txt` AVANT de lancer le restore, donc un
+  pg_restore lent se solde par un marqueur `Restauration ECHEC` loggé après la
+  disparition du pending ; re-scané une fois hub-api healthy sur la même fenêtre
+  → échec explicite au lieu de « ✓ Restore terminé » ; `wait_restore_done`
+  retourne un statut tri-state (done/failed/timeout) et les messages timeout
+  (« Restore non terminé ») et échec sont distincts
+- **Corrigé** : prompt apps en pipeline — stdin fermé (EOF) n'est plus un
+  « none » silencieux : avertissement explicite avec la relance scriptable ;
+  la voie scriptable est documentée (docstring du module, aide `--apps`/
+  `--force`/`--admin-user`, README) :
+  `ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all`
+- **Investigué** : CRITICAL « Clés backup ABSENTES — paire générée à chaud » au
+  premier boot sur la VM — aucun défaut hubctl trouvé : noms (`backup_private_key.pem`)
+  et chemins (coffre → `PARC_ROOT/HUB_base/secrets/` ↔ montage `./secrets:/code/secrets`)
+  corrects, ordre restore-fichiers → build_stack correct, entrypoint sans
+  destruction ; cause la plus probable : stack démarrée AVANT `pra-restore`
+  (ex. `./hubctl init`), boot sans secrets légitime — les clés du coffre
+  écrasent ensuite la paire à chaud (état final cohérent) ; à documenter côté
+  procédure PRA, aucun fix code nécessaire
+- Tests : 16 nouveaux (53 sur le fichier pra-restore — séquence
+  SELECT→INSERT→vérif→pending, abandon avant pending sur INSERT KO,
+  check tuples-only vs en-tête psql « (0 rows) », marqueurs d'échec logs
+  y compris échec lent post-healthy, EOF prompt, docstring), suite verte
+
 ## [0.16.0] - 28 octobre 2026
 
 ### ✨ Service hôte hubctl-atelier automatique au init
