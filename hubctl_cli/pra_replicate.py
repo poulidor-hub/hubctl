@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,10 +44,37 @@ def snapshots_dir() -> Path:
     return hub_state.HUB_DIR / "storage" / "snapshots"
 
 
+def _db_latest_snapshot_id() -> str | None:
+    """snapshot_id du dernier snapshot success en base.
+
+    La DB fait foi : le mtime des fichiers snapshot du hub peut être
+    trompeur (copies, montages, restaurations — observé en réel, le hub
+    préserve un mtime ancien à l'écriture). None si DB injoignable.
+    """
+    try:
+        r = subprocess.run(
+            ["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
+             "-d", "hub_auth", "-t", "-A", "-c",
+             "SELECT snapshot_id FROM hub_snapshots WHERE status = 'success' "
+             "ORDER BY created_at DESC LIMIT 1"],
+            cwd=str(hub_state.HUB_DIR), capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
 def latest_snapshot() -> Path | None:
     d = snapshots_dir()
     if not d.is_dir():
         return None
+    snap_id = _db_latest_snapshot_id()
+    if snap_id:
+        cand = d / f"snapshot_{snap_id}.tar.zst.enc"
+        if cand.exists():
+            return cand
+        # Ligne en base mais fichier absent (purge hub locale) → mtime.
     snaps = sorted(d.glob(SNAPSHOT_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
     return snaps[0] if snaps else None
 
