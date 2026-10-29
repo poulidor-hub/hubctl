@@ -427,7 +427,8 @@ def test_inject_snapshot_unverifiable_row_exits_before_pending(tmp_path, monkeyp
 
 
 def test_inject_snapshot_already_present_skips_insert(tmp_path, monkeypatch):
-    """Ligne déjà présente → aucun INSERT, pending écrit."""
+    """Ligne déjà présente (SELECT tuples-only → stdout « 1 ») → aucun INSERT,
+    pending écrit."""
     import subprocess as sp
     _patch_parc(tmp_path, monkeypatch)
     kit = _kit(tmp_path)
@@ -436,7 +437,7 @@ def test_inject_snapshot_already_present_skips_insert(tmp_path, monkeypatch):
 
     class FakeProc:
         returncode = 0
-        stdout = "1"  # SELECT → ligne présente
+        stdout = "1"  # SELECT tuples-only : « 1 » = ligne présente
         stderr = ""
 
     monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
@@ -445,6 +446,69 @@ def test_inject_snapshot_already_present_skips_insert(tmp_path, monkeypatch):
     joined = [" ".join(str(x) for x in c) for c in commands]
     assert not any("INSERT INTO hub_snapshots" in c for c in joined)
     assert any("pending_restore.txt" in c for c in joined)
+
+
+_PSQL_HEADER_0ROWS = " ?column? \n----------\n(0 rows)\n\n"
+
+
+def test_inject_snapshot_header_zero_rows_takes_insert_path(tmp_path, monkeypatch):
+    """LE test qui aurait attrapé le bug VM 29/10/2026 : psql SANS tuples-only
+    renvoie l'en-tête « ?column? / (0 rows) » même sur table VIDE — le check
+    doit comparer le CONTENU (« 1 » tuples-only) et prendre le chemin INSERT,
+    pas croire à une « ligne déjà présente » sur un stdout non vide."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+    state = {"selects": 0}
+
+    class FakeProc:
+        def __init__(self, code=0, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def fake_run(cmd, *a, **kw):
+        joined = " ".join(str(x) for x in cmd)
+        commands.append(joined)
+        if "SELECT 1 FROM hub_snapshots" in joined:
+            state["selects"] += 1
+            if state["selects"] == 1:
+                return FakeProc(out=_PSQL_HEADER_0ROWS)  # check : table vide
+            return FakeProc(out="1")  # vérification : ligne bien créée
+        return FakeProc()  # INSERT ok, echo pending
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    sid = pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert sid == "abc123"
+    joined = commands
+    select_cmds = [c for c in joined if "SELECT 1 FROM hub_snapshots" in c]
+    # le check passe bien par tuples-only (mécanisme qui rend stdout vide à 0 ligne)
+    assert select_cmds and all("-t -A" in c for c in select_cmds)
+    assert any("INSERT INTO hub_snapshots" in c for c in joined)  # chemin INSERT
+    assert any("pending_restore.txt" in c for c in joined)
+
+
+def test_inject_snapshot_verification_header_zero_rows_exits(tmp_path, monkeypatch):
+    """Vérification post-INSERT : en-tête « (0 rows) » = ligne TOUJOURS
+    absente → SystemExit. Avant le fix, l'en-tête rendait le stdout non vide
+    et la protection ne pouvait JAMAIS se déclencher."""
+    import subprocess as sp
+    _patch_parc(tmp_path, monkeypatch)
+    kit = _kit(tmp_path)
+    snap = kit / "snapshot_abc123.tar.zst.enc"
+    commands = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = _PSQL_HEADER_0ROWS  # tous les SELECT : en-tête + (0 rows)
+        stderr = ""
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: commands.append(a) or FakeProc())
+    with pytest.raises(SystemExit) as e:
+        pra_restore.inject_snapshot(kit, snap, None, dry_run=False)
+    assert "hub_snapshots" in str(e.value)
+    assert all("pending_restore.txt" not in " ".join(str(x) for x in c)
+               for c in commands)
 
 
 def test_wait_restore_done_when_file_gone(monkeypatch):

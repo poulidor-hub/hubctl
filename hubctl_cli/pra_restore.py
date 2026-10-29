@@ -200,7 +200,9 @@ def snapshot_id_from(filename: str) -> str:
 def _psql(sql: str, *, tty_out: bool = False,
           cwd: Path | None = None) -> subprocess.CompletedProcess:
     """docker compose exec db psql (retourne CompletedProcess). cwd par
-    défaut : HUB_DIR (même contexte que les autres commandes compose)."""
+    défaut : HUB_DIR (même contexte que les autres commandes compose).
+    tty_out : tuples-only `-t -A` — stdout vide à 0 ligne, parsable ; SANS,
+    psql émet un en-tête (« ?column? / (0 rows) ») même sur table vide."""
     cmd = ["docker", "compose", "exec", "-T", "db", "psql", "-U", "hubadmin",
            "-d", "hub_auth"]
     if tty_out:
@@ -240,8 +242,12 @@ def inject_snapshot(kit: Path, snap: Path, console, *, dry_run: bool = False) ->
     shutil.copy2(snap, dest_dir / snap.name)
 
     select = f"SELECT 1 FROM hub_snapshots WHERE snapshot_id = '{snap_id}'"
-    exists = _psql(select, cwd=hub_state.HUB_DIR)
-    if exists.returncode == 0 and exists.stdout.strip():
+    # tuples-only : stdout « 1 » = ligne présente, vide = absente. Sans `-t
+    # -A`, l'en-tête psql (« ?column? / (0 rows) », émis même sur table vide)
+    # rendait le stdout non vide → « déjà présente » à tort, jamais d'INSERT,
+    # et neutralisait aussi la vérification post-INSERT (VM 29/10/2026).
+    exists = _psql(select, tty_out=True, cwd=hub_state.HUB_DIR)
+    if exists.returncode == 0 and exists.stdout.strip() == "1":
         if console:
             console.print(f"• Ligne hub_snapshots déjà présente ({snap_id})")
     else:
@@ -253,10 +259,11 @@ def inject_snapshot(kit: Path, snap: Path, console, *, dry_run: bool = False) ->
             cwd=hub_state.HUB_DIR)
         if insert.returncode != 0:
             _report_psql_error(insert, console)
-        # Vérification post-écriture : on n'écrit JAMAIS pending_restore pour
-        # un état que le hub ne peut pas restaurer.
-        verified = _psql(select, cwd=hub_state.HUB_DIR)
-        if verified.returncode != 0 or not verified.stdout.strip():
+        # Vérification post-écriture (mêmes tuples-only + contenu) : on
+        # n'écrit JAMAIS pending_restore pour un état que le hub ne peut
+        # pas restaurer.
+        verified = _psql(select, tty_out=True, cwd=hub_state.HUB_DIR)
+        if verified.returncode != 0 or verified.stdout.strip() != "1":
             _report_psql_error(verified, console)
             raise SystemExit(
                 "❌ Impossible d'enregistrer le snapshot dans hub_snapshots — abandon "
