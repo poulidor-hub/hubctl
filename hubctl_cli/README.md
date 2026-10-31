@@ -75,7 +75,8 @@ des conteneurs via `host.docker.internal`, sans être visible du LAN
 ```
 
 Installation en service (unit : [`packaging/hubctl-atelier.service`](../packaging/hubctl-atelier.service),
-utilisateur `admin` ayant accès Docker) :
+placeholders `@REAL_USER@`/`@PARC_ROOT@` substitués à l'installation —
+l'unit livrée ne suppose plus d'utilisateur ni de chemin en dur) :
 
 ```bash
 # 1. Générer le token UNE seule fois (s'il n'existe pas déjà)
@@ -85,15 +86,19 @@ chmod 600 ~/.config/hubctl/atelier_token
 
 # 2. Rappel — le Hub lit le MÊME token depuis son dépôt (copie MANUELLE :
 #    HUB_base est un autre dépôt, rien n'est copié automatiquement)
-cp ~/.config/hubctl/atelier_token ~/MyCOMPANY/HUB_stack/POULIDOR/HUB_base/secrets/atelier_token
+cp ~/.config/hubctl/atelier_token <parc>/HUB_base/secrets/atelier_token
 
 # 3. Prérequis : le venv hubctl_cli/.venv doit exister (créé par n'importe
 #    quel lancement de ./hubctl). L'unit, en lecture seule stricte hors
 #    coffre (ReadWritePaths), ne peut pas le construire — sans lui, le
 #    service échoue en boucle.
 
-# 4. Activer le service
-sudo cp packaging/hubctl-atelier.service /etc/systemd/system/
+# 4. Rendre l'unit (substitution des placeholders) puis l'activer —
+#    fait automatiquement par `./hubctl init` ; à la main, depuis hubctl_src :
+sed -e "s|@REAL_USER@|$USER|g" \
+    -e "s|@PARC_ROOT@|$(cd .. && pwd)|g" \
+    packaging/hubctl-atelier.service > /tmp/hubctl-atelier.service
+sudo install -m 644 /tmp/hubctl-atelier.service /etc/systemd/system/hubctl-atelier.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now hubctl-atelier.service
 journalctl -u hubctl-atelier -f     # suivi ; si le token est absent,
@@ -101,13 +106,14 @@ journalctl -u hubctl-atelier -f     # suivi ; si le token est absent,
 ```
 
 L'unit durcit l'exécution (`Restart=on-failure`, `NoNewPrivileges`,
-`ProtectSystem=strict`, `PrivateTmp=true`, utilisateur `admin`) : le serveur
-n'écrit QUE dans le coffre via `POST /vault/backup` — `ReadWritePaths` ouvre
-l'écriture sur `hubctl_cli/vault` (parc.vault.enc, `.bak`, artefact dump
-DB), tout le reste du système reste en lecture seule ; il lit le token et le
-code et interroge Docker via son socket. Chemins supposés : parc à
-`~/MyCOMPANY/HUB_stack/POULIDOR` (spécificateur `%h`) — adapter l'unit
-copiée sinon.
+`ProtectSystem=strict`, `PrivateTmp=true`) : le serveur n'écrit QUE dans le
+coffre via `POST /vault/backup` — `ReadWritePaths` ouvre l'écriture sur
+`hubctl_cli/vault` (parc.vault.enc, `.bak`, artefact dump DB), tout le reste
+du système reste en lecture seule ; il lit le token et le code et interroge
+Docker via son socket. `./hubctl init` fait l'étape 4 tout seul (ensure
+idempotent : rendu + installation si absente, `enable --now` si inactive,
+rien si active) et rappelle les commandes à lancer à la main quand aucun TTY
+ne permet le sudo.
 
 > **Note** : les anciennes docs référencent les commandes `work`, `ship`,
 > `deploy`, multi-slug et `--copy-db`. **Aucune de ces commandes n'est
