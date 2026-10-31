@@ -1,3 +1,31 @@
+## [0.16.3] - 31 octobre 2026
+
+### 🐛 Fix — unit systemd hubctl-atelier rendue à l'installation
+
+- **Corrigé** : le gabarit `packaging/hubctl-atelier.service` codait en dur
+  `User=admin` et le chemin canonique `%h/MyCOMPANY/HUB_stack/POULIDOR` — sur
+  tout hôte où le parc n'appartient pas à « admin », l'unit copiée telle quelle
+  (install.sh, `hubctl init`) ne pouvait pas démarrer (utilisateur inexistant)
+  et le menu Coffre du Hub restait en « service injoignable ». Le gabarit porte
+  désormais les placeholders `@REAL_USER@`/`@PARC_ROOT@`, substitués à
+  l'installation : `_ensure_atelier_service` écrit un rendu persistant dans
+  `packaging/.rendered/` (gitigné) puis l'installe — les commandes de repli
+  manuel sans TTY référencent un chemin qui existe toujours ; `install.sh` du
+  méta fait la même substitution côté shell (merge méta contemporain).
+  Ensure inchangé : absente → rendu+install, inactive → `enable --now`,
+  active → rien ; dry-run sans écriture ; étape jamais fatale (repli gabarit
+  brut si le rendu échoue).
+- **Docs** : README « Serveur hôte (atelier --serve) » réécrit — rendu des
+  placeholders + ensure via `./hubctl init`, plus aucune supposition
+  d'utilisateur ni de chemin.
+- **Tests** : `test_atelier_init.py` porté à 13 cas — rendu réellement
+  substitué (user + PARC_ROOT, zéro placeholder restant), repli gabarit brut
+  si rendu KO (jamais fatal), dry-run zéro écriture, fichier rendu présent
+  pour le rappel manuel sans TTY, et garde-fou anti-régression sur le gabarit
+  livré (`User=admin` et `%h/MyCOMPANY` interdits).
+
+---
+
 ## [0.16.2] - 29 octobre 2026
 
 ### 🐛 Fix — réplication PRA : le « dernier snapshot » est désigné par la DB
