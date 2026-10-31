@@ -1,12 +1,17 @@
 # hubctl-atelier.service — service système du mini-serveur atelier de hubctl.
 #
+# GABARIT : les valeurs entre arobases (utilisateur, chemin du parc) sont des
+# placeholders substitués à l'installation (install.sh ou `hubctl init`, fichier
+# rendu dans packaging/.rendered/) — ne PAS copier ce fichier tel quel dans
+# /etc/systemd/system : unit non démarrable (utilisateur/chemins absents).
+#
 # (`hubctl atelier --serve` : HTTP piloté par le Hub via GET /health,
 #  GET /atelier/list, POST /atelier/close-all, GET /vault/status,
 #  POST /vault/backup. Bind 172.17.0.1, cf. ExecStart :
 #  joignable des conteneurs via host.docker.internal, invisible du LAN ;
 #  l'auth X-Atelier-Token reste le vrai garde-fou d'exposition.)
 #
-# Installation et activation (token, copie vers HUB_base/secrets, systemctl) :
+# Installation et activation (token, rendu, systemctl) :
 # voir hubctl_cli/README.md, section « Serveur hôte (atelier --serve) ».
 #
 # Le serveur n'écrit QUE dans le coffre, via POST /vault/backup (parc.vault.enc
@@ -25,17 +30,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=admin
-# Chemin canonique du parc (%h = home de User) ; le launcher ./hubctl résout
-# lui-même les symlinks et source $PARC_ROOT/.secrets. Adapter si le parc
-# n'est pas à ~/MyCOMPANY/HUB_stack/POULIDOR.
-WorkingDirectory=%h/MyCOMPANY/HUB_stack/POULIDOR
+# Utilisateur du parc (owner du token ~/.config/hubctl/atelier_token) et
+# chemin réel du parc : substitués à l'installation — voir en-tête.
+User=@REAL_USER@
+WorkingDirectory=@PARC_ROOT@
 # --host 172.17.0.1 = passerelle docker0 : le conteneur hub-api joint le
 # serveur via host.docker.internal (résout vers la passerelle) ; or 503
 # systématique sur /atelier/close-all avec le bind 127.0.0.1 par défaut.
 # 172.17.0.1 n'est pas routé depuis le LAN → pas d'exposition réseau ; le
 # token X-Atelier-Token reste le vrai garde-fou.
-ExecStart=%h/MyCOMPANY/HUB_stack/POULIDOR/hubctl atelier --serve --host 172.17.0.1
+ExecStart=@PARC_ROOT@/hubctl atelier --serve --host 172.17.0.1
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5s
@@ -45,7 +49,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 # POST /vault/backup est la SEULE écriture du serveur (parc.vault.enc + .bak
 # + artefact dump DB) : ouverture d'écriture restreinte au coffre.
-ReadWritePaths=%h/MyCOMPANY/HUB_stack/POULIDOR/hubctl_src/hubctl_cli/vault
+ReadWritePaths=@PARC_ROOT@/hubctl_src/hubctl_cli/vault
 PrivateTmp=true
 
 # ── Durcissement complémentaire — validé en exécution réelle (serveur +

@@ -445,6 +445,40 @@ def _install_shell_marker(console) -> None:
 
 
 _ATELIER_UNIT = Path("/etc/systemd/system/hubctl-atelier.service")
+# Gabarit (placeholders @REAL_USER@/@PARC_ROOT@) et fichier RENDU persistant
+# (substitution faite à l'installation, cf. _render_atelier_unit) — le rendu
+# vit dans le dépôt (gitigné) pour que les commandes de repli manuel
+# référencent un chemin qui existe toujours.
+_PACKAGING_DIR = Path(__file__).resolve().parent.parent / "packaging"
+_ATELIER_UNIT_GABARIT = _PACKAGING_DIR / "hubctl-atelier.service"
+_ATELIER_UNIT_RENDERED = _PACKAGING_DIR / ".rendered" / "hubctl-atelier.service"
+
+
+def _atelier_user() -> str:
+    """Utilisateur sous lequel le service tournera (= celui du token hôte)."""
+    import getpass
+    return getpass.getuser()
+
+
+def _render_atelier_unit(con) -> Path | None:
+    """Rend l'unit : substitue @REAL_USER@/@PARC_ROOT@ dans le gabarit.
+
+    Le gabarit ne porte aucun utilisateur ni chemin en dur (hôtes variés) ;
+    la substitution se fait à l'installation et écrit un fichier rendu
+    persistant (packaging/.rendered/, gitigné). Retourne le chemin rendu,
+    None si KO (l'appelant replie sur le gabarit brut — jamais fatal).
+    """
+    try:
+        text = _ATELIER_UNIT_GABARIT.read_text(encoding="utf-8")
+        text = (text.replace("@REAL_USER@", _atelier_user())
+                    .replace("@PARC_ROOT@", str(hub_state.PARC_ROOT.resolve())))
+        _ATELIER_UNIT_RENDERED.parent.mkdir(parents=True, exist_ok=True)
+        _ATELIER_UNIT_RENDERED.write_text(text, encoding="utf-8")
+        return _ATELIER_UNIT_RENDERED
+    except Exception as e:
+        con.print(f"[yellow]⚠ Rendu de l'unit impossible ({e}) — gabarit "
+                  f"brut en repli (placeholders non substitués)[/yellow]")
+        return None
 
 
 def _ensure_atelier_service(console, dry_run: bool = False) -> None:
@@ -453,8 +487,9 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     1. Token hôte ~/.config/hubctl/atelier_token — généré (secrets.token_hex,
        chmod 600) s'il est absent ou vide, JAMAIS écrasé sinon ;
     2. Copié vers HUB_base/secrets/atelier_token (créé seulement s'il manque) ;
-    3. Unit systemd packaging/hubctl-atelier.service installée (sudo) si
-       absente, service activé (`enable --now`) si inactif, rien si actif.
+    3. Unit systemd packaging/hubctl-atelier.service RENDUE (substitution
+       @REAL_USER@/@PARC_ROOT@ → packaging/.rendered/) puis installée (sudo)
+       si absente, service activé (`enable --now`) si inactif, rien si actif.
 
     N'échoue JAMAIS : sans TTY (prompt sudo impossible) ou en cas d'échec
     sudo, les commandes sont rappelées à la main — l'init ne doit pas casser
@@ -513,8 +548,7 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     except OSError as e:
         con.print(f"[yellow]⚠ Token Hub ({hub_token}) : {e}[/yellow]")
 
-    # ── 3. Unit systemd : installer / activer / rien ──
-    gabarit = Path(__file__).resolve().parent.parent / "packaging" / "hubctl-atelier.service"
+    # ── 3. Unit systemd : rendre (substitution), installer / activer / rien ──
     if _ATELIER_UNIT.exists():
         try:
             st = subprocess.run(
@@ -527,8 +561,11 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
             return
         cmds = [["sudo", "systemctl", "enable", "--now", "hubctl-atelier"]]
     else:
+        # dry-run : aucune écriture → pas de rendu, aperçu sur le gabarit brut
+        cp_src = (_ATELIER_UNIT_GABARIT if dry_run
+                  else (_render_atelier_unit(con) or _ATELIER_UNIT_GABARIT))
         cmds = [
-            ["sudo", "cp", str(gabarit), str(_ATELIER_UNIT)],
+            ["sudo", "cp", str(cp_src), str(_ATELIER_UNIT)],
             ["sudo", "systemctl", "daemon-reload"],
             ["sudo", "systemctl", "enable", "--now", "hubctl-atelier"],
         ]
