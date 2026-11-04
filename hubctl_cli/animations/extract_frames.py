@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Extract frames from introHUB.tsx → hub_ascii.frames.gz as raw grids + color data."""
 import gzip
 import json

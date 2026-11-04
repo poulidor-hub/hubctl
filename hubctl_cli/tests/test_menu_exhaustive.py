@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Test des fonctions preservées du nouveau menu direct 5 touches."""
 import sys
 from unittest import mock

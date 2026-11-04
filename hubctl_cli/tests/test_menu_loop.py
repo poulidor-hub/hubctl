@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests de la nouvelle boucle principale a 6 touches (prod/dev separation)."""
 import sys
 from unittest import mock

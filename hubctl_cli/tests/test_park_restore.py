@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests park-restore : restauration de l'arborescence secrets sans écrasement.
 
 Couvre la cohérence du round-trip export -> restore pour l'arbre HUB_base/secrets/

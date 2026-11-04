@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Config de l'emplacement PRA secondaire (kit hors disque serveur).
 
 Le fichier pra_location.json vit dans hubctl_cli/vault/ (gitignoré), aux

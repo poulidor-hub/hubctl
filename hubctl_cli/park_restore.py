@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """
 Park Restore — restauration d'une archive park-export sur un Hub VIDE.
 Ne fonctionne QUE si le Hub n'est pas initialisé (pas de données en DB).

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests Task 4 (plan unification updates) : mode dev sur update + ordre all.
 
 - Le mode courant (hub_state._mode : dev/prod) choisit la cible make

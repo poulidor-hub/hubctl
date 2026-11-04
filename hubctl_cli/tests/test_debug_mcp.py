@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests du garde-fou SQL en lecture seule du debug_agent.
 
 Couvre la faille RCE via `psql -c` qui exécute plusieurs statements séparés

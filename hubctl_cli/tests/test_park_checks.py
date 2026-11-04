@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests de park_checks — vérifications git partagées (plan unification updates, Task 1).
 
 Chaque scénario monte de vrais dépôts git jetables dans tmp_path : un « méta »

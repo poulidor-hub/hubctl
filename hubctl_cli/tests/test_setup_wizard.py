@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests setup_wizard — réécriture OIDC_ISSUER au changement de port API."""
 
 from hubctl_cli import setup_wizard

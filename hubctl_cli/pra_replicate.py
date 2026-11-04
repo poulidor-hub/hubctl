@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Réplication du kit PRA (coffre + dernier snapshot) vers l'emplacement secondaire.
 
 Couche AU-DESSUS du coffre existant : le disque reste la source de vérité,

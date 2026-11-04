@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests unitaires des helpers socle (sans Docker)."""
 from pathlib import Path
 from hubctl_cli.socle import collect_app_socle_versions, socle_version

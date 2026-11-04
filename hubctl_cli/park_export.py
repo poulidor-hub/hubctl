@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """
 Park Export — sauvegarde complète du parc POULIDOR.
 Produit une archive tar.gz contenant : DB dumps, .env, secrets Hub, manifeste.

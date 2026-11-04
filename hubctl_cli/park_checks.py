@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Vérifications git partagées du parc (plan « unification des mises à jour »).
 
 Consommé par les pré-checks de ``hubctl update`` et par ``hubctl doctor``.

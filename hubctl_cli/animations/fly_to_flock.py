@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Animation : un oiseau s'envole et rejoint son flock, puis « HUB » apparaît."""
 import time
 from rich.align import Align

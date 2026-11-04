@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Serveur MCP debug dedie pour POULIDOR.
 
 Execute des commandes docker/psql/file directement sur l'hote via subprocess.
