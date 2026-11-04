@@ -88,3 +88,12 @@ def test_doctor_passes_apps_to_run_checks(monkeypatch):
     actions.action_doctor(console=con, parc_root=Path("/tmp/fake"),
                           apps=["exemple-app", "exemple-app"])
     assert seen["apps"] == ["exemple-app", "exemple-app"]
+
+
+def test_doctor_wired_in_cli_main():
+    """Régression : `hubctl doctor` levait `NameError: action_doctor is not
+    defined` — la fonction existait dans actions.py mais n'était pas importée
+    dans __main__.py. Les tests unitaires de l'action ne couvrent pas ce
+    câblage CLI : on le vérifie explicitement."""
+    from hubctl_cli import __main__ as cli_main
+    assert callable(getattr(cli_main, "action_doctor", None))

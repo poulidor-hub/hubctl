@@ -10,7 +10,7 @@ from hubctl_cli import actions, animation, atelier_serve, menu
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all, action_update,
     action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
-    action_seed_export,
+    action_seed_export, action_doctor,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
