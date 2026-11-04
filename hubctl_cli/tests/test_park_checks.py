@@ -40,6 +40,101 @@ def _branch_exists(repo: Path, name: str) -> bool:
     return bool(r.stdout.strip())
 
 
+# ── Timeout configurable & fetch non-interactif (retours lien lent) ─────────
+
+
+def _spy_run(captured_key: str, monkeypatch, store: dict) -> None:
+    real_run = park_checks.subprocess.run
+
+    def spy(args, **kwargs):
+        store[captured_key] = kwargs.get(captured_key)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(park_checks.subprocess, "run", spy)
+
+
+def test_run_timeout_default_120(monkeypatch, tmp_path):
+    """Sans HUBCTL_GIT_TIMEOUT, le défaut est 120 s (et non plus 30 s : lien lent)."""
+    repo = _init_repo(tmp_path / "r")
+    monkeypatch.delenv("HUBCTL_GIT_TIMEOUT", raising=False)
+    store: dict = {}
+    _spy_run("timeout", monkeypatch, store)
+    park_checks._run("git", "rev-parse", "HEAD", cwd=repo)
+    assert store["timeout"] == 120
+
+
+def test_run_timeout_env_override(monkeypatch, tmp_path):
+    repo = _init_repo(tmp_path / "r")
+    monkeypatch.setenv("HUBCTL_GIT_TIMEOUT", "300")
+    store: dict = {}
+    _spy_run("timeout", monkeypatch, store)
+    park_checks._run("git", "rev-parse", "HEAD", cwd=repo)
+    assert store["timeout"] == 300
+
+
+def test_run_timeout_env_invalide_retombe_sur_defaut(monkeypatch, tmp_path):
+    repo = _init_repo(tmp_path / "r")
+    monkeypatch.setenv("HUBCTL_GIT_TIMEOUT", "pas-un-nombre")
+    store: dict = {}
+    _spy_run("timeout", monkeypatch, store)
+    park_checks._run("git", "rev-parse", "HEAD", cwd=repo)
+    assert store["timeout"] == 120
+
+
+def test_run_catches_timeout(monkeypatch, tmp_path):
+    """TimeoutExpired → échec explicite (124 + stderr actionnable), jamais crash."""
+    repo = _init_repo(tmp_path / "r")
+
+    def slow(args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(park_checks.subprocess, "run", slow)
+    rc, out, err = park_checks._run("git", "fetch", "--prune", "origin", cwd=repo)
+    assert rc != 0
+    assert "HUBCTL_GIT_TIMEOUT" in err
+
+
+def test_run_non_interactif(monkeypatch, tmp_path):
+    """GIT_TERMINAL_PROMPT=0 : jamais d'attente de saisie d'identifiants HTTPS."""
+    repo = _init_repo(tmp_path / "r")
+    store: dict = {}
+    _spy_run("env", monkeypatch, store)
+    park_checks._run("git", "fetch", "--prune", "origin", cwd=repo)
+    assert (store["env"] or {}).get("GIT_TERMINAL_PROMPT") == "0"
+
+
+def test_check_hub_base_timeout_donner_finding(monkeypatch, tmp_path):
+    """Fetch en timeout → Finding 'hub_base.fetch', pas d'exception brute."""
+    meta, _hub_sub, _hub_origin = _make_meta_with_submodule(tmp_path)
+
+    def slow(args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(park_checks.subprocess, "run", slow)
+    findings = park_checks.check_hub_base(meta)
+    f = [x for x in findings if x.check == "hub_base.fetch"]
+    assert f and f[0].ok is False
+    assert "délai" in f[0].detail
+
+
+def test_check_hub_base_https_sans_credentials_remedy(monkeypatch, tmp_path):
+    """Remote HTTPS sans identifiants : remède explicite (SSH / credential helper)."""
+    meta, _hub_sub, _hub_origin = _make_meta_with_submodule(tmp_path)
+
+    def denied(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 128, "",
+            "fatal: could not read Username for 'https://github.com': "
+            "terminal prompts disabled")
+
+    monkeypatch.setattr(park_checks.subprocess, "run", denied)
+    findings = park_checks.check_hub_base(meta)
+    f = [x for x in findings if x.check == "hub_base.fetch"]
+    assert f and f[0].ok is False
+    assert f[0].remedy, "un remède doit être proposé"
+    assert "set-url" in f[0].remedy or "credential helper" in f[0].remedy
+
+
 def _make_meta_with_submodule(tmp_path: Path) -> tuple[Path, Path, Path]:
     """origin_hub + origin_meta + clone méta avec HUB_base en submodule aligné.
 

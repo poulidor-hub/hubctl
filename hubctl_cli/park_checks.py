@@ -19,9 +19,26 @@ Conventions :
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+# Défaut du timeout des commandes git réseau (fetch). Le défaut historique de
+# 30 s tuait les fetch à froid sur liens lents (retour serveur :
+# `Command ['git', 'fetch', '--prune', 'origin'] timed out after 30 seconds`).
+# Surchargeable par installation via HUBCTL_GIT_TIMEOUT (secondes).
+GIT_TIMEOUT_DEFAULT = 120
+
+
+def _git_timeout() -> int:
+    """Timeout (secondes) des commandes git — HUBCTL_GIT_TIMEOUT, défaut 120."""
+    raw = (os.environ.get("HUBCTL_GIT_TIMEOUT") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return GIT_TIMEOUT_DEFAULT
+    return value if value > 0 else GIT_TIMEOUT_DEFAULT
 
 
 @dataclass
@@ -34,10 +51,31 @@ class Finding:
     remedy: str | None = None
 
 
-def _run(*args: str, cwd: Path | None = None, timeout: int = 30) -> tuple[int, str, str]:
-    """Sous-processus git générique → (returncode, stdout, stderr)."""
-    r = subprocess.run(list(args), cwd=cwd, capture_output=True,
-                       text=True, timeout=timeout)
+def _run(*args: str, cwd: Path | None = None, timeout: int | None = None) -> tuple[int, str, str]:
+    """Sous-processus git générique → (returncode, stdout, stderr).
+
+    * ``timeout`` : secondes ; ``None`` → :func:`_git_timeout` (défaut 120).
+    * **Non interactif** (``GIT_TERMINAL_PROMPT=0``, ``GIT_ASKPASS=echo``) :
+      un remote HTTPS sans credential helper échoue immédiatement et de façon
+      explicite au lieu d'attendre une saisie jusqu'au timeout (les serveurs
+      headless n'ont personne au clavier).
+    * Un dépassement de délai est converti en échec (rc 124, stderr
+      actionnable) : ``doctor`` et les pré-checks d'``update`` ne plantent
+      plus sur réseau lent.
+    """
+    if timeout is None:
+        timeout = _git_timeout()
+    env = os.environ.copy()
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    env.setdefault("GIT_ASKPASS", "echo")
+    try:
+        r = subprocess.run(list(args), cwd=cwd, capture_output=True,
+                           text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return 124, "", (
+            f"délai dépassé ({timeout} s) — réseau lent ou remote injoignable ; "
+            "réessayez, ou augmentez HUBCTL_GIT_TIMEOUT (secondes)"
+        )
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
@@ -45,6 +83,23 @@ def _git_out(*args: str, cwd: Path) -> str | None:
     """stdout d'une commande git, ou None si elle échoue."""
     rc, out, _ = _run(*args, cwd=cwd)
     return out if rc == 0 else None
+
+
+def _fetch_failure_remedy(repo: Path, ferr: str) -> str | None:
+    """Remède ciblé quand le fetch échoue sur une authentification HTTPS.
+
+    Cas réel (serveur client) : remote ``origin`` en ``https://`` sans
+    credential helper — git attend une saisie au clavier qu'un serveur
+    headless ne peut pas fournir. On oriente vers SSH ou un helper.
+    """
+    low = ferr.lower()
+    if ("terminal prompts" in low or "could not read username" in low
+            or "authentication failed" in low):
+        return (f"remote 'origin' en HTTPS sans identifiants : passez-le en SSH "
+                f"(git -C {repo} remote set-url origin "
+                f"git@github.com:<org>/<repo>.git) ou configurez un "
+                f"credential helper HTTPS")
+    return None
 
 
 def _current_branch(repo: Path) -> str | None:
@@ -155,7 +210,7 @@ def check_hub_base(parc_root: Path) -> list[Finding]:
             ok=False,
             detail="fetch origin impossible : "
                    + (ferr.splitlines()[-1] if ferr else "erreur réseau"),
-            remedy=None,
+            remedy=_fetch_failure_remedy(hub, ferr),
         ))
         return findings
 
@@ -223,7 +278,7 @@ def check_app_repo(app_path: Path) -> Finding:
         return Finding(check=f"app.{name}", ok=False,
                        detail="fetch origin impossible : "
                               + (ferr.splitlines()[-1] if ferr else "erreur réseau"),
-                       remedy=None)
+                       remedy=_fetch_failure_remedy(app_path, ferr))
 
     dirty = _dirty_tracked(app_path)
     if dirty:
