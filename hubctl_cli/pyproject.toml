@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+#
+# Métadonnées d'installation. L'usage nominal reste le launcher ./hubctl
+# (venv auto-géré, dépendances via requirements.txt) : ce fichier sert
+# surtout à `pip install -e hubctl_cli[dev]` pour lancer les tests
+# (`pytest hubctl_cli/tests -q`, cf. README).
+#
+# Particularité : le paquet importable `hubctl_cli` EST le répertoire projet,
+# d'où le package-dir pointant vers le parent.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hubctl-cli"
+version = "0.16.6"  # garder synchronisé avec ../VERSION (procédure de release)
+description = "Hubctl — pilotage du parc POULIDOR (TUI + CLI : update, ateliers, coffre, PRA)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "rich>=13.0,<16",
+    "cryptography>=42.0,<50",
+    "mcp>=1.0",
+    "pyyaml>=6.0,<7.0",
+]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3)",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[tool.setuptools]
+# Le paquet est le répertoire lui-même : mapping vers le parent (hubctl_src),
+# discovery explicite (l'auto-discovery flat-layout échouerait ici).
+packages = ["hubctl_cli", "hubctl_cli.animations", "hubctl_cli.debug_agent", "hubctl_cli.tests"]
+
+[tool.setuptools.package-dir]
+"" = ".."

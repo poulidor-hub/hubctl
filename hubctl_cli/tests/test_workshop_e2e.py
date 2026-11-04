@@ -45,7 +45,7 @@ class TestWsProject:
         assert _ws_project("canari") == "canari-ws"
 
     def test_slug_with_dash(self):
-        assert _ws_project("exemple-app") == "exemple-app-ws"
+        assert _ws_project("app-exemple") == "app-exemple-ws"
 
     def test_slug_with_uppercase(self):
         # hubctl 0.7.2 : le nom de projet compose est entièrement slugifié
@@ -62,7 +62,7 @@ class TestWsEnvPath:
 
     def test_different_slugs_give_different_paths(self):
         p1 = _ws_env_path("canari")
-        p2 = _ws_env_path("exemple-app")
+        p2 = _ws_env_path("app-exemple")
         assert p1 != p2
 
 
@@ -174,7 +174,7 @@ class TestWsUsedPorts:
         assert _ws_used_ports() == set()
 
     def test_collects_ports_from_existing_workshops(self, tmp_path, monkeypatch):
-        for slug, api, fe in [("canari", "10000", "5200"), ("exemple-app", "10001", "5202")]:
+        for slug, api, fe in [("canari", "10000", "5200"), ("app-exemple", "10001", "5202")]:
             d = tmp_path / slug
             d.mkdir()
             (d / ".workshop.env").write_text(
@@ -185,7 +185,7 @@ class TestWsUsedPorts:
         # get_apps() doit lister les apps
         monkeypatch.setattr(hub_state, "get_apps", lambda: [
             type("A", (), {"name": "canari"})(),
-            type("A", (), {"name": "exemple-app"})(),
+            type("A", (), {"name": "app-exemple"})(),
         ])
 
         used = _ws_used_ports()
@@ -1100,10 +1100,10 @@ class TestResolveRunningDbVolume:
 
     def test_variant_datadir_versionne(self):
         # postgres:18 : PGDATA inclut la version (/var/lib/postgresql/18/docker)
-        out = "volume|exemple_pgdata|/var/lib/postgresql/18/docker\n"
+        out = "volume|appexemple_pgdata|/var/lib/postgresql/18/docker\n"
         fake = subprocess.CompletedProcess([], 0, stdout=out, stderr="")
         with patch.object(actions_mod.subprocess, "run", return_value=fake):
-            assert actions_mod._resolve_running_db_volume("exemple-app-postgres") == "exemple_pgdata"
+            assert actions_mod._resolve_running_db_volume("app-exemple-postgres") == "appexemple_pgdata"
 
     def test_conteneur_absent_retourne_none(self):
         fake = subprocess.CompletedProcess([], 1, stdout="", stderr="No such object")

@@ -173,10 +173,13 @@ dans le dépôt mais ne sont plus joués au démarrage.
 
 ## Tests
 
+Depuis la racine du dépôt, après un clone frais (venv dédié, l'extra `dev`
+apporte pytest) :
+
 ```bash
-cd hubctl_src
-hubctl_cli/.venv/bin/pip install pytest
-hubctl_cli/.venv/bin/python -m pytest hubctl_cli/tests/ -v
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e hubctl_cli[dev]
+pytest hubctl_cli/tests -q
 ```
 
 ## PRA — Kit de secours et restauration
@@ -215,3 +218,7 @@ commandes du processus : passer les choix en fanions et variables d'env
 # interactif : ./hubctl pra-restore
 ADMIN_PASSWORD=… ./hubctl pra-restore ~/kit --yes --force --apps all
 ```
+
+---
+
+Distribué sous licence [AGPL-3.0](../LICENSE) (GNU Affero General Public License v3).

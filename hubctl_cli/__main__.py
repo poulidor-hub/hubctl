@@ -240,10 +240,10 @@ def _print_update_usage(console) -> None:
     """`hubctl update` sans cible : affiche l'usage, n'exécute rien."""
     console.print("[yellow]hubctl update requiert au moins une cible — rien n'a été exécuté.[/yellow]")
     console.print("[bold]Usage :[/bold]")
-    console.print("  hubctl update hub          # Hub seul")
-    console.print("  hubctl update exemple-app       # une app (slug)")
-    console.print("  hubctl update hub exemple-app   # plusieurs cibles")
-    console.print('  hubctl update "*"          # Hub + toutes les apps (alias : all)')
+    console.print("  hubctl update hub             # Hub seul")
+    console.print("  hubctl update app-exemple     # une app (slug)")
+    console.print("  hubctl update hub app-exemple # plusieurs cibles")
+    console.print('  hubctl update "*"             # Hub + toutes les apps (alias : all)')
 
 
 def _poll_quit() -> bool:

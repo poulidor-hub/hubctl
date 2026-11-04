@@ -235,8 +235,8 @@ def get_workshop_apps() -> list[AppInfo]:
 def _norm(s: str) -> str:
     """Normalise un nom pour la correspondance app↔conteneur, comme Compose v2 :
     minuscules + tout caractère non alphanumérique remplacé par '-'.
-    L'ancienne version supprimait les séparateurs → collisions (ex. 'exemple-app' et
-    'exemple' donnaient 'exemple' → faux statut app)."""
+    L'ancienne version supprimait les séparateurs → collisions (ex.
+    'app-exemple' et 'appexemple' donnaient 'appexemple' → faux statut app)."""
     return re.sub(r"[^a-z0-9]+", "-", (s or "").lower())
 
 

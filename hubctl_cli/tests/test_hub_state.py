@@ -172,14 +172,14 @@ def test_auto_detect_mode_prod_when_apps_empty(tmp_path, monkeypatch):
 
 
 def test_norm_distinguishes_separator_vs_concatenated():
-    """_norm doit distinguer 'exemple-app' de 'exemple'. L'ancienne version supprimait
-    les séparateurs → collision (faux statut app). Compose v2 remplace les
-    séparateurs par '-', on fait pareil."""
-    assert hub_state._norm("exemple-app") != hub_state._norm("exemple")
+    """_norm doit distinguer 'app-exemple' de 'appexemple'. L'ancienne version
+    supprimait les séparateurs → collision (faux statut app). Compose v2
+    remplace les séparateurs par '-', on fait pareil."""
+    assert hub_state._norm("app-exemple") != hub_state._norm("appexemple")
 
 
 def test_norm_case_insensitive_and_stable():
-    assert hub_state._norm("exemple-app") == hub_state._norm("exemple-app")
+    assert hub_state._norm("App-EXEMPLE") == hub_state._norm("app-exemple")
     assert hub_state._norm("MyApp") == hub_state._norm("myapp")
 
 

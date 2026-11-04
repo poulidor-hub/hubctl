@@ -23,9 +23,9 @@ def test_hub_make_builds_make_command():
 
 def test_app_make_targets_app_dir():
     with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
-        actions.app_make("exemple-apps", "logs", dry_run=True)
+        actions.app_make("suivi-exemple", "logs", dry_run=True)
     args = rs.call_args.args[0]
-    assert str(actions.hub_state.APPS_DIR / "exemple-apps") in args
+    assert str(actions.hub_state.APPS_DIR / "suivi-exemple") in args
     assert args[-1] == "logs"
 
 
@@ -50,8 +50,8 @@ def test_disk_guard_ok_when_plenty():
 
 
 def test_repo_name_from_url():
-    assert actions.repo_name_from_url("git@github.com:Poutchouli/exemple-app-2.git") == "exemple-app-2"
-    assert actions.repo_name_from_url("https://github.com/Poutchouli/exemple-app-2.git") == "exemple-app-2"
+    assert actions.repo_name_from_url("git@github.com:exemple/APP_EXEMPLE.git") == "APP_EXEMPLE"
+    assert actions.repo_name_from_url("https://github.com/exemple/APP_EXEMPLE.git") == "APP_EXEMPLE"
     assert actions.repo_name_from_url("git@github.com:Org/my-app") == "my-app"
     assert actions.repo_name_from_url("") is None
     assert actions.repo_name_from_url("nom avec espaces/") is None
@@ -248,7 +248,7 @@ def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
     """Seuls les projets -test correspondant au hub ou à une app réelle sont nettoyés.
     Les projets -test étrangers (load-test, integration-test) doivent être préservés."""
     projects = [
-        {"Name": "exemple-apps-test"},   # hubctl-owned (app réelle)
+        {"Name": "suivi-exemple-test"},   # hubctl-owned (app réelle)
         {"Name": "hub-test"},              # hubctl-owned (hub)
         {"Name": "load-test"},             # ÉTRANGER — ne doit PAS être nettoyé
         {"Name": "integration-test"},      # ÉTRANGER — ne doit PAS être nettoyé
@@ -269,15 +269,15 @@ def test_cleanup_orphan_tests_only_targets_hubctl_projects(monkeypatch):
 
     monkeypatch.setattr(actions.subprocess, "run", _FakeRun())
 
-    # Simuler get_apps : une seule app "exemple-apps"
+    # Simuler get_apps : une seule app "suivi-exemple"
     fake_app = mock.Mock()
-    fake_app.name = "exemple-apps"
+    fake_app.name = "suivi-exemple"
     monkeypatch.setattr(actions.hub_state, "get_apps", lambda: [fake_app])
     monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [])
 
     actions.cleanup_orphan_tests()
 
-    assert "exemple-apps-test" in cleaned, "L'app hubctl doit être nettoyée"
+    assert "suivi-exemple-test" in cleaned, "L'app hubctl doit être nettoyée"
     assert "hub-test" in cleaned, "Le hub-test doit être nettoyé"
     assert "load-test" not in cleaned, "Le projet étranger load-test ne doit PAS être nettoyé"
     assert "integration-test" not in cleaned, "Le projet étranger integration-test ne doit PAS être nettoyé"
@@ -299,41 +299,41 @@ def _apps(*names):
 
 def test_resolve_update_targets_joker_selectionne_tout(monkeypatch):
     monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: _apps("exemple-app", "exemple-apps"))
+                        lambda: _apps("app-exemple", "suivi-exemple"))
     resolved, all_requested = actions._resolve_update_targets(["*"])
-    assert resolved == ["hub", "exemple-app", "exemple-apps"]
+    assert resolved == ["hub", "app-exemple", "suivi-exemple"]
     assert all_requested is True
 
 
 def test_resolve_update_targets_alias_all(monkeypatch):
-    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("app-exemple"))
     resolved, all_requested = actions._resolve_update_targets(["all"])
-    assert resolved == ["hub", "exemple-app"]
+    assert resolved == ["hub", "app-exemple"]
     assert all_requested is True
 
 
 def test_resolve_update_targets_melange_joker_et_cible(monkeypatch):
-    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("app-exemple"))
     resolved, all_requested = actions._resolve_update_targets(["hub", "*"])
-    assert resolved == ["hub", "exemple-app"]
+    assert resolved == ["hub", "app-exemple"]
     assert all_requested is True
 
 
 def test_resolve_update_targets_slug_et_hub_deduplique(monkeypatch):
     monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: _apps("exemple-app", "exemple-apps"))
-    resolved, all_requested = actions._resolve_update_targets(["exemple-app", "hub", "exemple-app"])
-    assert resolved == ["exemple-app", "hub"]
+                        lambda: _apps("app-exemple", "suivi-exemple"))
+    resolved, all_requested = actions._resolve_update_targets(["app-exemple", "hub", "app-exemple"])
+    assert resolved == ["app-exemple", "hub"]
     assert all_requested is False
 
 
 def test_resolve_update_targets_inconnue_leve_erreur(monkeypatch):
-    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("app-exemple"))
     with pytest.raises(ValueError) as ei:
         actions._resolve_update_targets(["nope"])
     msg = str(ei.value)
     assert "nope" in msg
-    assert "hub" in msg and "exemple-app" in msg  # cibles valides listées
+    assert "hub" in msg and "app-exemple" in msg  # cibles valides listées
     assert '"*"' in msg  # astuce guillemets pour éviter l'expansion du glob
 
 
@@ -355,14 +355,14 @@ def test_action_update_compte_les_echecs(monkeypatch):
 def test_action_update_joker_passe_par_le_mem_chemin(monkeypatch):
     """`update *` conserve le comportement « tout » de l'ancien update."""
     seen = []
-    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("exemple-app"))
+    monkeypatch.setattr(actions.hub_state, "get_active_apps", lambda: _apps("app-exemple"))
     monkeypatch.setattr(actions, "disk_guard", lambda con=None: True)
     monkeypatch.setattr(actions, "_ensure_jwt_keys", lambda *a, **k: None)
     monkeypatch.setattr(actions, "_update_target",
                         lambda con, name, *, dry_run: seen.append(name) or True)
     rc = actions.action_update(console=mock.MagicMock(), targets=["*"])
     assert rc == 0
-    assert seen == ["hub", "exemple-app"]
+    assert seen == ["hub", "app-exemple"]
 
 
 def test_action_update_all_menu_delegue(monkeypatch):
@@ -1166,12 +1166,12 @@ def test_load_seed_file_valid_apps(tmp_path):
     from pathlib import Path
     p = tmp_path / "seed.yaml"
     p.write_text(_yaml.dump({"apps": [
-        "git@github.com:Poutchouli/exemple-app-2.git",
+        "git@github.com:exemple/APP_EXEMPLE.git",
         "git@github.com:POULIDOR-Audit-Developpement/exemple-app.git",
     ]}))
     result = actions._load_seed_file(Path(p))
     assert result == [
-        ("git@github.com:Poutchouli/exemple-app-2.git", "exemple-app"),
+        ("git@github.com:exemple/APP_EXEMPLE.git", "app-exemple"),
         ("git@github.com:POULIDOR-Audit-Developpement/exemple-app.git", "exemple-app"),
     ]
 
@@ -1179,9 +1179,9 @@ def test_load_seed_file_valid_apps(tmp_path):
 def test_load_seed_file_slug_normalization(tmp_path):
     from pathlib import Path
     p = tmp_path / "seed.yaml"
-    p.write_text(_yaml.dump({"apps": ["git@github.com:Poutchouli/exemple-app-2.git"]}))
+    p.write_text(_yaml.dump({"apps": ["git@github.com:exemple/APP_EXEMPLE.git"]}))
     result = actions._load_seed_file(Path(p))
-    assert result[0][1] == "exemple-app"  # underscore → tiret, minuscules
+    assert result[0][1] == "app-exemple"  # underscore → tiret, minuscules
 
 
 def test_load_seed_file_missing_file(tmp_path):
@@ -1212,8 +1212,8 @@ def test_load_seed_file_duplicate_slug(tmp_path):
     import pytest
     p = tmp_path / "seed.yaml"
     p.write_text(_yaml.dump({"apps": [
-        "git@github.com:Poutchouli/exemple-app-2.git",
-        "git@github.com:Someone/exemple-app.git",
+        "git@github.com:exemple/APP_EXEMPLE.git",
+        "git@github.com:Someone/app-exemple.git",
     ]}))
     with pytest.raises(ValueError, match="dupliqué"):
         actions._load_seed_file(Path(p))
@@ -1342,33 +1342,33 @@ def _make_app_info(name):
 def test_seed_prune_nothing_to_remove(monkeypatch):
     """Aucune app non-listée → 0 suppression, pas de prompt."""
     monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: [_make_app_info("exemple-app"), _make_app_info("canari")])
+                        lambda: [_make_app_info("app-exemple"), _make_app_info("canari")])
     console = mock.Mock()
-    n = actions._seed_prune(console, {"exemple-app", "canari"}, vault=None, dry_run=True)
+    n = actions._seed_prune(console, {"app-exemple", "canari"}, vault=None, dry_run=True)
     assert n == 0
 
 
 def test_seed_prune_confirmed(monkeypatch):
     """Apps non-listées + confirmation Oui → suppression via action_remove_app."""
     monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: [_make_app_info("exemple-app"), _make_app_info("vikunja"), _make_app_info("old")])
+                        lambda: [_make_app_info("app-exemple"), _make_app_info("service-exemple"), _make_app_info("old")])
     monkeypatch.setattr("builtins.input", lambda *a: "o")
     console = mock.Mock()
     with mock.patch.object(actions, "action_remove_app") as rm:
-        n = actions._seed_prune(console, {"exemple-app"}, vault=None, dry_run=True)
+        n = actions._seed_prune(console, {"app-exemple"}, vault=None, dry_run=True)
     assert n == 2
     removed = {c.args[1] for c in rm.call_args_list}
-    assert removed == {"vikunja", "old"}
+    assert removed == {"service-exemple", "old"}
 
 
 def test_seed_prune_refused(monkeypatch):
     """Confirmation Non → 0 suppression."""
     monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: [_make_app_info("exemple-app"), _make_app_info("vikunja")])
+                        lambda: [_make_app_info("app-exemple"), _make_app_info("service-exemple")])
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     console = mock.Mock()
     with mock.patch.object(actions, "action_remove_app") as rm:
-        n = actions._seed_prune(console, {"exemple-app"}, vault=None, dry_run=True)
+        n = actions._seed_prune(console, {"app-exemple"}, vault=None, dry_run=True)
     assert n == 0
     rm.assert_not_called()
 
@@ -1754,14 +1754,14 @@ def test_update_target_hub_delegue_au_flux_meta(monkeypatch):
 def test_update_target_app_reattaches_detached_head_before_pull(tmp_path, monkeypatch):
     """Chemin APPS inchangé : branch attach avant pull (le hub, lui, passe
     désormais par le flux méta — cf. test_update_target_hub_delegue_au_flux_meta)."""
-    app_dir = tmp_path / "exemple-app"
+    app_dir = tmp_path / "app-exemple"
     app_dir.mkdir()
     (app_dir / "docker-compose.yml").write_text("services: {}\n")
     order = []
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
     from hubctl_cli.park_checks import Finding
     monkeypatch.setattr(actions.park_checks, "check_app_repo",
-                        lambda p: Finding(check="app.exemple-app", ok=True, detail="ok"))
+                        lambda p: Finding(check="app.app-exemple", ok=True, detail="ok"))
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc123")
     monkeypatch.setattr(actions, "_db_snapshot", lambda *a, **k: None)
@@ -1777,7 +1777,7 @@ def test_update_target_app_reattaches_detached_head_before_pull(tmp_path, monkey
         return 0
     monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
 
-    assert actions._update_target(None, "exemple-app", dry_run=False) is True
+    assert actions._update_target(None, "app-exemple", dry_run=False) is True
     assert "attach" in order
     assert order.index("attach") < order.index("pull")
 
@@ -1786,13 +1786,13 @@ def test_update_target_app_fails_clean_on_local_modifications(monkeypatch, tmp_p
     """I3 : une app sale échoue proprement AVANT tout stop/pull/rollback."""
     from hubctl_cli.park_checks import Finding
 
-    app_dir = tmp_path / "exemple-app"
+    app_dir = tmp_path / "app-exemple"
     app_dir.mkdir()
     (app_dir / "docker-compose.yml").write_text("services: {}\n")
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
     monkeypatch.setattr(
         actions.park_checks, "check_app_repo",
-        lambda p: Finding(check="app.exemple-app", ok=False,
+        lambda p: Finding(check="app.app-exemple", ok=False,
                           detail="modifications locales non commitées",
                           remedy=f"commit ou stash dans {p}"))
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
@@ -1802,7 +1802,7 @@ def test_update_target_app_fails_clean_on_local_modifications(monkeypatch, tmp_p
     monkeypatch.setattr(actions.utils, "run_shell",
                         lambda cmd, **kw: calls.append(list(cmd)) or 0)
 
-    assert actions._update_target(None, "exemple-app", dry_run=False) is False
+    assert actions._update_target(None, "app-exemple", dry_run=False) is False
     rollback.assert_not_called()
     assert not any(c[0] == "make" for c in calls), "aucun stop/build avant échec propre"
 
@@ -1829,7 +1829,7 @@ def test_close_all_sans_ateliers(monkeypatch):
 def test_close_all_ferme_chaque_atelier(monkeypatch):
     """Un atelier par app détectée, dans l'ordre, via _remove_workshop."""
     monkeypatch.setattr(actions.hub_state, "get_workshop_apps",
-                        lambda: [_ws_app("exemple-app"), _ws_app("exemple-apps")])
+                        lambda: [_ws_app("app-exemple"), _ws_app("suivi-exemple")])
     monkeypatch.setattr(actions, "_ws_read_env",
                         lambda slug: {"APP_SLUG": f"{slug}-ws", "WS_REF": "main",
                                       "WS_COMMIT": "abc12345def67890"})
@@ -1837,7 +1837,7 @@ def test_close_all_ferme_chaque_atelier(monkeypatch):
     monkeypatch.setattr(actions, "_remove_workshop",
                         lambda c, slug, dry_run=False: removed.append(slug) or True)
     rc = actions.action_atelier_close_all(_mock_console(), oui=True)
-    assert removed == ["exemple-app", "exemple-apps"]
+    assert removed == ["app-exemple", "suivi-exemple"]
     assert rc == 0
 
 
@@ -1878,7 +1878,7 @@ def test_close_all_refuse_non_interactif_sans_oui(monkeypatch):
     """Non-TTY sans --yes → refus (rc 2), aucune suppression."""
     import sys
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("app-exemple")])
     monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
     removed = []
     monkeypatch.setattr(actions, "_remove_workshop",
@@ -1894,7 +1894,7 @@ def test_close_all_confirmation_negative(monkeypatch):
     import sys
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(builtins, "input", lambda *a: "n")
-    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("app-exemple")])
     monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
     removed = []
     monkeypatch.setattr(actions, "_remove_workshop",
@@ -1910,23 +1910,23 @@ def test_close_all_confirmation_positive(monkeypatch):
     import sys
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(builtins, "input", lambda *a: "o")
-    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("app-exemple")])
     monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
     removed = []
     monkeypatch.setattr(actions, "_remove_workshop",
                         lambda c, slug, dry_run=False: removed.append(slug) or True)
     rc = actions.action_atelier_close_all(_mock_console())
-    assert removed == ["exemple-app"]
+    assert removed == ["app-exemple"]
     assert rc == 0
 
 
 def test_close_all_dry_run_propage_dry_run(monkeypatch):
     """--dry-run global : _remove_workshop appelé avec dry_run=True."""
-    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("exemple-app")])
+    monkeypatch.setattr(actions.hub_state, "get_workshop_apps", lambda: [_ws_app("app-exemple")])
     monkeypatch.setattr(actions, "_ws_read_env", lambda slug: {})
     calls = []
     monkeypatch.setattr(actions, "_remove_workshop",
                         lambda c, slug, dry_run=False: calls.append((slug, dry_run)) or True)
     rc = actions.action_atelier_close_all(_mock_console(), dry_run=True, oui=True)
-    assert calls == [("exemple-app", True)]
+    assert calls == [("app-exemple", True)]
     assert rc == 0

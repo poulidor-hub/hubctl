@@ -132,8 +132,8 @@ def collect_ateliers() -> list[dict]:
             "ws_slug": ws_slug,
             "api_port": _int_or_none(ws.get("API_PORT")),
             "frontend_port": _int_or_none(ws.get("FRONTEND_PORT")),
-            # Préfixe strict (pas de sous-chaîne) : sinon le slug « si »
-            # s'attribuerait les conteneurs de « exemple-app-ws-api-1 ».
+            # Préfixe strict (pas de sous-chaîne) : sinon le slug « exemple »
+            # s'attribuerait les conteneurs de « app-exemple-ws-api-1 ».
             "containers_state": {n: s for n, s in all_states.items()
                                  if n == ws_slug or n.startswith(ws_slug + "-")},
         })

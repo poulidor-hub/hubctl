@@ -331,7 +331,7 @@ def register_debug_tools(server: Server, app_slug: str, mode: str):
 
     Args:
         server: instance mcp.server.Server
-        app_slug: nom de l'app cible (ex: exemple-app)
+        app_slug: nom de l'app cible (ex: APP_EXEMPLE_E)
         mode: "ro" (lecture seule) ou "rw" (semi-auto)
     """
 

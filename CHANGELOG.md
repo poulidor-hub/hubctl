@@ -258,8 +258,8 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
   affiché, code retour 1). La mise à jour globale devient `hubctl update "*"`
   (alias `all`) — quoter le `*`, sinon le shell développe le glob.
 - **Ajouté** : ciblage par argument(s) : `hubctl update hub` (Hub seul),
-  `hubctl update exemple-app` (une app), plusieurs slugs en une passe
-  (`hubctl update hub exemple-app`). Cible inconnue → erreur listant les cibles
+  `hubctl update app-exemple` (une app), plusieurs slugs en une passe
+  (`hubctl update hub app-exemple`). Cible inconnue → erreur listant les cibles
   valides. Code retour = nombre d'échecs.
 - Factoring : validation dans `_resolve_update_targets()`, pool parallèle
   factorisé dans `_update_targets_pool()` ; `action_update_all()` (menu TUI)
@@ -434,7 +434,7 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
   déployé (`checkout -B main` : l'état déployé fait foi), puis restaure
   l'upstream absent (repo jamais cloné, `branch --set-upstream-to
   <remote>/main`) pour que le pull sache quoi tirer. Cas nominal (branche
-  rattachée) strictement inchangé. Incident prod exemple-org 2026-09-14
+  rattachée) strictement inchangé. Incident prod site client 2026-09-14
   (update hub 3.54.0 → 3.54.1 en rollback).
 - Tests : 4 nouveaux (repos git réels — rattachement, no-op sur branche,
   restauration d'upstream, ordre attach < pull dans `_update_target`) ;

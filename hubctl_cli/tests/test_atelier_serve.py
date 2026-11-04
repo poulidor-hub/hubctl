@@ -85,27 +85,27 @@ def test_list_empty(serve_env):
 
 def test_list_shows_atelier(serve_env, monkeypatch):
     """Un .workshop.env → entrée {app, ws_slug, api_port, frontend_port, containers_state}."""
-    _make_atelier(serve_env.tmp, "exemple-app")
+    _make_atelier(serve_env.tmp, "app-exemple")
     monkeypatch.setattr(atelier_serve, "_ws_containers_state",
-                        lambda: {"exemple-app-ws-api-1": "Up 2 minutes"})
+                        lambda: {"app-exemple-ws-api-1": "Up 2 minutes"})
     r = _get(serve_env.base, "/atelier/list")
     assert r.status_code == 200
     assert r.json() == {"ateliers": [{
-        "app": "exemple-app",
-        "ws_slug": "exemple-app-ws",
+        "app": "app-exemple",
+        "ws_slug": "app-exemple-ws",
         "api_port": 10001,
         "frontend_port": 5201,
-        "containers_state": {"exemple-app-ws-api-1": "Up 2 minutes"},
+        "containers_state": {"app-exemple-ws-api-1": "Up 2 minutes"},
     }]}
 
 
 def test_close_all_ok(serve_env, monkeypatch):
-    """close-all qui ferme tout → 200 {"closed": ["exemple-app"], "failed": []}."""
-    _make_atelier(serve_env.tmp, "exemple-app")
+    """close-all qui ferme tout → 200 {"closed": ["app-exemple"], "failed": []}."""
+    _make_atelier(serve_env.tmp, "app-exemple")
 
     def fake_close_all(console, *, dry_run=False, oui=False):
         assert oui is True  # le serveur ne doit jamais re-demander confirmation
-        (serve_env.tmp / "exemple-app" / ".workshop.env").unlink()
+        (serve_env.tmp / "app-exemple" / ".workshop.env").unlink()
         console.print("[green]✓ 1 atelier(s) fermé(s) — base propre.[/green]")
         return 0
 
@@ -114,7 +114,7 @@ def test_close_all_ok(serve_env, monkeypatch):
     r = _post(serve_env.base, "/atelier/close-all")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["closed"] == ["exemple-app"]
+    assert body["closed"] == ["app-exemple"]
     assert body["failed"] == []
     assert body["rc"] == 0
     assert "fermé" in body["output"]
@@ -122,11 +122,11 @@ def test_close_all_ok(serve_env, monkeypatch):
 
 def test_close_all_partial(serve_env, monkeypatch):
     """Un atelier en échec → 207 + failed [{slug, erreur}], closed pour les autres."""
-    _make_atelier(serve_env.tmp, "exemple-app")
+    _make_atelier(serve_env.tmp, "app-exemple")
     _make_atelier(serve_env.tmp, "canari")
 
     def fake_close_all(console, *, dry_run=False, oui=False):
-        (serve_env.tmp / "exemple-app" / ".workshop.env").unlink()
+        (serve_env.tmp / "app-exemple" / ".workshop.env").unlink()
         console.print("[red]✗ canari : suppression en échec.[/red]")
         return 1
 
@@ -135,7 +135,7 @@ def test_close_all_partial(serve_env, monkeypatch):
     r = _post(serve_env.base, "/atelier/close-all")
     assert r.status_code == 207
     body = r.json()
-    assert body["closed"] == ["exemple-app"]
+    assert body["closed"] == ["app-exemple"]
     assert [f["slug"] for f in body["failed"]] == ["canari"]
     assert body["failed"][0]["erreur"]
     assert body["rc"] == 1
@@ -419,12 +419,12 @@ def test_vault_state_locked_no_key(monkeypatch, tmp_path):
 # ── collect_ateliers / docker ──
 
 def test_parse_docker_ps():
-    out = ("exemple-app-ws-api-1\tUp 3 minutes\n"
+    out = ("app-exemple-ws-api-1\tUp 3 minutes\n"
            "canari-ws-frontend-1\tUp About a minute\n"
            "pas-de-tab\n"
            "\n")
     assert atelier_serve._parse_docker_ps(out) == {
-        "exemple-app-ws-api-1": "Up 3 minutes",
+        "app-exemple-ws-api-1": "Up 3 minutes",
         "canari-ws-frontend-1": "Up About a minute",
     }
 
@@ -453,18 +453,18 @@ def test_collect_ateliers_ports_invalid(monkeypatch, tmp_path):
 
 
 def test_collect_ateliers_containers_no_cross_match(monkeypatch, tmp_path):
-    """Conteneurs attribués par préfixe strict : le slug « si » ne captura pas
-    les conteneurs de « exemple-app-ws-* » (sous-chaîne ≠ préfixe)."""
+    """Conteneurs attribués par préfixe strict : le slug « exemple » ne capture pas
+    les conteneurs de « app-exemple-ws-* » (sous-chaîne ≠ préfixe)."""
     monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
     monkeypatch.setattr(atelier_serve, "_ws_containers_state",
-                        lambda: {"exemple-app-ws-api-1": "Up 2 minutes"})
-    for slug in ("exemple-app", "si"):
+                        lambda: {"app-exemple-ws-api-1": "Up 2 minutes"})
+    for slug in ("app-exemple", "exemple"):
         d = tmp_path / slug
         d.mkdir()
         (d / ".workshop.env").write_text("API_PORT=10001\n", encoding="utf-8")
     by_app = {a["app"]: a for a in atelier_serve.collect_ateliers()}
-    assert by_app["exemple-app"]["containers_state"] == {"exemple-app-ws-api-1": "Up 2 minutes"}
-    assert by_app["si"]["containers_state"] == {}
+    assert by_app["app-exemple"]["containers_state"] == {"app-exemple-ws-api-1": "Up 2 minutes"}
+    assert by_app["exemple"]["containers_state"] == {}
 
 
 # ── build_server / token ──
@@ -548,7 +548,7 @@ class TestDispatchServe:
 
     def test_serve_avec_slug_erreur_explicite(self, capsys):
         """--serve ne prend pas de slug : message clair, rc 2, rien ne démarre."""
-        assert m.main(["atelier", "exemple-app", "--serve"]) == 2
+        assert m.main(["atelier", "app-exemple", "--serve"]) == 2
         out = capsys.readouterr().out
         assert "--serve" in out and "slug" in out
 

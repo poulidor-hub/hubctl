@@ -89,8 +89,8 @@ def test_doctor_passes_apps_to_run_checks(monkeypatch):
     )
     con = Console()
     actions.action_doctor(console=con, parc_root=Path("/tmp/fake"),
-                          apps=["exemple-app", "exemple-app"])
-    assert seen["apps"] == ["exemple-app", "exemple-app"]
+                          apps=["app-exemple", "app-exemple-e"])
+    assert seen["apps"] == ["app-exemple", "app-exemple-e"]
 
 
 def test_doctor_wired_in_cli_main():

@@ -241,7 +241,7 @@ def test_parser_update():
 def test_parser_update_targets():
     p = build_parser()
     assert p.parse_args(["update", "hub"]).targets == ["hub"]
-    assert p.parse_args(["update", "hub", "exemple-app"]).targets == ["hub", "exemple-app"]
+    assert p.parse_args(["update", "hub", "app-exemple"]).targets == ["hub", "app-exemple"]
     assert p.parse_args(["update", "*"]).targets == ["*"]
     assert p.parse_args(["update", "all"]).targets == ["all"]
 
@@ -340,16 +340,16 @@ def test_dispatch_update_sans_cible_n_appelle_pas_action(monkeypatch, capsys):
 def test_dispatch_update_avec_cible_appelle_action_update(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
     with mock.patch.object(m, "action_update", return_value=0) as fn:
-        rc = m.main(["update", "hub", "exemple-app"])
+        rc = m.main(["update", "hub", "app-exemple"])
     assert rc == 0
     fn.assert_called_once()
-    assert fn.call_args.kwargs.get("targets") == ["hub", "exemple-app"]
+    assert fn.call_args.kwargs.get("targets") == ["hub", "app-exemple"]
 
 
 def test_dispatch_update_propage_le_nombre_echecs(monkeypatch):
     monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
     with mock.patch.object(m, "action_update", return_value=2) as fn:
-        rc = m.main(["update", "exemple-app"])
+        rc = m.main(["update", "app-exemple"])
     assert rc == 2
     fn.assert_called_once()
 

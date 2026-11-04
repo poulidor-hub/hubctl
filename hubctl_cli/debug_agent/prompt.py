@@ -169,7 +169,7 @@ def build_system_prompt(app_slug: str, mode: str) -> str:
     """Construit le prompt systeme complet en 3 couches.
 
     Args:
-        app_slug: nom de l'app cible (ex: exemple-app)
+        app_slug: nom de l'app cible (ex: APP_EXEMPLE_E)
         mode: "ro" ou "rw"
 
     Retourne le prompt systeme complet pour Granite.

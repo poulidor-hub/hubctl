@@ -218,7 +218,7 @@ class TestCheckHubBase:
 class TestCheckAppRepo:
     def test_ok_when_clean_and_aligned(self, tmp_path):
         meta, _, _ = _make_meta_with_submodule(tmp_path)
-        app = _init_repo(tmp_path / "meta" / "APPS" / "exemple-app")
+        app = _init_repo(tmp_path / "meta" / "APPS" / "app-exemple")
         app_origin = _init_repo(tmp_path / "origin_inv")
         _commit(app_origin, "README.md", "app origin")
         _git("remote", "add", "origin", str(app_origin), cwd=app)
@@ -229,7 +229,7 @@ class TestCheckAppRepo:
 
     def test_fails_on_local_modifications(self, tmp_path):
         meta, _, _ = _make_meta_with_submodule(tmp_path)
-        app = _init_repo(tmp_path / "meta" / "APPS" / "exemple-app")
+        app = _init_repo(tmp_path / "meta" / "APPS" / "app-exemple")
         app_origin = _init_repo(tmp_path / "origin_inv")
         _commit(app_origin, "README.md", "app origin")
         _git("remote", "add", "origin", str(app_origin), cwd=app)
@@ -309,10 +309,10 @@ class TestRunChecks:
 
     def test_run_checks_includes_apps(self, tmp_path):
         meta, _, _ = _make_meta_with_submodule(tmp_path)
-        app = _init_repo(meta / "APPS" / "exemple-app")
+        app = _init_repo(meta / "APPS" / "app-exemple")
         _commit(app, "x.txt", "app sans remote")
-        findings = park_checks.run_checks(meta, apps=["exemple-app"])
-        assert any(f.check == "app.exemple-app" for f in findings)
+        findings = park_checks.run_checks(meta, apps=["app-exemple"])
+        assert any(f.check == "app.app-exemple" for f in findings)
 
 
 class TestReviewFixes:
@@ -342,7 +342,7 @@ class TestReviewFixes:
 
     def test_check_app_repo_fetch_failure_is_fail_closed(self, tmp_path):
         meta, _, _ = _make_meta_with_submodule(tmp_path)
-        app = _init_repo(meta / "APPS" / "exemple-app")
+        app = _init_repo(meta / "APPS" / "app-exemple")
         app_origin = _init_repo(tmp_path / "origin_inv")
         _commit(app_origin, "README.md", "app")
         _git("remote", "add", "origin", str(app_origin), cwd=app)
