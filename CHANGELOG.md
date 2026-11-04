@@ -1,3 +1,14 @@
+## [0.16.7] - 4 novembre 2026
+
+### ⚡ Scrub open source (noms d'apps privées → génériques) + docs reproductibles
+
+| Élément | Détail |
+|---------|--------|
+| **code/tests** | `exemple-app`→`app-exemple`, `exemple-app-2`→`APP_EXEMPLE`, `exemple-app`→`APP_EXEMPLE_E`, `vikunja`→`service-exemple`, `hub-legacy`→`PARC_EXEMPLE` (commentaires, docstrings, fixtures) |
+| **test_vault_path** | garde-fou d'existence du coffre local : `skipif` sans `parc.vault.enc` (le coffre n'est pas versionné — clone frais) |
+| **README (×2)** | instructions de test reproductibles après clone frais (venv + `pip install -e hubctl_cli[dev]`) au lieu du `.venv` du poste ; section « Installation autonome » ; footer « Projet interne » retiré |
+| **Tests** | 677 passed ; 5 échecs plein-suite analysés = interférences d'isolation préexistantes (présentes aussi sur main) + coffre local absent du worktree |
+
 ## [0.16.6] - 4 novembre 2026
 
 ### 🐛 Fix — doctor/update sur liens lents et remotes HTTPS sans identifiants

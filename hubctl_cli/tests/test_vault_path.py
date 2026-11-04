@@ -10,7 +10,16 @@ installations où ``hubctl_cli/`` est un vrai dossier racine.
 """
 from pathlib import Path
 
+import pytest
+
 from hubctl_cli import hub_state
+
+# Garde-fou d'installation réelle : sans coffre local (clone frais, CI publique),
+# les tests d'existence n'ont pas de sens.
+pytestmark = pytest.mark.skipif(
+    not hub_state.vault_path().exists(),
+    reason="coffre local absent (parc.vault.enc non versionné) — test d'installation réelle",
+)
 
 
 def test_vault_dir_prefers_package_vault(tmp_path):
