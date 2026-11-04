@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests du catalogue d'outils debug."""
 from hubctl_cli.debug_agent.tools_catalog import (
     TOOLS,

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests de `hubctl doctor` (plan unification updates, Task 2).
 
 Tout est mocké au niveau de `park_checks` : les tests valident la logique de

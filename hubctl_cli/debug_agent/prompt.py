@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Construction du prompt systeme pour Granite (3 couches).
 
 Couche 1 : Conventions POULIDOR (statique, depuis prompts/system.txt)

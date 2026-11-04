@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """`hubctl atelier serve` — mini-serveur HTTP hôte pour piloter les ateliers.
 
 Brique hôte du feature « ateliers pilotables par l'agent » : le Hub proxy

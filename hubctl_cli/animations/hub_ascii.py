@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Animation HUB en ASCII art (240 frames ~24 fps, ~10 s).
 
 Les frames sont précalculées : grilles de caractères + runs de couleur.

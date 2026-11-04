@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Catalogue des outils debug MCP et leur classification de securite.
 
 Chaque outil est defini avec son inputSchema (JSON Schema).

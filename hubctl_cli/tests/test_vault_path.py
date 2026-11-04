@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Résolution du chemin du coffre (vault) — hubctl 0.7.3.
 
 Depuis la restructuration (symlink racine ``hubctl_cli`` supprimé), le coffre

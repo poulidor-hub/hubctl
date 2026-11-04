@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Installer et detecteur de materiel pour l'agent de debug.
 
 Detecte le GPU (nvidia-smi), verifie Ollama et le modele Granite,

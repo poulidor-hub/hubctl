@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests de l'étape init `_ensure_atelier_service` (service hôte hubctl-atelier).
 
 `hubctl init` doit mettre en place le service hôte `hubctl-atelier` de façon

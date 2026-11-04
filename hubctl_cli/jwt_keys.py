@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Sous-commande `hubctl jwt` — pilotage du trousseau JWT via l'API du hub."""
 import json
 import os

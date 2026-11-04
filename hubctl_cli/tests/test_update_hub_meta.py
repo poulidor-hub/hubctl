@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests du flux `update hub` via le méta (plan unification updates, Task 3).
 
 Tout l'environnement est mocké (run_shell, park_checks, snapshot DB, health,

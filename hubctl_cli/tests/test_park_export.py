@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
+
 """Tests park-export : capture COMPLÈTE et récursive des secrets Hub.
 
 Couvre la régression critique où les noms codés en dur (jwt_private.pem,
