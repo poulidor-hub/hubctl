@@ -1,3 +1,11 @@
+## [0.16.5] - 4 novembre 2026
+
+### ⚡ Licence open source AGPLv3 + en-têtes SPDX
+
+- Ajout de `LICENSE` (**GNU AGPLv3**) — le dépôt n'avait aucune licence ; le CLI devient publiable en open source
+- En-têtes SPDX (`AGPL-3.0-or-later` + copyright POULIDOR Audit & Développement) sur les 70 fichiers sources (CLI + debug_agent)
+- `.gitignore` : exclusion `.worktrees/` ; registre d'agents retiré du suivi git (convention parc : registre local non versionné)
+
 ## [0.16.4] - 4 novembre 2026
 
 ### 🐛 Fix — `hubctl doctor` de nouveau exécutable
