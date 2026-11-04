@@ -1,3 +1,15 @@
+## [0.16.6] - 4 novembre 2026
+
+### 🐛 Fix — doctor/update sur liens lents et remotes HTTPS sans identifiants
+
+Retours serveur client (`doctor` tué après 30 s sur fetch, prompt d'identifiants sans terminal) :
+
+- **Timeout configurable** : `HUBCTL_GIT_TIMEOUT` (secondes) surcharge le défaut des commandes git de `park_checks` — défaut relevé de **30 s à 120 s** (fetch à froid d'un gros dépôt sur lien lent)
+- **`TimeoutExpired` converti en échec explicite** (rc 124, stderr actionnable) : `hubctl doctor` et les pré-checks d'`update` ne plantent plus avec `Command [...] timed out after 30 seconds`, ils reportent un Finding `fetch origin impossible`
+- **Fetch non interactif** (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo`) : un remote HTTPS sans credential helper échoue immédiatement avec un message clair au lieu d'attendre une saisie impossible en headless
+- **Remède ciblé** sur ce cas : suggestion `remote set-url` en SSH ou credential helper HTTPS
+- 7 nouveaux tests (`test_park_checks.py`) — régression 0.16.4 (`doctor` exécutable) toujours verte
+
 ## [0.16.5] - 4 novembre 2026
 
 ### ⚡ Licence open source AGPLv3 + en-têtes SPDX
