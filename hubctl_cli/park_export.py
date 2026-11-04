@@ -7,7 +7,7 @@ Produit une archive tar.gz contenant : DB dumps, .env, secrets Hub, manifeste.
 
 Usage :
     python -m hubctl_cli park-export                     # tout le parc
-    python -m hubctl_cli park-export --app exemple-apps  # une seule app
+    python -m hubctl_cli park-export --app suivi-exemple   # une seule app
 """
 
 from __future__ import annotations

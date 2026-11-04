@@ -113,10 +113,10 @@ def _wait_db_ready(container: str, timeout: int = 90) -> bool:
 
 
 # Migrations « fourchues » : même liste que HUB_base/hub/app/restore_snapshot.py
-# (FORKED_MIGRATIONS). Un dump hub legacy (ex. hub-legacy 3.9.x) porte un numéro 027
+# (FORKED_MIGRATIONS). Un dump hub legacy (ex. PARC_EXEMPLE 3.9.x) porte un numéro 027
 # avec un SQL différent du nôtre (normalisation de données au lieu de créer
 # port_allocations). Sans purge, le boot du hub neuf sauterait NOTRE 027 → table
-# port_allocations manquante → hub cassé. Cf. docs/handover/2026-09-20-migration-legacy-hub-neuf-design.md §5.
+# port_allocations manquante → hub cassé. (voir la documentation interne du parc, non publiée)
 FORKED_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("027", "port_allocations"),
 )

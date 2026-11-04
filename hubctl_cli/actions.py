@@ -832,7 +832,7 @@ def _detect_app_config(name: str) -> dict:
 
     # Slug : minuscules + underscores convertis en tirets.
     # Le Hub exige ^[a-z0-9-]+$ (pas d'underscores), mais les noms de repos
-    # peuvent en contenir (ex: exemple-app-2 → exemple-app).
+    # peuvent en contenir (ex: APP_EXEMPLE → app-exemple).
     slug = name.lower().replace("_", "-")
     if not valid_app_name(slug):
         raise ValueError(f"Nom d'app invalide (doit matcher ^[a-z][a-z0-9_-]*$) : {slug}")
@@ -955,10 +955,10 @@ def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
 
     # Map de substitution : chaque clé = nom de variable dans .env.example.
     # On couvre toutes les variantes utilisées par les apps réelles du parc :
-    #   - API_PORT (template canonique, exemple-app-2, exemple-app)
+    #   - API_PORT (template canonique, APP_EXEMPLE, APP_EXEMPLE_E)
     #   - APP_PORT / APP_PORT_API (variants historiques)
-    #   - APP_HOST (template canonique, exemple-app)
-    #   - SERVER_IP (exemple-app-2)
+    #   - APP_HOST (template canonique, APP_EXEMPLE_E)
+    #   - SERVER_IP (APP_EXEMPLE)
     #   - HOST_IP (variant)
     replacements = {
         "APP_SLUG": config["slug"],

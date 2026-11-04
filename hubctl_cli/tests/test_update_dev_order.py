@@ -61,7 +61,7 @@ def test_update_hub_uses_up_prod_in_prod_mode(monkeypatch):
 
 
 def test_update_app_uses_up_dev_in_dev_mode(monkeypatch, tmp_path):
-    app_dir = tmp_path / "exemple-app"
+    app_dir = tmp_path / "app-exemple"
     app_dir.mkdir()
     (app_dir / "docker-compose.yml").write_text("services: {}\n")
     calls: list[list[str]] = []
@@ -73,7 +73,7 @@ def test_update_app_uses_up_dev_in_dev_mode(monkeypatch, tmp_path):
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
     from hubctl_cli.park_checks import Finding
     monkeypatch.setattr(actions.park_checks, "check_app_repo",
-                        lambda p: Finding(check="app.exemple-app", ok=True, detail="ok"))
+                        lambda p: Finding(check="app.app-exemple", ok=True, detail="ok"))
     monkeypatch.setattr(actions.hub_state, "_mode", "dev")
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
@@ -83,13 +83,13 @@ def test_update_app_uses_up_dev_in_dev_mode(monkeypatch, tmp_path):
                         lambda *a, **k: "main")
     monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
 
-    assert actions._update_target(None, "exemple-app", dry_run=False) is True
+    assert actions._update_target(None, "app-exemple", dry_run=False) is True
     assert ["make", "-C", str(app_dir), "up-dev"] in calls
     assert not any(cmd[-1] == "up" and cmd[0] == "make" for cmd in calls)
 
 
 def test_update_app_uses_up_in_prod_mode(monkeypatch, tmp_path):
-    app_dir = tmp_path / "exemple-app"
+    app_dir = tmp_path / "app-exemple"
     app_dir.mkdir()
     (app_dir / "docker-compose.yml").write_text("services: {}\n")
     calls: list[list[str]] = []
@@ -101,7 +101,7 @@ def test_update_app_uses_up_in_prod_mode(monkeypatch, tmp_path):
     monkeypatch.setattr(actions.hub_state, "active_apps_dir", lambda: tmp_path)
     from hubctl_cli.park_checks import Finding
     monkeypatch.setattr(actions.park_checks, "check_app_repo",
-                        lambda p: Finding(check="app.exemple-app", ok=True, detail="ok"))
+                        lambda p: Finding(check="app.app-exemple", ok=True, detail="ok"))
     monkeypatch.setattr(actions.hub_state, "_mode", "prod")
     monkeypatch.setattr(actions, "_git_up_to_date", lambda *a, **k: False)
     monkeypatch.setattr(actions, "_git_previous_commit", lambda *a, **k: "abc")
@@ -111,7 +111,7 @@ def test_update_app_uses_up_in_prod_mode(monkeypatch, tmp_path):
                         lambda *a, **k: "main")
     monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
 
-    assert actions._update_target(None, "exemple-app", dry_run=False) is True
+    assert actions._update_target(None, "app-exemple", dry_run=False) is True
     assert ["make", "-C", str(app_dir), "up"] in calls
 
 

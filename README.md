@@ -42,6 +42,25 @@ Dépôts voisins : [POULIDOR](https://github.com/POULIDOR-Audit-Developpement/PO
 [HUB_base](https://github.com/POULIDOR-Audit-Developpement/HUB_base) ·
 [HUBsocle](https://github.com/POULIDOR-Audit-Developpement/HUBsocle)
 
+## Installation autonome
+
+Prérequis : **Python 3.11+** et **git** — le launcher (`./hubctl`) crée
+lui-même le venv et installe les dépendances au premier lancement.
+
+hubctl s'utilise **à la racine d'un déploiement POULIDOR**, avec le layout du
+parc : `HUB_base/` (Hub central) et `APPS/` (applications) voisins du dépôt
+`hubctl_src` :
+
+```text
+<parc>/
+├── HUB_base/       # Hub central (SSO, API)
+├── APPS/           # Applications en production
+└── hubctl_src/     # ce dépôt — launcher ./hubctl (ou symlink du méta-repo)
+```
+
+L'arborescence complète (méta-repo, socle, ateliers) est décrite dans le README
+du méta-repo [POULIDOR](https://github.com/POULIDOR-Audit-Developpement/POULIDOR).
+
 ## Démarrage
 
 ```bash
@@ -74,10 +93,12 @@ interactif (cron, pipe), hubctl affiche l'état du hub puis quitte.
 
 ## Tests
 
+Depuis un clone frais, avec un venv dédié (l'extra `dev` apporte pytest) :
+
 ```bash
-cd hubctl_src
-hubctl_cli/.venv/bin/pip install pytest
-hubctl_cli/.venv/bin/python -m pytest hubctl_cli/tests/ -v    # 30 fichiers (TUI + debug_agent)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e hubctl_cli[dev]
+pytest hubctl_cli/tests -q
 ```
 
 ## Pour aller plus loin
@@ -88,4 +109,4 @@ hubctl_cli/.venv/bin/python -m pytest hubctl_cli/tests/ -v    # 30 fichiers (TUI
 
 ---
 
-Projet interne — POULIDOR Audit & Développement.
+Distribué sous licence [AGPL-3.0](LICENSE) (GNU Affero General Public License v3).

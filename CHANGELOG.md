@@ -1,3 +1,14 @@
+## [0.16.7] - 4 novembre 2026
+
+### ⚡ Scrub open source (noms d'apps privées → génériques) + docs reproductibles
+
+| Élément | Détail |
+|---------|--------|
+| **code/tests** | `exemple-app`→`app-exemple`, `exemple-app-2`→`APP_EXEMPLE`, `exemple-app`→`APP_EXEMPLE_E`, `vikunja`→`service-exemple`, `hub-legacy`→`PARC_EXEMPLE` (commentaires, docstrings, fixtures) |
+| **test_vault_path** | garde-fou d'existence du coffre local : `skipif` sans `parc.vault.enc` (le coffre n'est pas versionné — clone frais) |
+| **README (×2)** | instructions de test reproductibles après clone frais (venv + `pip install -e hubctl_cli[dev]`) au lieu du `.venv` du poste ; section « Installation autonome » ; footer « Projet interne » retiré |
+| **Tests** | 677 passed ; 5 échecs plein-suite analysés = interférences d'isolation préexistantes (présentes aussi sur main) + coffre local absent du worktree |
+
 ## [0.16.6] - 4 novembre 2026
 
 ### 🐛 Fix — doctor/update sur liens lents et remotes HTTPS sans identifiants
@@ -258,8 +269,8 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
   affiché, code retour 1). La mise à jour globale devient `hubctl update "*"`
   (alias `all`) — quoter le `*`, sinon le shell développe le glob.
 - **Ajouté** : ciblage par argument(s) : `hubctl update hub` (Hub seul),
-  `hubctl update exemple-app` (une app), plusieurs slugs en une passe
-  (`hubctl update hub exemple-app`). Cible inconnue → erreur listant les cibles
+  `hubctl update app-exemple` (une app), plusieurs slugs en une passe
+  (`hubctl update hub app-exemple`). Cible inconnue → erreur listant les cibles
   valides. Code retour = nombre d'échecs.
 - Factoring : validation dans `_resolve_update_targets()`, pool parallèle
   factorisé dans `_update_targets_pool()` ; `action_update_all()` (menu TUI)
@@ -434,7 +445,7 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
   déployé (`checkout -B main` : l'état déployé fait foi), puis restaure
   l'upstream absent (repo jamais cloné, `branch --set-upstream-to
   <remote>/main`) pour que le pull sache quoi tirer. Cas nominal (branche
-  rattachée) strictement inchangé. Incident prod exemple-org 2026-09-14
+  rattachée) strictement inchangé. Incident prod site client 2026-09-14
   (update hub 3.54.0 → 3.54.1 en rollback).
 - Tests : 4 nouveaux (repos git réels — rattachement, no-op sur branche,
   restauration d'upstream, ordre attach < pull dans `_update_target`) ;
