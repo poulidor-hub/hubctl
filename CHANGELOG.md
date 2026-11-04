@@ -1,3 +1,19 @@
+## [0.16.4] - 4 novembre 2026
+
+### 🐛 Fix — `hubctl doctor` de nouveau exécutable
+
+- **Corrigé** : `hubctl doctor` plantait systématiquement depuis son
+  introduction (0.12.0) avec `name 'action_doctor' is not defined` — la
+  fonction existe dans `actions.py` (5 tests unitaires verts) mais l'import
+  nommé de `__main__.py` ne la listait pas. La première étape de la routine
+  de mise à jour (`doctor` → `update hub` → `update all`) est à nouveau
+  opérationnelle, `--fix`/`--yes` inclus.
+- **Tests** : `test_doctor_wired_in_cli_main` — vérifie que
+  `hubctl_cli.__main__` expose bien `action_doctor` ; le câblage CLI
+  n'était couvert par aucun test, d'où le passage inaperçu du bug.
+
+---
+
 ## [0.16.3] - 31 octobre 2026
 
 ### 🐛 Fix — unit systemd hubctl-atelier rendue à l'installation
