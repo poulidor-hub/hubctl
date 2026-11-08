@@ -1,3 +1,18 @@
+## [0.17.0] - 8 novembre 2026
+
+### ⚡ Ateliers : overrides compose par app (`.workshop.overrides.env`) + create en allowlist
+
+Parité CLI de HUB_base 3.83.0 — fix durable du bug « Task 0 » (exemple-app) : les apps qui bindent des ports host métier depuis leur `.env` prod retombaient sur ces ports dans l'atelier (conflit → restart loop).
+
+| Élément | Détail |
+|---------|--------|
+| **`_ws_override_env()` / `_ws_overrides_path()` / `_ws_merge_env()`** | nouveau fichier optionnel `APPS/<slug>/.workshop.overrides.env` (committé par l'app), fusionné dans l'env de tout `docker compose -p X-ws` ; précédence `_compose_base_env()` < overrides < `.workshop.env` (les 8 clés de l'allocateur gagnent toujours) ; absent → no-op strict ; illisible → warning + ignore ; clés réservées → warning + ignore |
+| **`_ws_compose_env()`** | merge via `_ws_merge_env` (start/maj/ship/remove) ; fallbacks `or _compose_base_env()` → `or _ws_merge_env(app_slug, {})` (parité sans fichier) |
+| **`_create_workshop`** | correction au passage : l'env subprocess passait `os.environ` complet au compose (contraire à la politique `_COMPOSE_ENV_ALLOWLIST`, incident 2026-09) → route `_ws_merge_env` (allowlist + overrides + contrat 8 clés ; `DATABASE_URL` hôte non transmise — testé) |
+| **Tests** | +8 (`TestWsOverrideEnv`, `TestCreateWorkshopOverrides`) — workshop e2e : 94 verts ; étendu : 164 verts ; plein suite : 682 passed / 1 failed préexistant flaky (couplage d'ordre `test_park_checks`), présent aussi sur la base |
+
+> Consommateur : `APPS/exemple-app/.workshop.overrides.env` (`PHILIA_NG_PORT=5290`, `PHILIA_NG_HTTPS_PORT=5291`, committé en 3.5.2). Requiert HUB_base ≥ 3.83.0 pour la parité voie UI.
+
 ## [0.16.7] - 4 novembre 2026
 
 ### ⚡ Scrub open source (noms d'apps privées → génériques) + docs reproductibles
