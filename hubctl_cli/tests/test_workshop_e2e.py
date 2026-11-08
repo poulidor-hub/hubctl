@@ -8,7 +8,7 @@ Vérifie que :
 2. _ws_env_path pointe vers APPS/X/.workshop.env
 3. _ws_exists détecte l'existence d'un atelier
 4. _ws_read_env lit la config atelier
-5. _ws_compose_env fusionne os.environ + .workshop.env
+5. _ws_compose_env fusionne allowlist + overrides app + .workshop.env
 6. _ws_used_ports collecte les ports occupés
 """
 import json
@@ -27,6 +27,9 @@ from hubctl_cli.actions import (
     _ws_exists,
     _ws_read_env,
     _ws_compose_env,
+    _ws_merge_env,
+    _ws_overrides_path,
+    _ws_override_env,
     _ws_used_ports,
     _ws_used_subnets,
     _find_free_subnet,
@@ -164,6 +167,118 @@ class TestWsComposeEnv:
         assert env["DOCKER_HOST"] == "unix:///run/docker.sock"
         assert env["APP_SLUG"] == "canari-ws"
         assert env["API_PORT"] == "10000"
+
+
+class TestWsOverrideEnv:
+    """Overrides par app : APPS/X/.workshop.overrides.env (optionnel, committé
+    par l'app), fusionné dans l'env compose de chaque invocation du projet -ws.
+
+    Précédence (faible → forte) : _compose_base_env() < overrides < contrat
+    .workshop.env (les 8 clés gagnent toujours). Même règle que l'implémentation
+    Hub — parité stricte des deux côtés du contrat. Fix « Task 0 » : une app
+    qui bind des ports host métier depuis son .env prod (ex.
+    ${PHILIA_NG_PORT:-42690}) retombait sur le port prod dans l'atelier
+    → conflit avec la prod → restart loop.
+    """
+
+    def test_chemin_derive_de_ws_env_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        assert _ws_overrides_path("canari") == \
+            hub_state.APPS_DIR / "canari" / ".workshop.overrides.env"
+
+    def test_noop_sans_fichier(self, tmp_path, monkeypatch):
+        """Fichier absent → no-op strict : {} et aucune erreur."""
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        assert _ws_override_env("canari") == {}
+
+    def test_merge_overrides_dans_compose_env(self, tmp_path, monkeypatch):
+        """Les overrides sont fusionnés dans l'env du compose atelier."""
+        app_dir = tmp_path / "canari"
+        app_dir.mkdir()
+        (app_dir / ".workshop.env").write_text("APP_SLUG=canari-ws\nAPI_PORT=10000\n")
+        (app_dir / ".workshop.overrides.env").write_text("PHILIA_NG_PORT=42691\n")
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+
+        env = _ws_compose_env("canari")
+        assert env is not None
+        assert env["PHILIA_NG_PORT"] == "42691"
+        # contrat .workshop.env intact
+        assert env["APP_SLUG"] == "canari-ws"
+        assert env["API_PORT"] == "10000"
+
+    def test_8_cles_gagnent_toujours(self, tmp_path, monkeypatch):
+        """Précédence : allowlist < overrides < contrat .workshop.env (8 clés)."""
+        app_dir = tmp_path / "canari"
+        app_dir.mkdir()
+        (app_dir / ".workshop.env").write_text("APP_SLUG=canari-ws\nAPI_PORT=10000\n")
+        (app_dir / ".workshop.overrides.env").write_text(
+            "APP_SLUG=pirate\nAPI_PORT=9999\nMETIER_PORT=5000\n")
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+
+        env = _ws_compose_env("canari")
+        assert env is not None
+        assert env["APP_SLUG"] == "canari-ws"   # workshop gagne, pas l'override
+        assert env["API_PORT"] == "10000"
+        assert env["METIER_PORT"] == "5000"     # les autres overrides passent
+
+    def test_cle_reservee_ignoree_avec_warning(self, tmp_path, monkeypatch):
+        """Clé réservée (contrat .workshop.env) dans les overrides → ignorée +
+        warning console, jamais bloquant."""
+        from rich.console import Console
+        app_dir = tmp_path / "canari"
+        app_dir.mkdir()
+        (app_dir / ".workshop.env").write_text("APP_SLUG=canari-ws\n")
+        (app_dir / ".workshop.overrides.env").write_text("APP_SLUG=pirate\nBIZ_PORT=5000\n")
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        con = Console(record=True, width=120)
+        monkeypatch.setattr(actions_mod, "_console", con)
+
+        env = _ws_compose_env("canari")
+        assert env is not None
+        assert env["APP_SLUG"] == "canari-ws"   # réservée ignorée (pas « pirate »)
+        assert env["BIZ_PORT"] == "5000"        # les autres overrides passent
+        text = con.export_text()
+        assert "réservée" in text and "APP_SLUG" in text
+
+    def test_fichier_illisible_warning_et_ignore(self, tmp_path, monkeypatch):
+        """Fichier illisible → warning + overrides ignorés, jamais bloquant."""
+        from rich.console import Console
+        app_dir = tmp_path / "canari"
+        app_dir.mkdir()
+        (app_dir / ".workshop.env").write_text("APP_SLUG=canari-ws\n")
+        # Un dossier à la place du fichier : read_text → IsADirectoryError
+        # (héritier d'OSError) — hermétique même exécuté en root (chmod 000 ne
+        # bloquerait pas root).
+        (app_dir / ".workshop.overrides.env").mkdir()
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        con = Console(record=True, width=120)
+        monkeypatch.setattr(actions_mod, "_console", con)
+
+        assert _ws_override_env("canari") == {}
+        env = _ws_compose_env("canari")
+        assert env is not None
+        assert env["APP_SLUG"] == "canari-ws"
+        assert "illisible" in con.export_text()
+
+    def test_merge_env_sans_atelier_allowlist_plus_overrides(self, tmp_path, monkeypatch):
+        """Fallback des commandes down/remove (atelier déjà disparu) :
+        _ws_merge_env(slug, {}) = allowlist + overrides ; sans fichier
+        d'overrides, strictement égal à _compose_base_env() (no-op)."""
+        app_dir = tmp_path / "canari"
+        app_dir.mkdir()
+        monkeypatch.setattr(hub_state, "APPS_DIR", tmp_path)
+        monkeypatch.setenv("DOCKER_HOST", "unix:///run/docker.sock")
+        monkeypatch.setenv("DATABASE_URL", "postgresql://secret")
+
+        # Sans overrides : identique à la base allowlist (no-op strict)
+        env = _ws_merge_env("canari", {})
+        assert env == actions_mod._compose_base_env()
+        assert env["DOCKER_HOST"] == "unix:///run/docker.sock"
+        assert "DATABASE_URL" not in env
+
+        # Avec overrides : base + overrides (même sans .workshop.env)
+        (app_dir / ".workshop.overrides.env").write_text("BIZ_PORT=5000\n")
+        assert _ws_merge_env("canari", {})["BIZ_PORT"] == "5000"
 
 
 class TestWsUsedPorts:
@@ -874,6 +989,38 @@ class TestCreateWorkshopTracing:
              patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
             assert _create_workshop(con, "wstest") is True
         assert "subnet dynamique" not in con.export_text()
+
+
+class TestCreateWorkshopOverrides:
+    """Le create injecte les overrides via _ws_merge_env (même règle que
+    partout) — c'est lui qui produisait le conflit de ports métier (bug
+    « Task 0 » : l'app bind ${BIZ_PORT:-prod} interpolé depuis son .env)."""
+
+    def test_create_fusionne_overrides_et_8_cles(self, git_app, monkeypatch):
+        (git_app / ".workshop.overrides.env").write_text(
+            "PHILIA_NG_PORT=42691\nAPP_SLUG=pirate\n")
+        monkeypatch.setattr(actions_mod.hub_state, "APPS_DIR", git_app.parent)
+        monkeypatch.setattr(actions_mod.hub_state, "check_docker", lambda: True)
+        monkeypatch.setenv("DATABASE_URL", "postgresql://secret")  # hôte non transmis
+        with patch.object(actions_mod, "_find_free_port", side_effect=[10000, 5200]), \
+             patch.object(actions_mod, "_find_free_subnet", return_value="10.210.0.0/24"), \
+             patch.object(actions_mod, "_ws_used_subnets", return_value=set()), \
+             patch.object(actions_mod.utils, "run_shell", return_value=0) as rs, \
+             patch.object(actions_mod, "_health_check", return_value=True), \
+             patch.object(actions_mod.subprocess, "run", side_effect=_sub_docker_ok):
+            assert _create_workshop(None, "wstest") is True
+        build_calls = [c for c in rs.call_args_list
+                       if c.args and c.args[0][:2] == ["docker", "compose"]
+                       and "build" in c.args[0]]
+        assert build_calls
+        env = build_calls[0].kwargs.get("env", {})
+        # Fix Task 0 : le port métier de l'override atteint le build/up du create
+        assert env.get("PHILIA_NG_PORT") == "42691"
+        # Le contrat .workshop.env (dict frais en mémoire) gagne sur les overrides
+        assert env.get("APP_SLUG") == "wstest-ws"
+        # Parité allowlist : l'env hôte n'est plus transmis au create
+        # (avant : compose_env = {**os.environ, **ws_config})
+        assert "DATABASE_URL" not in env
 
 
 # ── action_atelier : dispatch flags ──

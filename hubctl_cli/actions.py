@@ -2244,6 +2244,68 @@ def _ws_read_env(app_slug: str) -> dict[str, str]:
     return env_manager.read_env(_ws_env_path(app_slug))
 
 
+# ── Overrides par app (.workshop.overrides.env, optionnel) ──
+# Fichier dotenv committé par l'app : elle y épingle les variables que compose
+# interpolerait sinon depuis son .env PROD (ex. ports host métier
+# ${PHILIA_NG_PORT:-42690}) — sans ça l'atelier retombe sur les ports prod →
+# conflit avec la prod qui tourne → restart loop (bug « Task 0 »).
+# MÊME RÈGLE que l'implémentation Hub : parité stricte des deux côtés du
+# contrat. hubctl n'écrit JAMAIS ce fichier.
+_WS_OVERRIDES_FILENAME = ".workshop.overrides.env"
+
+# Clés réservées au contrat .workshop.env (état interne hubctl, 8 clés) :
+# présentes dans les overrides → ignorées + warning, jamais bloquant.
+_WS_RESERVED_KEYS = frozenset({
+    "APP_SLUG", "API_PORT", "FRONTEND_PORT", "FRONTEND_HTTPS_PORT",
+    "HTTPS_ENABLED", "WS_REF", "WS_COMMIT", "APP_SUBNET",
+})
+
+
+def _ws_overrides_path(app_slug: str) -> Path:
+    """Chemin du fichier d'overrides par app : APPS/X/.workshop.overrides.env
+    (dérivé de _ws_env_path : même répertoire)."""
+    return _ws_env_path(app_slug).with_name(_WS_OVERRIDES_FILENAME)
+
+
+def _ws_override_env(app_slug: str) -> dict[str, str]:
+    """Lit les overrides atelier par app (.workshop.overrides.env, optionnel).
+
+    Fichier absent → {} (no-op strict, comportement identique). Clés
+    réservées (contrat .workshop.env) ignorées avec warning — hubctl n'écrit
+    jamais ces clés dans les overrides. Fichier illisible → warning + ignore.
+    """
+    path = _ws_overrides_path(app_slug)
+    if not path.exists():
+        return {}
+    try:
+        raw = env_manager.read_env(path)
+    except OSError as e:
+        _console.print(f"[yellow]⚠ {path.name} illisible ({e}) — overrides atelier ignorés.[/yellow]")
+        return {}
+    overrides: dict[str, str] = {}
+    for key, value in raw.items():
+        if key in _WS_RESERVED_KEYS:
+            _console.print(f"[yellow]⚠ {path.name} : clé réservée « {key} » ignorée "
+                           f"(contrat .workshop.env).[/yellow]")
+            continue
+        overrides[key] = value
+    return overrides
+
+
+def _ws_merge_env(app_slug: str, ws: dict[str, str]) -> dict[str, str]:
+    """Env du subprocess docker compose -p X-ws — helper commun à tous les
+    appels compose du projet -ws (create/maj/ship/start/stop/remove).
+
+    Précédence (faible → forte) : allowlist docker (_compose_base_env)
+    < overrides app (.workshop.overrides.env) < contrat .workshop.env
+    (les 8 clés gagnent toujours).
+    """
+    env = _compose_base_env()
+    env.update(_ws_override_env(app_slug))
+    env.update(ws)
+    return env
+
+
 # Clés d'environnement transmises aux sous-processus docker compose atelier
 # (accès docker + locales). Parité HUB_base 3.47.3 (_COMPOSE_ENV_ALLOWLIST) :
 # ne JAMAIS fusionner os.environ entier — certaines clés du hub partagent leur
@@ -2266,18 +2328,17 @@ def _compose_base_env() -> dict[str, str]:
 def _ws_compose_env(app_slug: str) -> dict[str, str] | None:
     """Construit l'environnement pour docker compose -p X-ws.
 
-    Allowlist (accès docker) + .workshop.env. Les valeurs de .workshop.env
-    restent la source de vérité ; le .env de prod est lu par Docker Compose
-    lui-même. L'environnement du shell hôte n'est volontairement PAS transmis
+    Allowlist (accès docker) + overrides app + .workshop.env via _ws_merge_env
+    (précédence : allowlist < overrides < .workshop.env, la source de vérité).
+    Le .env de prod est lu par Docker Compose lui-même. L'environnement du
+    shell hôte n'est volontairement PAS transmis
     (cf. _COMPOSE_ENV_ALLOWLIST — incident 2026-09, parité hub-api 3.47.3).
     Retourne None si l'atelier n'existe pas.
     """
     ws = _ws_read_env(app_slug)
     if not ws:
         return None
-    env = _compose_base_env()
-    env.update(ws)
-    return env
+    return _ws_merge_env(app_slug, ws)
 
 
 def _ws_compose_files(app_dir, ws_env):
@@ -2610,7 +2671,7 @@ def _update_workshop(console, app_slug: str, ref: str = "main", *, dry_run: bool
         # 4. BUILD avec APP_VERSION injectée depuis le VERSION du tree
         #    (hubctl bypass make sync-env → sans ça, l'atelier afficherait
         #     la version périmée du .env prod)
-        compose_env = _ws_compose_env(app_slug) or _compose_base_env()
+        compose_env = _ws_compose_env(app_slug) or _ws_merge_env(app_slug, {})
         version_file = app_dir / "VERSION"
         if version_file.exists():
             compose_env["APP_VERSION"] = version_file.read_text().strip()
@@ -2673,7 +2734,7 @@ def _ws_update_rollback(console, app_slug: str, prev_branch: str | None,
     con.print(f"[red]✗ {reason}. ROLLBACK git.[/red]")
     _ws_git_restore(con, app_dir, prev_branch, prev_commit, dry_run=dry_run)
     if not dry_run:
-        compose_env = _ws_compose_env(app_slug) or _compose_base_env()
+        compose_env = _ws_compose_env(app_slug) or _ws_merge_env(app_slug, {})
         ws_env = _ws_read_env(app_slug)
         files = _ws_compose_files(app_dir, ws_env)
         version_file = app_dir / "VERSION"
@@ -2919,7 +2980,12 @@ def _create_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
         # Fallbacks : convention historique <slug>-postgres-data (comportement
         # antérieur à la résolution).
         files = _ws_compose_files(app_dir, ws_config)
-        compose_env = {**os.environ, **ws_config}
+        # Env du subprocess compose : même règle que partout (_ws_merge_env,
+        # allowlist < overrides < contrat 8 clés). C'est le create qui produit
+        # le conflit de ports métier sinon (l'app bindant ${BIZ_PORT:-prod}
+        # interpolé depuis son .env prod). L'environnement du shell hôte n'est
+        # volontairement PAS transmis (cf. _COMPOSE_ENV_ALLOWLIST).
+        compose_env = _ws_merge_env(app_slug, ws_config)
         version_file = app_dir / "VERSION"
         if version_file.exists():
             # hubctl bypass make sync-env : sans ça, l'atelier afficherait
@@ -3027,7 +3093,7 @@ def _stop_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     con = console or _console
     ws_slug = _ws_project(app_slug)
 
-    compose_env = _ws_compose_env(app_slug) or _compose_base_env()
+    compose_env = _ws_compose_env(app_slug) or _ws_merge_env(app_slug, {})
     app_dir = hub_state.APPS_DIR / app_slug
     compose_file = app_dir / "docker-compose.yml"
 
@@ -3048,7 +3114,7 @@ def _remove_workshop(console, app_slug: str, *, dry_run: bool = False) -> bool:
     con = console or _console
     ws_slug = _ws_project(app_slug)
 
-    compose_env = _ws_compose_env(app_slug) or _compose_base_env()
+    compose_env = _ws_compose_env(app_slug) or _ws_merge_env(app_slug, {})
     app_dir = hub_state.APPS_DIR / app_slug
     compose_file = app_dir / "docker-compose.yml"
 
