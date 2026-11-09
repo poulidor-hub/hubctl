@@ -1,3 +1,18 @@
+## [0.18.0] - 9 novembre 2026
+
+### ✨ Service hôte de mise à jour (`hubctl update --serve`) — centre de mises à jour du parc
+
+Le Hub central peut désormais détecter les mises à jour disponibles et lancer la mise à jour du socle depuis son interface : ce service hôte expose le statut git du parc et exécute le chemin CLI réel `hubctl update hub` (pré-checks + rollback inchangés) en job persistant qui survit au redémarrage du Hub.
+
+| Élément | Détail |
+|---------|--------|
+| **`hubctl_cli/update_serve.py`** | nouveau module stdlib (aucune dépendance nouvelle) : statut par composant (méta + submodules : `version`, `version_target` lu sur `origin/main` sans toucher l'arbre, `commits_behind`, `dirty`, `drifted` (gitlink méta ≠ HEAD submodule), `error` isolé par entrée), cache TTL 60 s + `force` |
+| **Job de mise à jour** | `start_update` (ThreadPoolExecutor 1 worker + verrou, 409 si déjà en cours, `--dry-run` supporté pour smoke) ; subprocess `hubctl update hub` (log unique horodaté `~/.config/hubctl/update_logs/`, timeout 3600 s) ; état persistant disque `~/.config/hubctl/update_state.json` (json atomique, tail 50 lignes) — survit au redémarrage du service ET du Hub ; garde job obsolète (`running` > 65 min ⇒ `failed`) |
+| **Serveur HTTP** | `ThreadingHTTPServer` (recette `atelier_serve`), port 8778, bind docker0, auth `X-Atelier-Token` constant-time (token atelier réutilisé), `GET /health` sans auth, `GET /update/status[?refresh=1]`, `POST /update/run`, `GET /update/job` ; jamais de 500 masqué |
+| **CLI** | `hubctl update --serve [--port 8778] [--host HOST] [--token-file PATH]` ; cibles refusées avec `--serve` (code 2, parité atelier) |
+| **systemd** | `packaging/hubctl-update.service` : durcissement complet du gabarit atelier + `ReadWritePaths=@PARC_ROOT@ %h/.config/hubctl` ; installation via `hubctl init` (`_ensure_update_service`, idempotent, jamais fatal) |
+| **Tests** | +28 : 21 `test_update_serve.py` (faux dépôts git jetables + faux binaire hubctl, cycle job complet, 409, dry-run, garde obsolète, contrat argparse) + 7 `test_update_init.py` (miroir atelier : rendu, installation, dry-run) — suite complète 710 passed / 1 flaky préexistant (`test_park_checks`, hors périmètre, prouvé baseline) |
+
 ## [0.17.0] - 8 novembre 2026
 
 ### ⚡ Ateliers : overrides compose par app (`.workshop.overrides.env`) + create en allowlist
