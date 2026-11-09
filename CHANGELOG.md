@@ -1,3 +1,16 @@
+## [0.18.1] - 9 novembre 2026
+
+### 🐛 Unit systemd update : home réelle dans `ReadWritePaths`
+
+L'unit `hubctl-update.service` refusait de démarrer en prod (`status=226/NAMESPACE,
+/root/.config/hubctl introuvable`) : le gabarit utilisait le raccourci home de
+systemd dans `ReadWritePaths`, qui se résout à `/root` dans une unit système
+indépendamment de `User=`. Remplacé par `/home/@REAL_USER@/.config/hubctl`
+(substitution à l'installation). Garde-fou de packaging renforcé : plus aucun
+raccourci home dans le gabarit livré ; asserts rendu/gabarit mis à jour (+2/28 tests
+update_init+serve verts).
+
+## [0.18.0] - 9 novembre 2026
 ## [0.18.0] - 9 novembre 2026
 
 ### ✨ Service hôte de mise à jour (`hubctl update --serve`) — centre de mises à jour du parc
