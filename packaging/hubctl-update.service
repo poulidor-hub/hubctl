@@ -55,7 +55,7 @@ ProtectSystem=strict
 # État + logs dans ~/.config/hubctl : ReadWritePaths utilise la home RÉELLE
 # (placeholder /home/@REAL_USER@ — le raccourci home de systemd se résout à
 # /root dans une unit système, indépendamment de User=).
-ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl
+ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl /home/@REAL_USER@/.docker
 PrivateTmp=true
 
 # ── Durcissement complémentaire — copie du gabarit atelier (validé en

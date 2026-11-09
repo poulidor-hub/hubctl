@@ -34,7 +34,7 @@ Description=hubctl agent de mise a jour du parc
 User=@REAL_USER@
 WorkingDirectory=@PARC_ROOT@
 ExecStart=@PARC_ROOT@/hubctl update --serve --host 172.17.0.1 --port 8778
-ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl
+ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl /home/@REAL_USER@/.docker
 
 [Install]
 WantedBy=multi-user.target
@@ -113,7 +113,7 @@ def test_rendered_unit_substitutes_placeholders(tmp_path, monkeypatch):
     assert f"WorkingDirectory={tmp_path.resolve()}" in rendered
     assert (f"ExecStart={tmp_path.resolve()}/hubctl update --serve "
             f"--host 172.17.0.1 --port 8778") in rendered
-    assert (f"ReadWritePaths={tmp_path.resolve()} /home/utilisateur-test/.config/hubctl") in rendered
+    assert (f"ReadWritePaths={tmp_path.resolve()} /home/utilisateur-test/.config/hubctl /home/utilisateur-test/.docker") in rendered
     assert "@REAL_USER@" not in rendered
     assert "@PARC_ROOT@" not in rendered
     assert "User=@REAL_USER@" in actions._UPDATE_UNIT_GABARIT.read_text()
@@ -178,7 +178,7 @@ def test_gabarit_livre_utilise_placeholders():
     """Le gabarit embarqué ne porte AUCUN user ni chemin en dur : les hôtes
     où le parc n'appartient pas à « admin » doivent s'installer sans édition
     manuelle. Contrat « Centre de mises à jour » (spec §4.1) : routes
-    update/*, port 8778, ReadWritePaths parc ENTIER + ~/.config/hubctl."""
+    update/*, port 8778, ReadWritePaths parc ENTIER + ~/.config/hubctl + ~/.docker (client buildx)."""
     gabarit = (Path(actions.__file__).resolve().parent.parent
                / "packaging" / "hubctl-update.service")
     text = gabarit.read_text(encoding="utf-8")
