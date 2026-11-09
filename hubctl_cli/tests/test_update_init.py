@@ -34,7 +34,7 @@ Description=hubctl agent de mise a jour du parc
 User=@REAL_USER@
 WorkingDirectory=@PARC_ROOT@
 ExecStart=@PARC_ROOT@/hubctl update --serve --host 172.17.0.1 --port 8778
-ReadWritePaths=@PARC_ROOT@ %h/.config/hubctl
+ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl
 
 [Install]
 WantedBy=multi-user.target
@@ -113,7 +113,7 @@ def test_rendered_unit_substitutes_placeholders(tmp_path, monkeypatch):
     assert f"WorkingDirectory={tmp_path.resolve()}" in rendered
     assert (f"ExecStart={tmp_path.resolve()}/hubctl update --serve "
             f"--host 172.17.0.1 --port 8778") in rendered
-    assert (f"ReadWritePaths={tmp_path.resolve()} %h/.config/hubctl") in rendered
+    assert (f"ReadWritePaths={tmp_path.resolve()} /home/utilisateur-test/.config/hubctl") in rendered
     assert "@REAL_USER@" not in rendered
     assert "@PARC_ROOT@" not in rendered
     assert "User=@REAL_USER@" in actions._UPDATE_UNIT_GABARIT.read_text()
@@ -187,7 +187,7 @@ def test_gabarit_livre_utilise_placeholders():
     assert "Description=hubctl agent de mise a jour du parc" in text
     assert ("ExecStart=@PARC_ROOT@/hubctl update --serve "
             "--host 172.17.0.1 --port 8778") in text
-    assert "ReadWritePaths=@PARC_ROOT@ %h/.config/hubctl" in text
+    assert "ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl" in text
     # Durcissement hérité de l'atelier, jamais allégé
     for directive in ("NoNewPrivileges=true", "ProtectSystem=strict",
                       "PrivateTmp=true", "ProtectHome=read-only",
@@ -197,4 +197,4 @@ def test_gabarit_livre_utilise_placeholders():
                       "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"):
         assert directive in text, directive
     assert "User=admin" not in text
-    assert "%h/MyCOMPANY" not in text
+    assert "%h" not in text, "unité système : %h se résout à /root"
