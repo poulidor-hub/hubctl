@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -289,7 +290,10 @@ def test_start_update_dry_run_flag(monkeypatch, tmp_path):
         log_dir=tmp_path / "logs", dry_run=True)
     assert code == 202
     job = _wait_state(state_file, "success", timeout=10)
-    assert "--dry-run" in marker.read_text()
+    # Ordre verrouillé (revue finale D1) : --dry-run (option GLOBALE du
+    # parser) AVANT le subcommand « update hub » — sinon argparse répond
+    # « unrecognized arguments » (cf. test_dry_run_global_option_contract).
+    assert "--dry-run update hub" in marker.read_text()
     assert job["exit_code"] == 0
 
 
@@ -356,6 +360,47 @@ def test_read_job_state_idle_when_missing(tmp_path):
     corrupt = tmp_path / "corrupt.json"
     corrupt.write_text("{état tronqué", encoding="utf-8")
     assert update_serve.read_job_state(corrupt) == {"state": "idle"}
+
+
+def _running_state(started_at: str) -> dict:
+    """État ``running`` tel qu'écrit par start_update (shape §5.2)."""
+    return {"state": "running", "started_at": started_at,
+            "log_path": "/tmp/update-00000000-000000.log"}
+
+
+def test_read_job_state_stale_running_guard(tmp_path):
+    """Garde d'obsolescence (revue finale D2) : ``running`` + started_at
+    vieux de 2 h (> ``_JOB_TIMEOUT + 300``) → ``failed`` (exit_code None
+    + detail), réécrit sur disque (second appel cohérent) ; ``running``
+    frais ou started_at illisible → inchangé."""
+    state_file = tmp_path / "update_state.json"
+
+    # Job périmé : started_at = il y a 2 h → transformé en failed
+    stale = _running_state(
+        (datetime.now().astimezone() - timedelta(hours=2))
+        .isoformat(timespec="seconds"))
+    update_serve._write_state(state_file, stale)
+    job = update_serve.read_job_state(state_file)
+    assert job["state"] == "failed"
+    assert job["exit_code"] is None
+    assert job["detail"] == ("job obsolet (service hote redemarre "
+                             "pendant le job ?)")
+    assert job["started_at"] == stale["started_at"]  # mêmes champs conservés
+    assert job["log_path"] == stale["log_path"]
+    # persisté sur disque : le second appel relit l'état corrigé à l'identique
+    assert update_serve.read_job_state(state_file) == job
+
+    # Job frais : ``running`` inchangé, fichier intact (lecture pure)
+    fresh = _running_state(
+        datetime.now().astimezone().isoformat(timespec="seconds"))
+    update_serve._write_state(state_file, fresh)
+    assert update_serve.read_job_state(state_file) == fresh
+    assert json.loads(state_file.read_text(encoding="utf-8")) == fresh
+
+    # started_at illisible → garde désactivée, comportement inchangé
+    bad = _running_state("pas-une-date")
+    update_serve._write_state(state_file, bad)
+    assert update_serve.read_job_state(state_file) == bad
 
 
 # ── Serveur HTTP + branchage CLI (Task 3, spec §4.1) ────────────────────────
@@ -511,3 +556,20 @@ def test_cli_dispatch_serve_rejects_targets(monkeypatch):
     assert main(["update", "hub", "--serve"]) == 2
     assert main(["update", "hub", "monapp", "--serve"]) == 2
     assert main(["update", "all", "--serve"]) == 2
+
+
+def test_dry_run_global_option_contract():
+    """Contrat argparse verrouillé (revue finale D1) : ``--dry-run`` est
+    une option GLOBALE du parser principal — elle doit PRÉCÉDER le
+    subcommand « update » (c'est l'ordre que _run_update_job construit :
+    ``[hubctl, --dry-run, update, hub]``). L'ordre inverse ``update hub
+    --dry-run`` (bug initial) est refusé par argparse (SystemExit 2)."""
+    from hubctl_cli.__main__ import build_parser
+
+    args = build_parser().parse_args(["--dry-run", "update", "hub"])
+    assert args.global_dry_run is True
+    assert args.command == "update"
+
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["update", "hub", "--dry-run"])
+    assert exc.value.code == 2  # usage + « unrecognized arguments »

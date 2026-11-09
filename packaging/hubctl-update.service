@@ -1,8 +1,8 @@
 # hubctl-update.service — service système de l'agent de mise a jour de hubctl.
 #
 # GABARIT : les valeurs entre arobases (utilisateur, chemin du parc) sont des
-# placeholders substitués à l'installation (install.sh ou `hubctl init`, fichier
-# rendu dans packaging/.rendered/) — ne PAS copier ce fichier tel quel dans
+# placeholders substitués à l'installation (`hubctl init`, fichier rendu dans
+# packaging/.rendered/) — ne PAS copier ce fichier tel quel dans
 # /etc/systemd/system : unit non démarrable (utilisateur/chemins absents).
 #
 # (`hubctl update --serve` : agent « Centre de mises a jour » piloté par le

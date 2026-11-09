@@ -99,6 +99,14 @@ _STATUS_TS: float = 0.0
 # délai dépassé le subprocess est tué et l'état passe ``failed`` (spec §5.2).
 _JOB_TIMEOUT: float = 3600.0
 
+# Garde d'obsolescence (revue finale D2) : un état ``running`` vieux de plus
+# de ``_JOB_TIMEOUT + 300`` s ne peut plus être un vrai job (le subprocess
+# serait déjà mort de timeout depuis 5 min) — c'est le service hôte qui a
+# été tué pendant le job (restart/OOM/reboot), laissant l'état bloqué.
+# :func:`read_job_state` transforme alors l'état en ``failed`` : le front
+# (bouton de mise à jour) ne reste pas désactivé indéfiniment.
+_JOB_STALE_AFTER: float = _JOB_TIMEOUT + 300.0
+
 # Dernières lignes du log embarquées dans l'état final : le front affiche
 # le verdict sans re-télécharger tout le log (spec §5.2).
 _TAIL_LINES: int = 50
@@ -293,6 +301,18 @@ def _write_state(state_file: Path, payload: dict) -> None:
     os.replace(tmp, state_file)
 
 
+def _parse_started_at(raw) -> datetime | None:
+    """ISO8601 → datetime aware (tz locale assumée si absente). Toute
+    valeur absente/illisible → ``None`` : la garde d'obsolescence de
+    :func:`read_job_state` est alors désactivée (comportement lecture
+    pure inchangé) — parse tolérant, jamais d'exception."""
+    try:
+        dt = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return dt.astimezone() if dt.tzinfo is None else dt
+
+
 def read_job_state(state_file: Path) -> dict:
     """Contenu courant/dernier de ``update_state.json`` (contrat
     GET /update/job, proxifié tel quel par le Hub).
@@ -301,6 +321,19 @@ def read_job_state(state_file: Path) -> dict:
     « redémarré » relit le verdict du dernier job (spec §4.1). Jamais
     d'exception : fichier absent ou JSON corrompu/illisible →
     ``{"state": "idle"}`` — le front affiche alors un état neutre.
+
+    Garde d'obsolescence (revue finale D2) : un état ``running`` dont
+    ``started_at`` date de plus de ``_JOB_STALE_AFTER`` ne peut plus être
+    un job vivant (service hôte tué pendant le job) → l'état est
+    transformé en ``{"state": "failed", ...mêmes champs..., "exit_code":
+    None, "detail": "job obsolet (service hote redemarre pendant le job ?)"}``
+    ET réécrit sur disque (écriture atomique ``_write_state``) pour que la
+    correction persiste — choix documenté du contrat : tous les lecteurs
+    (poll front, proxy Hub, payload 409) voient ensuite ``failed`` au
+    lieu d'un ``running`` fantôme. Échec d'écriture (OSError, ex. état
+    en lecture seule) → la transformation est quand même retournée
+    (lecture pure en secours). ``started_at`` illisible → aucun
+    traitement : comportement lecture pure inchangé.
     """
     try:
         data = json.loads(Path(state_file).read_text(encoding="utf-8"))
@@ -308,6 +341,18 @@ def read_job_state(state_file: Path) -> dict:
         return {"state": "idle"}
     if not isinstance(data, dict):
         return {"state": "idle"}
+    if data.get("state") == "running":
+        started = _parse_started_at(data.get("started_at"))
+        if started is not None:
+            age = (datetime.now().astimezone() - started).total_seconds()
+            if age > _JOB_STALE_AFTER:
+                data = {**data, "state": "failed", "exit_code": None,
+                        "detail": "job obsolet (service hote redemarre "
+                                  "pendant le job ?)"}
+                try:
+                    _write_state(state_file, data)
+                except OSError:
+                    pass  # lecture pure en secours : transformation retournée
     return data
 
 
@@ -325,7 +370,8 @@ def _log_tail(log_path: Path, lines: int = _TAIL_LINES) -> list[str]:
 def _run_update_job(parc_root: Path, state_file: Path, log_path: Path,
                     dry_run: bool) -> None:
     """Thread worker (:func:`start_update`) : exécute le point d'entrée
-    CLI réel ``<parc>/hubctl update hub`` et finalise l'état sur disque.
+    CLI réel ``<parc>/hubctl update hub`` (``--dry-run`` inséré AVANT le
+    subcommand — option globale du parser) et finalise l'état sur disque.
 
     stdout+stderr confondus → ``log_path``, cwd=parc_root, timeout
     ``_JOB_TIMEOUT``. ``exit_code`` 0 → ``success``, sinon ``failed`` ;
@@ -335,9 +381,14 @@ def _run_update_job(parc_root: Path, state_file: Path, log_path: Path,
     au worker (pas de 409 fantôme après un crash).
     """
     global _JOB_RUNNING
-    cmd = [str(Path(parc_root) / "hubctl"), "update", "hub"]
+    # --dry-run est une option GLOBALE du parser (hubctl_cli/__main__.py,
+    # build_parser) : elle doit PRÉCÉDER le subcommand « update », sinon
+    # argparse répond « unrecognized arguments » (SystemExit 2) — cf. test
+    # test_dry_run_global_option_contract (revue finale D1).
+    cmd = [str(Path(parc_root) / "hubctl")]
     if dry_run:
         cmd.append("--dry-run")
+    cmd += ["update", "hub"]
     try:
         exit_code: int | None
         try:
