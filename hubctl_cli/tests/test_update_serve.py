@@ -495,3 +495,19 @@ def test_cli_dispatch_serve(monkeypatch, tmp_path):
     calls.clear()
     assert main(["update", "--serve"]) == 0
     assert calls == {"port": 8778, "token_file": None, "host": "127.0.0.1"}
+
+
+def test_cli_dispatch_serve_rejects_targets(monkeypatch):
+    """`update <cible> --serve` refuse (code 2, même ruling que
+    `atelier --serve` sans slug d'app) et serve() n'est JAMAIS appelé :
+    l'agent gère le parc entier, la cible se passe à POST /update/run."""
+    from hubctl_cli.__main__ import main
+
+    def boom(*args, **kwargs):
+        raise AssertionError("serve() ne doit pas être appelé avec une cible")
+
+    monkeypatch.setattr(update_serve, "serve", boom)
+
+    assert main(["update", "hub", "--serve"]) == 2
+    assert main(["update", "hub", "monapp", "--serve"]) == 2
+    assert main(["update", "all", "--serve"]) == 2

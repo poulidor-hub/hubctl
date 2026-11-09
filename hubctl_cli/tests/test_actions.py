@@ -841,8 +841,10 @@ def _patch_bootstrap_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(actions.hub_state, "check_docker", mock_docker_check)
     # Ne pas écrire dans le vrai ~/.bashrc / ~/.config/poulidor/parc.sh du user
     monkeypatch.setattr(actions, "_install_shell_marker", lambda *a, **kw: None)
-    # Ni toucher au token hôte / à l'unit systemd hubctl-atelier réels
+    # Ni toucher au token hôte / aux unités systemd hubctl-atelier et
+    # hubctl-update réelles
     monkeypatch.setattr(actions, "_ensure_atelier_service", lambda *a, **kw: None)
+    monkeypatch.setattr(actions, "_ensure_update_service", lambda *a, **kw: None)
     return hub_dir
 
 

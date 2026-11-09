@@ -393,6 +393,12 @@ def _run(args) -> int:
             # Serveur hôte « Centre de mises à jour » (spec §4.1) : gère le
             # parc entier — pas de cible, pas de _update_mode (la collecte
             # et le job n'ont pas besoin du mode).
+            if args.targets:
+                # Même ruling que `atelier --serve` sans slug d'app : la
+                # cible se passe à POST /update/run, pas au lancement.
+                print("❌ --serve ne prend pas de cible "
+                      "(l'agent met a jour le parc entier via POST /update/run).")
+                return 2
             try:
                 return update_serve.serve(port=args.update_port,
                                           token_file=args.update_token_file,
