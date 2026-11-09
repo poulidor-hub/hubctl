@@ -1,3 +1,16 @@
+## [0.18.2] - 9 novembre 2026
+
+### 🐛 Unit systemd update : `~/.docker` dans `ReadWritePaths`
+
+Le premier job réel échouait au build (`failed to update builder last activity
+time: read-only file system`) : `ProtectHome=read-only` bloquait l'écriture du
+client docker buildx (`~/.docker/buildx/activity`). Ajout de
+`/home/@REAL_USER@/.docker` aux `ReadWritePaths` (parc + `.config/hubctl` +
+`.docker`), asserts rendu/gabarit mis à jour. Constaté sur le premier déploiement
+réel (job 21:11, rollback automatique propre — pré-checks, snapshot DB et
+rollback exactement comme prévu).
+
+## [0.18.1] - 9 novembre 2026
 ## [0.18.1] - 9 novembre 2026
 
 ### 🐛 Unit systemd update : home réelle dans `ReadWritePaths`
