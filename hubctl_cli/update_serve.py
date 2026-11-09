@@ -21,11 +21,18 @@ Shape (contrat) :
 - :func:`collect_update_status` → ``{"service": "ok", "checked_at":
   <ISO8601>, "meta": <component>, "components": {rel_path: <component>}}`` ;
 - ``<component>`` = ``{"name", "path", "version", "version_target",
-  "branch", "commits_behind", "dirty", "update_available", "error"}`` ;
+  "branch", "commits_behind", "dirty", "drifted", "update_available",
+  "error"}`` ;
   ``version`` = ``VERSION`` local (à défaut champ ``version`` du
   ``package.json`` pour les composants JS, sinon ``None``) ;
   ``version_target`` = ``git show origin/main:<fichier>`` (lisible sans
-  toucher à l'arbre local, ``None`` si absent).
+  toucher à l'arbre local, ``None`` si absent) ;
+  ``drifted`` = rel_paths des submodules dont le HEAD local ≠ gitlink
+  enregistré par le méta (calculé pour l'entrée méta, ``[]`` pour un
+  submodule) ;
+  ``update_available`` du méta = ``commits_behind > 0 or drifted`` —
+  une mise à jour réalignera les pointeurs (spec §5.1) ; pour un
+  submodule, ``commits_behind > 0`` seul.
 """
 from __future__ import annotations
 
@@ -78,12 +85,41 @@ def _read_version(repo: Path, ref: str = "HEAD") -> str | None:
     return None
 
 
+def _meta_drift(parc_root: Path) -> list[str]:
+    """Submodules dont le HEAD local ≠ gitlink enregistré par le méta.
+
+    Comparaison purement locale (``git ls-tree HEAD <path>`` côté méta vs
+    ``git rev-parse HEAD`` côté submodule, même lecture que
+    ``park_checks.check_hub_base``) : un submodule en avance locale ou
+    posé sur un autre commit rend le gitlink méta obsolète — une mise à
+    jour du méta réalignera le pointeur (spec §5.1). Ne lève jamais ;
+    submodule non initialisé ou comparaison illisible → ignoré.
+    """
+    drifted: list[str] = []
+    for rel in sorted(park_checks._submodule_paths(parc_root)):
+        sub = parc_root / rel
+        if not (sub / ".git").exists() and not (sub / ".git").is_file():
+            continue  # jamais initialisé : pas de HEAD local à comparer
+        rc, out, _ = park_checks._run("git", "ls-tree", "HEAD", rel,
+                                      cwd=parc_root)
+        parts = out.split() if rc == 0 else []
+        recorded = parts[2] if len(parts) > 2 else None
+        if recorded is None:
+            continue
+        rc, local, _ = park_checks._run("git", "rev-parse", "HEAD", cwd=sub)
+        if rc == 0 and local.strip() and local.strip() != recorded:
+            drifted.append(rel)
+    return drifted
+
+
 def _component_status(parc_root: Path, rel: str) -> dict:
     """Statut git d'un composant (``rel="."`` → méta). Ne lève jamais.
 
     Échecs isolés dans ``error`` : fetch impossible → on continue sur les
     refs locales (le fetch précédent, jamais de diagnostic destructeur) ;
-    sous-repo non initialisé → ``error="not initialized"``.
+    sous-repo non initialisé → ``error="not initialized"``. Pour le méta,
+    ``drifted`` liste les submodules désalignés (``_meta_drift``) et
+    alimente ``update_available``.
     """
     repo = parc_root if rel == "." else parc_root / rel
     entry: dict = {
@@ -94,6 +130,7 @@ def _component_status(parc_root: Path, rel: str) -> dict:
         "branch": None,
         "commits_behind": 0,
         "dirty": False,
+        "drifted": [],
         "update_available": False,
         "error": None,
     }
@@ -124,7 +161,16 @@ def _component_status(parc_root: Path, rel: str) -> dict:
 
     entry["version"] = _read_version(repo)
     entry["version_target"] = _read_version(repo, "origin/main")
-    entry["update_available"] = entry["commits_behind"] > 0
+    if rel == ".":
+        # spec §5.1 : le méta est aussi « à mettre à jour » quand un gitlink
+        # ne pointe plus le HEAD local d'un submodule (drift) — une mise à
+        # jour réalignera les pointeurs. Entrées submodules : commits_behind
+        # seul (elles ne portent pas de pointeurs).
+        entry["drifted"] = _meta_drift(parc_root)
+        entry["update_available"] = (entry["commits_behind"] > 0
+                                     or bool(entry["drifted"]))
+    else:
+        entry["update_available"] = entry["commits_behind"] > 0
     return entry
 
 

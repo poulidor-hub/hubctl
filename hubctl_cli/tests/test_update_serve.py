@@ -89,6 +89,7 @@ def test_status_up_to_date(tmp_path):
     assert status["meta"]["update_available"] is False
     assert status["meta"]["commits_behind"] == 0
     assert status["meta"]["version"] == "1.0.0"
+    assert status["meta"]["drifted"] == []
     assert "HUB_base" in status["components"]
     assert status["components"]["HUB_base"]["update_available"] is False
 
@@ -111,6 +112,26 @@ def test_status_behind(tmp_path):
     assert comp["update_available"] is True
     assert comp["commits_behind"] == 1
     assert comp["version_target"] == "2.0.0"
+
+
+def test_meta_drifted_submodule_gitlink(tmp_path):
+    """Gitlink méta ≠ HEAD local d'un submodule → drifted + update_available.
+
+    Le submodule avance localement (commit non référencé par le gitlink
+    méta) : ``commits_behind`` du méta reste 0 mais une mise à jour
+    réalignera les pointeurs → spec §5.1 veut le méta « à mettre à jour ».
+    """
+    parc, sub, _sub_origin = _make_parc(tmp_path)
+    (sub / "VERSION").write_text("1.1.0-local\n")
+    _git("add", "-A", cwd=sub)
+    _git("commit", "-m", "avance locale", cwd=sub)
+
+    status = update_serve.collect_update_status(parc)
+    # le submodule lui-même n'a pas de retard sur son origin…
+    assert status["components"]["HUB_base"]["update_available"] is False
+    # …mais le gitlink méta ne pointe plus son HEAD local → drift
+    assert status["meta"]["drifted"] == ["HUB_base"]
+    assert status["meta"]["update_available"] is True
 
 
 def test_status_dirty(tmp_path):
