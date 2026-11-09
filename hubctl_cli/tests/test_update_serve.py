@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
 
-"""Tests de update_serve — collecte du statut de mise à jour (Task 1).
+"""Tests de update_serve — statut (Task 1) + état/exécution du job (Task 2).
 
 Chaque scénario monte un « parc » factice dans tmp_path : un méta git avec
 VERSION + un submodule HUB_base initialisé depuis un dépôt bare (origin).
 Contrat collect_update_status (spec §5.1, consommé par GET /update/status) :
 {"service": "ok", "checked_at": <ISO8601>, "meta": <component>,
  "components": {rel_path: <component>}}.
+Contrat job (spec §5.2, consommé par POST /update/run + GET /update/job) :
+start_update → (202, {"job": running}) ou (409, ...) ; l'état final ne vit
+que dans update_state.json.
 """
+import importlib
+import time
 from pathlib import Path
 
 import pytest
@@ -69,13 +74,14 @@ def _make_parc(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_status_cache():
-    """Le cache statut est module-level : chaque test repart à froid."""
+def _reset_update_serve_state():
+    """Cache statut + flag job sont module-level : chaque test repart à froid."""
     update_serve._STATUS_CACHE = None
     update_serve._STATUS_TS = 0.0
     yield
     update_serve._STATUS_CACHE = None
     update_serve._STATUS_TS = 0.0
+    update_serve._JOB_RUNNING = False  # aucun état mémoire résiduel de job
 
 
 # ── Collecte du statut ──────────────────────────────────────────────────────
@@ -193,3 +199,150 @@ def test_status_cache_ttl(monkeypatch, tmp_path):
 
     update_serve.collect_update_status(parc, force=True)  # force : refetch
     assert len(fetches) > first_round
+
+
+# ── État + exécution du job (Task 2, spec §5.2) ─────────────────────────────
+
+
+FAKE_HUBCTL = """#!/usr/bin/env bash
+echo "fake update: $*"
+echo "$*" >> "${STATE_MARKER}"
+exit "${FAKE_EXIT:-0}"
+"""
+
+# Variante lente : le job est encore en cours pendant le second appel
+# (test du refus 409 concurrent — un vrai update dure des minutes).
+FAKE_HUBCTL_SLOW = """#!/usr/bin/env bash
+echo "fake update: $*"
+echo "$*" >> "${STATE_MARKER}"
+sleep "${FAKE_SLEEP:-2}"
+exit "${FAKE_EXIT:-0}"
+"""
+
+
+def _fake_parc(tmp_path: Path, script: str = FAKE_HUBCTL) -> tuple[Path, Path]:
+    """(parc, marker) : parc factice réduit à un faux binaire ``hubctl``
+    exécutable — le job le subprocess tel quel (aucun git requis). Il
+    note ses arguments dans ``$STATE_MARKER`` et sort avec ``$FAKE_EXIT``:
+    les tests observent ce qui a réellement tourné côté subprocess."""
+    parc = tmp_path / "parc"
+    parc.mkdir()
+    hubctl = parc / "hubctl"
+    hubctl.write_text(script, encoding="utf-8")
+    hubctl.chmod(0o755)  # exécutable, comme le vrai point d'entrée CLI
+    return parc, tmp_path / "marker"
+
+
+def _wait_state(state_file: Path, state: str, timeout: float = 10.0) -> dict:
+    """Poll ``read_job_state`` jusqu'à l'état attendu — le job tourne dans
+    le worker du ThreadPoolExecutor, sa fin est asynchrone. Timeout →
+    échec du test (avec le dernier état lu pour le diagnostic)."""
+    deadline = time.monotonic() + timeout
+    payload: dict = {}
+    while time.monotonic() < deadline:
+        payload = update_serve.read_job_state(state_file)
+        if payload.get("state") == state:
+            return payload
+        time.sleep(0.05)
+    pytest.fail(f"état {state!r} non atteint en {timeout} s (dernier: {payload})")
+
+
+def test_start_update_happy_path(monkeypatch, tmp_path):
+    """202 immédiat (running) → succès sur disque : exit 0, args CLI
+    exacts sans --dry-run dans le marqueur, log écrit, tail non vide."""
+    parc, marker = _fake_parc(tmp_path)
+    monkeypatch.setenv("STATE_MARKER", str(marker))
+    state_file = tmp_path / "update_state.json"
+    log_dir = tmp_path / "update_logs"
+
+    code, payload = update_serve.start_update(
+        parc_root=parc, state_file=state_file, log_dir=log_dir)
+    assert code == 202
+    assert payload["job"]["state"] == "running"
+
+    job = _wait_state(state_file, "success", timeout=10)
+    assert job["exit_code"] == 0
+    assert marker.read_text().strip() == "update hub"  # sans --dry-run
+    assert Path(job["log_path"]).exists()
+    assert job["tail"]  # 50 dernières lignes : ici non vide
+    assert job["tail"][-1] == "fake update: update hub"
+
+
+def test_start_update_dry_run_flag(monkeypatch, tmp_path):
+    """dry_run=True → --dry-run passé au CLI réel (visible au marqueur)."""
+    parc, marker = _fake_parc(tmp_path)
+    monkeypatch.setenv("STATE_MARKER", str(marker))
+    state_file = tmp_path / "update_state.json"
+
+    code, _payload = update_serve.start_update(
+        parc_root=parc, state_file=state_file,
+        log_dir=tmp_path / "logs", dry_run=True)
+    assert code == 202
+    job = _wait_state(state_file, "success", timeout=10)
+    assert "--dry-run" in marker.read_text()
+    assert job["exit_code"] == 0
+
+
+def test_start_update_failure_state(monkeypatch, tmp_path):
+    """CLI en échec (FAKE_EXIT=2) → état final failed + exit_code 2."""
+    parc, marker = _fake_parc(tmp_path)
+    monkeypatch.setenv("STATE_MARKER", str(marker))
+    monkeypatch.setenv("FAKE_EXIT", "2")
+    state_file = tmp_path / "update_state.json"
+
+    update_serve.start_update(parc_root=parc, state_file=state_file,
+                              log_dir=tmp_path / "logs")
+    job = _wait_state(state_file, "failed", timeout=10)
+    assert job["exit_code"] == 2
+    assert job["tail"]  # le log (stdout+stderr confondus) reste consultable
+
+
+def test_start_update_conflict_while_running(monkeypatch, tmp_path):
+    """Job en cours → second appel (409, état disque) ; aucun second
+    subprocess : le marqueur ne reçoit qu'une ligne, un seul log créé."""
+    parc, marker = _fake_parc(tmp_path, script=FAKE_HUBCTL_SLOW)
+    monkeypatch.setenv("STATE_MARKER", str(marker))
+    state_file = tmp_path / "update_state.json"
+    log_dir = tmp_path / "logs"
+
+    code, payload = update_serve.start_update(
+        parc_root=parc, state_file=state_file, log_dir=log_dir)
+    assert code == 202
+    assert payload["job"]["state"] == "running"
+
+    code2, payload2 = update_serve.start_update(
+        parc_root=parc, state_file=state_file, log_dir=log_dir)
+    assert code2 == 409
+    assert payload2["detail"] == "update deja en cours"
+    assert payload2["job"]["state"] == "running"
+
+    _wait_state(state_file, "success", timeout=10)
+    assert marker.read_text().strip().splitlines() == ["update hub"]
+    assert len(list(log_dir.glob("update-*.log"))) == 1
+
+
+def test_state_survives_service_restart(monkeypatch, tmp_path):
+    """L'état final ne vit QUE dans update_state.json : module rechargé
+    (service « redémarré », mémoire à zéro) → verdict relu à l'identique."""
+    parc, marker = _fake_parc(tmp_path)
+    monkeypatch.setenv("STATE_MARKER", str(marker))
+    state_file = tmp_path / "update_state.json"
+
+    update_serve.start_update(parc_root=parc, state_file=state_file,
+                              log_dir=tmp_path / "logs")
+    before = _wait_state(state_file, "success", timeout=10)
+
+    importlib.reload(update_serve)  # recrée executor/flags : mémoire vide
+    after = update_serve.read_job_state(state_file)
+    assert after == before
+    assert after["state"] == "success"
+
+
+def test_read_job_state_idle_when_missing(tmp_path):
+    """Fichier absent OU JSON corrompu → {"state": "idle"}, jamais
+    d'exception (le service redémarre proprement sans état)."""
+    assert update_serve.read_job_state(tmp_path / "absent.json") == {
+        "state": "idle"}
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{état tronqué", encoding="utf-8")
+    assert update_serve.read_job_state(corrupt) == {"state": "idle"}
