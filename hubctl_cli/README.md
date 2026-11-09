@@ -128,6 +128,49 @@ Les opérations s'appuient sur les `Makefile` du parc : `make -C HUB_base …`
 (hub central) et `make -C APPS/<nom> …` (apps, y compris pour l'atelier qui
 tourne dans le même dossier via un 2e projet compose `-p X-ws`).
 
+### Agent de mise a jour (`update --serve`) et service systemd
+
+Serveur HTTP que le Hub proxy pour le « Centre de mises à jour » :
+`GET /health`, `GET /update/status`, `POST /update/run`, `GET /update/job`.
+Même auth `X-Atelier-Token` que l'atelier — le token est **réutilisé**
+(`~/.config/hubctl/atelier_token`, rien à générer ni copier). Port par
+défaut `8778`, bind `127.0.0.1` ; `--host` permet de l'ouvrir au strict
+nécessaire — ex. `172.17.0.1` (passerelle docker0, le bind de l'unit
+systemd) pour être joignable des conteneurs via `host.docker.internal`,
+sans être visible du LAN. L'agent met à jour le PARC ENTIER : ne pas lui
+passer de cible (`update <cible> --serve` refuse, code 2 — la cible se passe
+à `POST /update/run`) :
+
+```bash
+./hubctl update --serve                                       # port 8778, token atelier réutilisé
+./hubctl update --serve --host 172.17.0.1                     # joignable des conteneurs (host-gateway)
+./hubctl update --serve --port 8800 --token-file ~/autre_token # variantes
+```
+
+Installation en service (unit : [`packaging/hubctl-update.service`](../packaging/hubctl-update.service),
+placeholders `@REAL_USER@`/`@PARC_ROOT@` substitués à l'installation,
+même recette que l'atelier) — fait automatiquement par `./hubctl init` ;
+à la main, depuis hubctl_src :
+
+```bash
+sed -e "s|@REAL_USER@|$USER|g" \
+    -e "s|@PARC_ROOT@|$(cd .. && pwd)|g" \
+    packaging/hubctl-update.service > /tmp/hubctl-update.service
+sudo install -m 644 /tmp/hubctl-update.service /etc/systemd/system/hubctl-update.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now hubctl-update.service
+journalctl -u hubctl-update -f      # suivi ; si le token est absent,
+                                    # le service échoue visiblement (rc 2)
+```
+
+L'unit durcit l'exécution comme l'atelier (`Restart=on-failure`,
+`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp=true`), mais son
+`ReadWritePaths` est plus large : git/make écrivent dans tout le parc
+(pull méta + submodules, rebuild Hub + apps) et l'état du job + les logs
+vivent dans `~/.config/hubctl` (`update_state.json`, `update_logs/`).
+Prérequis identique : le venv `hubctl_cli/.venv` doit exister avant
+l'activation (créé par n'importe quel lancement de `./hubctl`).
+
 Toutes les confirmations sont des **choix** (Oui/Non), pas de la saisie libre.
 
 **Ajouter une app** : via un fichier seed — `./hubctl seed apps.yaml` (clone,

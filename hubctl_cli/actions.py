@@ -448,13 +448,16 @@ def _install_shell_marker(console) -> None:
 
 
 _ATELIER_UNIT = Path("/etc/systemd/system/hubctl-atelier.service")
-# Gabarit (placeholders @REAL_USER@/@PARC_ROOT@) et fichier RENDU persistant
-# (substitution faite à l'installation, cf. _render_atelier_unit) — le rendu
-# vit dans le dépôt (gitigné) pour que les commandes de repli manuel
+_UPDATE_UNIT = Path("/etc/systemd/system/hubctl-update.service")
+# Gabarits (placeholders @REAL_USER@/@PARC_ROOT@) et fichiers RENDUS
+# persistants (substitution faite à l'installation, cf. _render_unit) — le
+# rendu vit dans le dépôt (gitigné) pour que les commandes de repli manuel
 # référencent un chemin qui existe toujours.
 _PACKAGING_DIR = Path(__file__).resolve().parent.parent / "packaging"
 _ATELIER_UNIT_GABARIT = _PACKAGING_DIR / "hubctl-atelier.service"
 _ATELIER_UNIT_RENDERED = _PACKAGING_DIR / ".rendered" / "hubctl-atelier.service"
+_UPDATE_UNIT_GABARIT = _PACKAGING_DIR / "hubctl-update.service"
+_UPDATE_UNIT_RENDERED = _PACKAGING_DIR / ".rendered" / "hubctl-update.service"
 
 
 def _atelier_user() -> str:
@@ -463,8 +466,9 @@ def _atelier_user() -> str:
     return getpass.getuser()
 
 
-def _render_atelier_unit(con) -> Path | None:
-    """Rend l'unit : substitue @REAL_USER@/@PARC_ROOT@ dans le gabarit.
+def _render_unit(con, gabarit: Path, rendered: Path) -> Path | None:
+    """Rend une unit (atelier, update) : substitue @REAL_USER@/@PARC_ROOT@
+    dans le gabarit.
 
     Le gabarit ne porte aucun utilisateur ni chemin en dur (hôtes variés) ;
     la substitution se fait à l'installation et écrit un fichier rendu
@@ -472,12 +476,12 @@ def _render_atelier_unit(con) -> Path | None:
     None si KO (l'appelant replie sur le gabarit brut — jamais fatal).
     """
     try:
-        text = _ATELIER_UNIT_GABARIT.read_text(encoding="utf-8")
+        text = gabarit.read_text(encoding="utf-8")
         text = (text.replace("@REAL_USER@", _atelier_user())
                     .replace("@PARC_ROOT@", str(hub_state.PARC_ROOT.resolve())))
-        _ATELIER_UNIT_RENDERED.parent.mkdir(parents=True, exist_ok=True)
-        _ATELIER_UNIT_RENDERED.write_text(text, encoding="utf-8")
-        return _ATELIER_UNIT_RENDERED
+        rendered.parent.mkdir(parents=True, exist_ok=True)
+        rendered.write_text(text, encoding="utf-8")
+        return rendered
     except Exception as e:
         con.print(f"[yellow]⚠ Rendu de l'unit impossible ({e}) — gabarit "
                   f"brut en repli (placeholders non substitués)[/yellow]")
@@ -566,7 +570,9 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     else:
         # dry-run : aucune écriture → pas de rendu, aperçu sur le gabarit brut
         cp_src = (_ATELIER_UNIT_GABARIT if dry_run
-                  else (_render_atelier_unit(con) or _ATELIER_UNIT_GABARIT))
+                  else (_render_unit(con, _ATELIER_UNIT_GABARIT,
+                                     _ATELIER_UNIT_RENDERED)
+                        or _ATELIER_UNIT_GABARIT))
         cmds = [
             ["sudo", "cp", str(cp_src), str(_ATELIER_UNIT)],
             ["sudo", "systemctl", "daemon-reload"],
@@ -595,6 +601,71 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
     # rappeler les commandes à lancer à la main.
     con.print("[yellow]⚠ Service atelier : commandes à lancer à la main :[/yellow]")
+    for cmd in cmds:
+        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+
+
+def _ensure_update_service(console, dry_run: bool = False) -> None:
+    """Étape `hubctl init` : service hôte hubctl-update (« ensure » idempotent).
+
+    Agent de mise a jour « Centre de mises à jour » (spec §4.1) : PAS de
+    token dédié — il réutilise ~/.config/hubctl/atelier_token (déjà assuré
+    par _ensure_atelier_service ci-dessus). Il ne reste donc que l'unit
+    systemd packaging/hubctl-update.service RENDUE (substitution
+    @REAL_USER@/@PARC_ROOT@ → packaging/.rendered/) puis installée (sudo)
+    si absente, service activé (`enable --now`) si inactif, rien si actif.
+
+    N'échoue JAMAIS : même contrat que l'atelier (sans TTY ou en cas d'échec
+    sudo, les commandes sont rappelées à la main — l'init ne doit pas casser
+    à cause de cette étape).
+    """
+    con = console or _console
+    import sys as _sys
+    # ── Unit systemd : rendre (substitution), installer / activer / rien ──
+    if _UPDATE_UNIT.exists():
+        try:
+            st = subprocess.run(
+                ["systemctl", "is-active", "hubctl-update"],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            st = None
+        if st is not None and st.returncode == 0 and st.stdout.strip() == "active":
+            con.print("[green]✓ Service update hubctl-update actif[/green]")
+            return
+        cmds = [["sudo", "systemctl", "enable", "--now", "hubctl-update"]]
+    else:
+        # dry-run : aucune écriture → pas de rendu, aperçu sur le gabarit brut
+        cp_src = (_UPDATE_UNIT_GABARIT if dry_run
+                  else (_render_unit(con, _UPDATE_UNIT_GABARIT,
+                                     _UPDATE_UNIT_RENDERED)
+                        or _UPDATE_UNIT_GABARIT))
+        cmds = [
+            ["sudo", "cp", str(cp_src), str(_UPDATE_UNIT)],
+            ["sudo", "systemctl", "daemon-reload"],
+            ["sudo", "systemctl", "enable", "--now", "hubctl-update"],
+        ]
+
+    # ── Exécution (TTY requis pour le prompt sudo) ou rappel manuel ──
+    # Filet jamais-fatal : identique à l'atelier.
+    try:
+        if dry_run or _sys.stdin.isatty():
+            failed = False
+            for cmd in cmds:
+                if utils.run_shell(cmd, dry_run=dry_run, console=con) != 0:
+                    failed = True
+                    break
+            if not failed:
+                if dry_run:
+                    con.print("[dim](dry-run) service hubctl-update installé + activé[/dim]")
+                else:
+                    con.print("[green]✓ Service update hubctl-update actif[/green]")
+                return
+    except Exception as e:
+        con.print(f"[yellow]⚠ Service update (étape système) : {e}[/yellow]")
+
+    # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
+    # rappeler les commandes à lancer à la main.
+    con.print("[yellow]⚠ Service update : commandes à lancer à la main :[/yellow]")
     for cmd in cmds:
         con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
 
@@ -661,8 +732,9 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
     if not dry_run:
         _install_shell_marker(con)
 
-    # ── 6c. Service hôte hubctl-atelier (token + unit systemd, ensure) ──
+    # ── 6c. Services hôtes hubctl-atelier + hubctl-update (ensure) ──
     _ensure_atelier_service(con, dry_run=dry_run)
+    _ensure_update_service(con, dry_run=dry_run)
 
     # ── 7. Résumé ──
     admin_username = credentials["admin_username"]

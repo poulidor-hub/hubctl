@@ -1,0 +1,81 @@
+# hubctl-update.service — service système de l'agent de mise a jour de hubctl.
+#
+# GABARIT : les valeurs entre arobases (utilisateur, chemin du parc) sont des
+# placeholders substitués à l'installation (`hubctl init`, fichier rendu dans
+# packaging/.rendered/) — ne PAS copier ce fichier tel quel dans
+# /etc/systemd/system : unit non démarrable (utilisateur/chemins absents).
+#
+# (`hubctl update --serve` : agent « Centre de mises a jour » piloté par le
+#  Hub via GET /health, GET /update/status, POST /update/run,
+#  GET /update/job — port 8778. Bind 172.17.0.1, cf. ExecStart :
+#  joignable des conteneurs via host.docker.internal, invisible du LAN ;
+#  l'auth X-Atelier-Token (token atelier réutilisé) reste le vrai
+#  garde-fou d'exposition.)
+#
+# Installation et activation (token, rendu, systemctl) :
+# voir hubctl_cli/README.md, section « Agent de mise a jour (update --serve) ».
+#
+# L'agent écrit dans TOUT le parc : git (pull du méta + submodules) et make
+# (rebuild Hub + apps) — d'où ReadWritePaths=@PARC_ROOT@ ci-dessous, plus
+# large que l'atelier ; l'état du job + les logs vivent dans
+# ~/.config/hubctl (update_state.json, update_logs/). Tout le reste du
+# système reste en lecture seule (ProtectSystem=strict). Il lit le token
+# (~/.config/hubctl/atelier_token, réutilisé — aucun token dédié), lit le
+# code, et parle à Docker via le socket. Conséquence : le venv
+# hubctl_cli/.venv doit exister AVANT l'activation (créé par n'importe
+# quel lancement de ./hubctl — l'unit ne peut pas le construire).
+
+[Unit]
+Description=hubctl agent de mise a jour du parc
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Utilisateur du parc (owner du token ~/.config/hubctl/atelier_token) et
+# chemin réel du parc : substitués à l'installation — voir en-tête.
+User=@REAL_USER@
+WorkingDirectory=@PARC_ROOT@
+# --host 172.17.0.1 = passerelle docker0 : le conteneur hub-api joint le
+# serveur via host.docker.internal (résout vers la passerelle). 172.17.0.1
+# n'est pas routé depuis le LAN → pas d'exposition réseau ; le token
+# X-Atelier-Token reste le vrai garde-fou.
+ExecStart=@PARC_ROOT@/hubctl update --serve --host 172.17.0.1 --port 8778
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5s
+
+# ── Durcissement exigé ──
+NoNewPrivileges=true
+ProtectSystem=strict
+# git/make écrivent dans tout le parc (pull méta + submodules, rebuild) ;
+# l'état du job + les logs vivent dans ~/.config/hubctl (ProtectHome=
+# read-only ci-dessous → ouverture d'écriture explicite de ce seul
+# répertoire).
+ReadWritePaths=@PARC_ROOT@ %h/.config/hubctl
+PrivateTmp=true
+
+# ── Durcissement complémentaire — copie du gabarit atelier (validé en
+#    exécution réelle sur hubctl-atelier : serveur + `docker ps` sous
+#    sandbox, journal propre) ; le service reste un serveur TCP :
+#    AF_UNIX/AF_INET/AF_INET6 autorisés, pas davantage.
+ProtectHome=read-only
+PrivateDevices=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+SystemCallArchitectures=native
+RemoveIPC=true
+ProtectProc=invisible
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
