@@ -52,7 +52,10 @@ ProtectSystem=strict
 # l'état du job + les logs vivent dans ~/.config/hubctl (ProtectHome=
 # read-only ci-dessous → ouverture d'écriture explicite de ce seul
 # répertoire).
-ReadWritePaths=@PARC_ROOT@ %h/.config/hubctl
+# État + logs dans ~/.config/hubctl : ReadWritePaths utilise la home RÉELLE
+# (placeholder /home/@REAL_USER@ — le raccourci home de systemd se résout à
+# /root dans une unit système, indépendamment de User=).
+ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl
 PrivateTmp=true
 
 # ── Durcissement complémentaire — copie du gabarit atelier (validé en
