@@ -56,9 +56,25 @@ Job (contrat, spec §5.2) :
   "finished_at", "exit_code", "log_path", "tail"}`` — ``tail`` = les
   ``_TAIL_LINES`` (50) dernières lignes du log ; timeout ou log
   inouvrable → ``failed`` avec ``exit_code`` ``None``.
+
+Serveur HTTP (contrat, spec §4.1) :
+- mêmes mécaniques que ``atelier_serve`` (ThreadingHTTPServer stdlib,
+  auth header ``X-Atelier-Token`` comparé en constant-time, token par
+  défaut ``~/.config/hubctl/atelier_token`` lu au démarrage) ;
+  ``/health`` SANS auth (liveness, ne divulgue rien) ;
+- GET /update/status → :func:`collect_update_status` (``?refresh=1`` →
+  ``force=True``), GET /update/job → :func:`read_job_state` (proxifié
+  tel quel par le Hub), POST /update/run → :func:`start_update` (body
+  JSON optionnel ``{"dry_run": bool}``, défaut False ; 202/409
+  passthrough du couple ``(code, payload)``) ;
+- le handler ne lève JAMAIS : chaque route répond un JSON (400 body
+  invalide, 404 route inconnue, 405 méthode interdite, 500 générique en
+  dernier recours — même convention atelier_serve).
 """
 from __future__ import annotations
 
+import copy
+import hmac
 import json
 import os
 import subprocess
@@ -66,9 +82,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
-from hubctl_cli import park_checks
+from hubctl_cli import hub_state, park_checks
 
 # Durée de vie (secondes) du cache statut : le front rafraîchit souvent,
 # un seul cycle de fetch par minute suffit (spec §5.1).
@@ -181,10 +199,11 @@ def _component_status(parc_root: Path, rel: str) -> dict:
         entry["error"] = "not initialized"
         return entry
 
-    frc, _fout, _ferr = park_checks._run("git", "fetch", "--prune", "origin",
-                                         cwd=repo)
+    frc, _fout, ferr = park_checks._run("git", "fetch", "--prune", "origin",
+                                        cwd=repo)
     if frc != 0:
-        entry["error"] = "fetch failed"
+        # détail stderr tronqué : le front affiche la cause sans ouvrir le log
+        entry["error"] = f"fetch failed: {ferr.strip()[:120]}"
 
     rc, out, _ = park_checks._run("git", "rev-parse", "--abbrev-ref", "HEAD",
                                   cwd=repo)
@@ -220,15 +239,20 @@ def _component_status(parc_root: Path, rel: str) -> dict:
 def collect_update_status(parc_root: Path, *, force: bool = False) -> dict:
     """Statut complet du parc (méta + submodules initialisés), cache TTL.
 
+    Cache mémoire MONO-PARC (contrat) : le serveur hôte n'observe qu'UN
+    seul parc — le cache n'est PAS indexé par parc_root ; appeler avec un
+    parc différent suppose ``force=True`` ou un cache vierge (tests).
     ``force=True`` ignore le cache et refait le cycle fetch (route
-    ``?refresh=1``). Les submodules déclarés mais jamais initialisés
-    (répertoire absent) sont exclus de ``components``.
+    ``?refresh=1``). Au hit, une copie profonde est renvoyée : le
+    consommateur (sérialiseur HTTP) ne peut pas muter le cache interne.
+    Les submodules déclarés mais jamais initialisés (répertoire absent)
+    sont exclus de ``components``.
     """
     global _STATUS_CACHE, _STATUS_TS
     parc_root = Path(parc_root)
     now = time.monotonic()
     if not force and _STATUS_CACHE is not None and (now - _STATUS_TS) < _STATUS_TTL:
-        return _STATUS_CACHE
+        return copy.deepcopy(_STATUS_CACHE)
 
     meta = _component_status(parc_root, ".")
     components: dict[str, dict] = {}
@@ -376,3 +400,179 @@ def start_update(*, parc_root: Path, state_file: Path, log_dir: Path,
     _EXECUTOR.submit(_run_update_job, Path(parc_root), Path(state_file),
                      log_path, dry_run)
     return 202, {"job": job}
+
+
+# ── Serveur HTTP (Task 3, spec §4.1) ────────────────────────────────────────
+
+DEFAULT_TOKEN_FILE = Path.home() / ".config" / "hubctl" / "atelier_token"
+
+_ROUTES_DOC = ("GET /health · GET /update/status · POST /update/run · "
+               "GET /update/job")
+
+
+def _read_token(token_file: Path) -> bytes:
+    """Lit le token d'auth (sans la nouvelle ligne finale). Refuse un fichier vide."""
+    raw = Path(token_file).expanduser().read_text(encoding="utf-8")
+    token = raw.strip()
+    if not token:
+        raise ValueError("fichier token vide")
+    return token.encode("utf-8")
+
+
+def build_server(port: int, token_file: Path, host: str = "127.0.0.1", *,
+                 parc_root: Path, state_file: Path,
+                 log_dir: Path) -> ThreadingHTTPServer:
+    """Construit le serveur (bind host:port, token lu au démarrage).
+
+    host : défaut 127.0.0.1 (recette atelier_serve). 172.17.0.1 (passerelle
+    docker0) rend le serveur joignable des conteneurs via
+    host.docker.internal sans être visible du LAN.
+
+    port=0 → port libre choisi par l'OS (utile aux tests) : le port réel
+    se lit sur server_address après construction.
+    """
+    token = _read_token(token_file)
+    server = ThreadingHTTPServer((host, port), UpdateHandler)
+    server.update_token = token
+    server.parc_root = Path(parc_root)
+    server.state_file = Path(state_file)
+    server.log_dir = Path(log_dir)
+    return server
+
+
+class UpdateHandler(BaseHTTPRequestHandler):
+    """Handlers JSON des 4 routes (contrat §4.1). Auth X-Atelier-Token
+    (sauf /health). Ne lève JAMAIS : chaque route répond un JSON — 400
+    body invalide, 404 route inconnue, 405 méthode interdite, 500
+    générique en dernier recours (même convention atelier_serve)."""
+
+    server_version = "hubctl-update/0.1"
+
+    def _send_json(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authorized(self) -> bool:
+        """401 si header absent, 403 si token invalide (comparaison constant-time)."""
+        provided = self.headers.get("X-Atelier-Token")
+        if not provided:
+            self._send_json(401, {"erreur": "header X-Atelier-Token manquant"})
+            return False
+        expected = getattr(self.server, "update_token", b"")
+        if not hmac.compare_digest(provided.encode("utf-8", "replace"), expected):
+            self._send_json(403, {"erreur": "token invalide"})
+            return False
+        return True
+
+    def _route(self) -> str:
+        return urlsplit(self.path).path
+
+    def _refresh(self) -> bool:
+        """``?refresh=1`` → ``force=True`` : contourne le cache TTL du
+        statut (spec §5.1, bouton « Vérifier maintenant » du front)."""
+        return parse_qs(urlsplit(self.path).query).get("refresh", [""])[0] == "1"
+
+    def _read_dry_run(self) -> bool | None:
+        """Body JSON optionnel de POST /update/run : ``{"dry_run": bool}``
+        (défaut False). Body absent/vide → False ; JSON illisible ou non
+        objet → ``None`` (l'appelant répond 400)."""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return False
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(body, dict):
+            return None
+        return bool(body.get("dry_run", False))
+
+    def do_GET(self) -> None:  # noqa: N802 (API http.server)
+        try:
+            route = self._route()
+            if route == "/health":
+                # Liveness publique : ne divulgue rien, évite d'imposer le
+                # token aux healthchecks/monitoring.
+                return self._send_json(200, {"service": "update-agent",
+                                             "ok": True})
+            if not self._authorized():
+                return
+            if route == "/update/status":
+                status = collect_update_status(self.server.parc_root,
+                                               force=self._refresh())
+                return self._send_json(200, status)
+            if route == "/update/job":
+                return self._send_json(200,
+                                       read_job_state(self.server.state_file))
+            if route == "/update/run":
+                return self._send_json(405, {"erreur": "méthode interdite : POST requis"})
+            return self._send_json(404, {"erreur": "route inconnue"})
+        except Exception as e:  # réponse JSON propre plutôt que connexion coupée
+            return self._send_json(500, {"erreur": str(e)})
+
+    def do_POST(self) -> None:  # noqa: N802 (API http.server)
+        try:
+            route = self._route()
+            if route == "/health":
+                return self._send_json(405, {"erreur": "méthode interdite : GET requis"})
+            if not self._authorized():
+                return
+            if route == "/update/run":
+                dry_run = self._read_dry_run()
+                if dry_run is None:
+                    return self._send_json(
+                        400, {"erreur": "body JSON invalide : "
+                                        "objet {\"dry_run\": bool} attendu"})
+                code, payload = start_update(
+                    parc_root=self.server.parc_root,
+                    state_file=self.server.state_file,
+                    log_dir=self.server.log_dir, dry_run=dry_run)
+                return self._send_json(code, payload)
+            if route in ("/update/status", "/update/job"):
+                return self._send_json(405, {"erreur": "méthode interdite : GET requis"})
+            return self._send_json(404, {"erreur": "route inconnue"})
+        except Exception as e:
+            return self._send_json(500, {"erreur": str(e)})
+
+
+def serve(port: int = 8778, token_file: Path | None = None,
+          host: str = "127.0.0.1") -> int:
+    """`hubctl update --serve` — bloque jusqu'à Ctrl-C.
+
+    Défauts déduits (spec §4.1) : parc = ``PARC_ROOT`` (détection
+    manifest.json de ``hub_state``, même lecture que le reste du CLI),
+    état ``~/.config/hubctl/update_state.json``, logs
+    ``~/.config/hubctl/update_logs/``, token ``~/.config/hubctl/atelier_token``.
+
+    Retour : 0 après arrêt (Ctrl-C), 2 si le token est indisponible/invalide.
+    """
+    tf = Path(token_file).expanduser() if token_file else DEFAULT_TOKEN_FILE
+    config_dir = Path.home() / ".config" / "hubctl"
+    try:
+        server = build_server(port, tf, host=host,
+                              parc_root=hub_state.PARC_ROOT,
+                              state_file=config_dir / "update_state.json",
+                              log_dir=config_dir / "update_logs")
+    except FileNotFoundError:
+        print(f"❌ Fichier token introuvable : {tf}")
+        print(f"   Créez-le (ex : openssl rand -hex 32 > {tf}) — le Hub "
+              "l'envoie ensuite comme header X-Atelier-Token.")
+        return 2
+    except ValueError as e:
+        print(f"❌ Token update invalide ({tf}) : {e}")
+        return 2
+    host, bound = server.server_address[:2]
+    print(f"✓ Serveur update : http://{host}:{bound}  (token : {tf})")
+    print(f"  Routes : {_ROUTES_DOC}")
+    print("  Ctrl-C pour arrêter.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nArrêt du serveur update.")
+    finally:
+        server.server_close()
+    return 0

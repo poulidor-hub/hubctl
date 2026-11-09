@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.text import Text
 
-from hubctl_cli import actions, animation, atelier_serve, menu
+from hubctl_cli import actions, animation, atelier_serve, menu, update_serve
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all, action_update,
     action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
@@ -54,6 +54,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mise a jour ciblee : hub, une ou plusieurs apps, ou tout (git pull + rebuild)")
     update_parser.add_argument("targets", nargs="*", metavar="CIBLE",
                                help='hub | <slug app> | "*" ou all (Hub + toutes les apps)')
+    update_parser.add_argument("--serve", action="store_true", dest="update_serve", default=False,
+                               help="Lancer le serveur hôte de mise à jour (bind 127.0.0.1 par défaut, cf. --host) : "
+                                    "GET /health, GET /update/status, POST /update/run, "
+                                    "GET /update/job")
+    update_parser.add_argument("--port", type=int, dest="update_port", default=8778, metavar="PORT",
+                               help="Avec --serve : port d'écoute (défaut : 8778)")
+    update_parser.add_argument("--host", dest="update_host", default="127.0.0.1", metavar="HOST",
+                               help="Avec --serve : interface d'écoute (défaut : 127.0.0.1). "
+                                    "Ex : 172.17.0.1 (passerelle docker0) pour être joignable "
+                                    "des conteneurs via host.docker.internal, sans exposition LAN")
+    update_parser.add_argument("--token-file", type=Path, dest="update_token_file", default=None,
+                               metavar="CHEMIN",
+                               help="Avec --serve : fichier du token d'auth X-Atelier-Token "
+                                    "(défaut : ~/.config/hubctl/atelier_token)")
 
     # doctor — diagnostic des clones du parc
     doctor_parser = sub.add_parser(
@@ -375,6 +389,17 @@ def _run(args) -> int:
     if args.command == "update":
         from rich.console import Console as RichConsole
         console = RichConsole()
+        if args.update_serve:
+            # Serveur hôte « Centre de mises à jour » (spec §4.1) : gère le
+            # parc entier — pas de cible, pas de _update_mode (la collecte
+            # et le job n'ont pas besoin du mode).
+            try:
+                return update_serve.serve(port=args.update_port,
+                                          token_file=args.update_token_file,
+                                          host=args.update_host)
+            except Exception as e:
+                print(f"❌ update --serve a echoue : {e}")
+                return 1
         # Plan unification updates (revue I4) : mode explicite uniquement,
         # jamais l'auto-détection atelier pour une mise à jour.
         hub_state.set_mode(_update_mode(args))

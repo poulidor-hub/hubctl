@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
 
-"""Tests de update_serve — statut (Task 1) + état/exécution du job (Task 2).
+"""Tests de update_serve — statut (Task 1), état/exécution du job (Task 2),
+serveur HTTP + branchage CLI `update --serve` (Task 3).
 
 Chaque scénario monte un « parc » factice dans tmp_path : un méta git avec
 VERSION + un submodule HUB_base initialisé depuis un dépôt bare (origin).
@@ -11,9 +12,17 @@ Contrat collect_update_status (spec §5.1, consommé par GET /update/status) :
 Contrat job (spec §5.2, consommé par POST /update/run + GET /update/job) :
 start_update → (202, {"job": running}) ou (409, ...) ; l'état final ne vit
 que dans update_state.json.
+Contrat HTTP (spec §4.1) : GET /health sans auth, GET /update/status
+(?refresh=1 → force), GET /update/job, POST /update/run — auth header
+X-Atelier-Token (401 absent / 403 invalide), même recette atelier_serve.
 """
 import importlib
+import json
+import threading
 import time
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -158,6 +167,7 @@ def test_status_fetch_failure_isolated_per_component(tmp_path):
         sub_origin.chmod(0o755)
     comp = status["components"]["HUB_base"]
     assert comp["error"] is not None
+    assert comp["error"].startswith("fetch failed")  # prefix + détail stderr
     # refs locales : rien de nouveau connu → pas de « mise à jour » annoncée
     assert comp["update_available"] is False
     assert "meta" in status
@@ -346,3 +356,142 @@ def test_read_job_state_idle_when_missing(tmp_path):
     corrupt = tmp_path / "corrupt.json"
     corrupt.write_text("{état tronqué", encoding="utf-8")
     assert update_serve.read_job_state(corrupt) == {"state": "idle"}
+
+
+# ── Serveur HTTP + branchage CLI (Task 3, spec §4.1) ────────────────────────
+
+TEST_TOKEN = "tok-test-123"
+
+
+@contextmanager
+def _running_server(tmp_path: Path, script: str = FAKE_HUBCTL):
+    """Serveur update_serve sur port 0 (thread daemon, recette tests
+    atelier_serve) : yield {port, parc, marker, state_file, log_dir} ;
+    arrêt propre (shutdown + server_close) en sortie de contexte."""
+    token_file = tmp_path / "atelier_token"
+    token_file.write_text(TEST_TOKEN + "\n", encoding="utf-8")
+    parc, marker = _fake_parc(tmp_path, script=script)
+    state_file = tmp_path / "update_state.json"
+    log_dir = tmp_path / "update_logs"
+    server = update_serve.build_server(0, token_file, parc_root=parc,
+                                       state_file=state_file, log_dir=log_dir)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield {"port": server.server_address[1], "parc": parc,
+               "marker": marker, "state_file": state_file,
+               "log_dir": log_dir}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _request(port: int, method: str, path: str, *,
+             token: str | None = TEST_TOKEN,
+             body: dict | None = None) -> tuple[int, dict]:
+    """Requête HTTP locale → (code, payload JSON). Les 4xx arrivent comme
+    HTTPError (urllib lève) : le handler ne doit jamais couper la
+    connexion, on lit le JSON d'erreur tel quel."""
+    headers = {}
+    if token is not None:
+        headers["X-Atelier-Token"] = token
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
+                                 data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode("utf-8"))
+
+
+def test_http_health_no_auth(tmp_path):
+    """GET /health SANS header → 200 (liveness publique : ne divulgue
+    rien, évite d'imposer le token aux healthchecks — contrat §4.1)."""
+    with _running_server(tmp_path) as srv:
+        code, payload = _request(srv["port"], "GET", "/health", token=None)
+    assert code == 200
+    assert payload == {"service": "update-agent", "ok": True}
+
+
+def test_http_auth_401_403(tmp_path):
+    """Auth X-Atelier-Token (copie atelier_serve) : header absent → 401 ;
+    token invalide → 403 (comparaison constant-time côté serveur)."""
+    with _running_server(tmp_path) as srv:
+        code, payload = _request(srv["port"], "GET", "/update/status",
+                                 token=None)
+        assert code == 401
+        assert payload  # erreur JSON propre, pas de connexion coupée
+        code, payload = _request(srv["port"], "GET", "/update/status",
+                                 token="mauvais-token")
+        assert code == 403
+
+
+def test_http_status_and_job(tmp_path):
+    """GET /update/status → contrat Task 1 (service ok + meta) ;
+    GET /update/job → état disque, idle sans fichier d'état."""
+    with _running_server(tmp_path) as srv:
+        code, status = _request(srv["port"], "GET", "/update/status")
+        assert code == 200
+        assert status["service"] == "ok"
+        assert "meta" in status
+        code, job = _request(srv["port"], "GET", "/update/job")
+        assert code == 200
+        assert job == {"state": "idle"}
+
+
+def test_http_run_job_end_to_end(monkeypatch, tmp_path):
+    """POST /update/run {dry_run: true} → 202 (running) ; POST pendant le
+    sleep du fake hubctl → 409 passthrough ; GET /update/job pollé
+    jusqu'au verdict success (--dry-run visible au marqueur)."""
+    monkeypatch.setenv("STATE_MARKER", str(tmp_path / "marker"))
+    with _running_server(tmp_path, script=FAKE_HUBCTL_SLOW) as srv:
+        port = srv["port"]
+        code, payload = _request(port, "POST", "/update/run",
+                                 body={"dry_run": True})
+        assert code == 202
+        assert payload["job"]["state"] == "running"
+
+        # job encore en cours (sleep du fake hubctl) → refus concurrent,
+        # le payload 409 de start_update passe tel quel
+        code, payload = _request(port, "POST", "/update/run")
+        assert code == 409
+        assert payload["detail"] == "update deja en cours"
+
+        deadline = time.monotonic() + 10
+        job: dict = {}
+        while time.monotonic() < deadline:
+            code, job = _request(port, "GET", "/update/job")
+            assert code == 200
+            if job.get("state") == "success":
+                break
+            time.sleep(0.05)
+        assert job.get("state") == "success"
+        assert job["exit_code"] == 0
+        assert "--dry-run" in srv["marker"].read_text()
+
+
+def test_cli_dispatch_serve(monkeypatch, tmp_path):
+    """`hubctl update --serve` branche le dispatch CLI vers
+    update_serve.serve (port/host/token-file transmis ; défauts
+    8778 / 127.0.0.1 / token par défaut)."""
+    from hubctl_cli.__main__ import main
+    calls: dict = {}
+
+    def fake_serve(*, port, token_file, host):
+        calls.update(port=port, token_file=token_file, host=host)
+        return 0
+
+    monkeypatch.setattr(update_serve, "serve", fake_serve)
+
+    tf = tmp_path / "tf"
+    assert main(["update", "--serve", "--port", "0",
+                 "--token-file", str(tf), "--host", "127.0.0.1"]) == 0
+    assert calls == {"port": 0, "token_file": tf, "host": "127.0.0.1"}
+
+    calls.clear()
+    assert main(["update", "--serve"]) == 0
+    assert calls == {"port": 8778, "token_file": None, "host": "127.0.0.1"}
