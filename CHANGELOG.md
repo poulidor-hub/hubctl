@@ -1,3 +1,30 @@
+## [0.18.3] - 14 novembre 2026
+
+### ⚡ pra-restore : restauration complète des apps opérationnelle
+
+Fixes issus du test PRA réel sur VM Debian vierge (13-14/11/2026, restore
+du snapshot réel 3,5 Go) : la phase réinjection des apps échouait en
+cascade pour 4 causes distinctes.
+
+- `admin_login` : POST sur `/api/auth/token` (le router auth du hub a le
+  prefix `/api/auth` — l'ancienne URL `/api/token` rendait le login
+  impossible en PRA).
+- `list_apps_with_backups` : réinjection sur backups `status='success'`
+  uniquement — le dernier backup d'une app peut être `failed` (aucun
+  fichier ZIP produit) et faisait échouer le restore en 404.
+- `rebuild_app` : dossier d'app résolu par `APP_SLUG` du `.env` — le
+  slug DB et le nom du checkout divergent pour 25 apps de la flotte
+  (exemple-app vs exemple-app…).
+- Timeouts couverts pour les gros restores : `HEALTH_TIMEOUT_S` 300→900,
+  `RESTORE_TIMEOUT_S` 180→600 (boot hub-api post-restore multi-minutes
+  sur petite machine).
+
+| Fonctionnalité | Description |
+|----------------|-------------|
+| **PRA bout en bout** | Backup → snapshot → coffre → clé USB → restore sur machine neuve : hub restauré + apps rebuildées + données réinjectées |
+
+---
+
 ## [0.18.2] - 9 novembre 2026
 
 ### 🐛 Unit systemd update : `~/.docker` dans `ReadWritePaths`
