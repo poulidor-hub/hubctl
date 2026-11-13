@@ -429,10 +429,37 @@ def restore_app_data(base_url: str, token: str, slug: str, backup_id: str,
         return False
 
 
+def _resolve_app_dir(slug: str) -> Path | None:
+    """Dossier réel d'une app : APPS/<slug> direct, sinon résolution par
+    APP_SLUG dans le .env de chaque checkout.
+
+    Le slug DB et le nom du dossier divergent souvent (exemple-app
+    vs exemple-app) : 25 apps du parc sont concernées (F12 — test PRA
+    VM 13/11/2026, rebuild_app prenait APPS/<slug> aveuglément)."""
+    apps_dir = hub_state.APPS_DIR
+    direct = apps_dir / slug
+    if (direct / "Makefile").exists():
+        return direct
+    if apps_dir.is_dir():
+        for child in sorted(apps_dir.iterdir()):
+            if not (child / "Makefile").exists():
+                continue
+            env = child / ".env"
+            if env.exists():
+                for line in env.read_text(errors="replace").splitlines():
+                    if line.startswith("APP_SLUG="):
+                        if line.split("=", 1)[1].strip() == slug:
+                            return child
+                        break
+    return None
+
+
 def rebuild_app(slug: str, console, *, dry_run: bool = False) -> bool:
-    app_dir = hub_state.APPS_DIR / slug
-    if not (app_dir / "Makefile").exists():
-        console.print(f"[yellow]⚠ {slug} : pas de Makefile — rebuild ignoré[/yellow]")
+    app_dir = _resolve_app_dir(slug)
+    if app_dir is None:
+        if console:
+            console.print(f"[yellow]⚠ {slug} : dossier introuvable (ni APPS/{slug}, "
+                          "ni APP_SLUG dans un .env d'APPS) — rebuild ignoré[/yellow]")
         return False
     ok_build = _run(["make", "build"], cwd=app_dir, console=console, dry_run=dry_run)
     ok_up = _run(["make", "up"], cwd=app_dir, console=console, dry_run=dry_run)

@@ -947,3 +947,28 @@ def test_timeouts_couverts_pour_gros_restores():
     le boot hub-api + le healthcheck dépassent largement 2-5 minutes."""
     assert pra_restore.HEALTH_TIMEOUT_S >= 600
     assert pra_restore.RESTORE_TIMEOUT_S >= 600
+
+
+def test_rebuild_app_resout_le_dossier_par_app_slug(monkeypatch, tmp_path):
+    """F12 (PRA VM run 13) : le slug DB ne correspond pas toujours au nom du
+    dossier APPS (exemple-app vs exemple-app). Le dossier réel est
+    résolu via APP_SLUG dans le .env de chaque app ; fallback sur APPS/<slug>."""
+    apps = tmp_path / "APPS"
+    camel = apps / "exemple-app"
+    camel.mkdir(parents=True)
+    (camel / "Makefile").write_text("build: up\nup:\n\techo ok\n")
+    (camel / ".env").write_text("APP_SLUG=exemple-app\n")
+    (apps / "exemple-app").mkdir(parents=True)
+    (apps / "exemple-app" / "Makefile").write_text("build: up\nup:\n\techo ok\n")
+    (apps / "exemple-app" / ".env").write_text("APP_SLUG=exemple-app\n")
+    monkeypatch.setattr(hub_state, "APPS_DIR", apps)
+
+    assert pra_restore.rebuild_app("exemple-app", None) is True
+    assert pra_restore.rebuild_app("exemple-app", None) is True
+
+
+def test_rebuild_app_sans_dossier_echoue_proprement(monkeypatch, tmp_path):
+    apps = tmp_path / "APPS"
+    apps.mkdir(parents=True)
+    monkeypatch.setattr(hub_state, "APPS_DIR", apps)
+    assert pra_restore.rebuild_app("inconnu", None) is False
