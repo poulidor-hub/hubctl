@@ -37,8 +37,8 @@ from hubctl_cli.coffre import Vault
 VAULT_FILENAME = pra_config.VAULT_FILENAME
 SNAPSHOT_GLOB = "snapshot_*.tar.zst.enc"
 HUB_API_CONTAINER = "hub-api"
-HEALTH_TIMEOUT_S = 300
-RESTORE_TIMEOUT_S = 180
+HEALTH_TIMEOUT_S = 900  # gros restore multi-Go : boot + healthcheck > 2-5 min sur petite machine (F10)
+RESTORE_TIMEOUT_S = 600
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, console=None,
@@ -363,7 +363,8 @@ def count_apps() -> int:
 def list_apps_with_backups() -> list[dict]:
     sql = ("SELECT a.slug, b.backup_id FROM applications a "
            "LEFT JOIN LATERAL (SELECT backup_id FROM app_backups "
-           "WHERE app_slug = a.slug ORDER BY created_at DESC LIMIT 1) b ON true "
+           "WHERE app_slug = a.slug AND status = 'success' "
+           "ORDER BY created_at DESC LIMIT 1) b ON true "
            "WHERE a.is_active = true ORDER BY a.slug")
     r = _psql(sql, tty_out=True)
     apps: list[dict] = []
@@ -402,7 +403,7 @@ def admin_login(base_url: str, username: str, password: str) -> str:
     data = urllib.parse.urlencode({"username": username, "password": password,
                                    "grant_type": "password"}).encode()
     req = urllib.request.Request(
-        base_url + "/api/token", data=data,
+        base_url + "/api/auth/token", data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         payload = _json.loads(resp.read())
@@ -428,10 +429,37 @@ def restore_app_data(base_url: str, token: str, slug: str, backup_id: str,
         return False
 
 
+def _resolve_app_dir(slug: str) -> Path | None:
+    """Dossier réel d'une app : APPS/<slug> direct, sinon résolution par
+    APP_SLUG dans le .env de chaque checkout.
+
+    Le slug DB et le nom du dossier divergent souvent (exemple-app
+    vs exemple-app) : 25 apps du parc sont concernées (F12 — test PRA
+    VM 13/11/2026, rebuild_app prenait APPS/<slug> aveuglément)."""
+    apps_dir = hub_state.APPS_DIR
+    direct = apps_dir / slug
+    if (direct / "Makefile").exists():
+        return direct
+    if apps_dir.is_dir():
+        for child in sorted(apps_dir.iterdir()):
+            if not (child / "Makefile").exists():
+                continue
+            env = child / ".env"
+            if env.exists():
+                for line in env.read_text(errors="replace").splitlines():
+                    if line.startswith("APP_SLUG="):
+                        if line.split("=", 1)[1].strip() == slug:
+                            return child
+                        break
+    return None
+
+
 def rebuild_app(slug: str, console, *, dry_run: bool = False) -> bool:
-    app_dir = hub_state.APPS_DIR / slug
-    if not (app_dir / "Makefile").exists():
-        console.print(f"[yellow]⚠ {slug} : pas de Makefile — rebuild ignoré[/yellow]")
+    app_dir = _resolve_app_dir(slug)
+    if app_dir is None:
+        if console:
+            console.print(f"[yellow]⚠ {slug} : dossier introuvable (ni APPS/{slug}, "
+                          "ni APP_SLUG dans un .env d'APPS) — rebuild ignoré[/yellow]")
         return False
     ok_build = _run(["make", "build"], cwd=app_dir, console=console, dry_run=dry_run)
     ok_up = _run(["make", "up"], cwd=app_dir, console=console, dry_run=dry_run)

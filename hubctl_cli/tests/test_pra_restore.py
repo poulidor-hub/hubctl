@@ -282,7 +282,9 @@ def test_admin_login_posts_form_and_returns_token(monkeypatch):
     monkeypatch.setattr(ur, "urlopen", fake_urlopen)
     token = pra_restore.admin_login("http://localhost:8000", "admin", "pw")
     assert token == "TOK"
-    assert captured["url"] == "http://localhost:8000/api/token"
+    # F7 (PRA VM run 9) : le hub expose /api/auth/token (prefix router auth),
+    # pas /api/token → l'ancienne URL rendait le login impossible en PRA.
+    assert captured["url"] == "http://localhost:8000/api/auth/token"
     assert "username=admin" in captured["data"] and "grant_type=password" in captured["data"]
     assert "form" in (captured["ctype"] or "")
 
@@ -852,3 +854,121 @@ def test_restore_files_kit_without_key_prompts(tmp_path, monkeypatch):
     from rich.console import Console
     pra_restore.restore_files_from_kit(kit, Console())
     assert (tmp_path / "HUB_base" / ".env").exists()
+
+
+def test_admin_login_poste_sur_api_auth_token():
+    """F7 (PRA VM run 9, 13/11/2026) : admin_login appelait /api/token → 404.
+    Le hub expose POST /api/auth/token (prefix router auth = /api/auth)."""
+    import http.server
+    import json as _json
+    import threading
+
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            hits.append(self.path)
+            if self.path == "/api/auth/token":
+                body = _json.dumps({"access_token": "tok"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *a):  # silence
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        token = pra_restore.admin_login(f"http://127.0.0.1:{port}", "admin", "pw")
+        assert token == "tok"
+        assert hits == ["/api/auth/token"]
+    finally:
+        server.shutdown()
+
+
+def test_list_apps_with_backups_ne_retient_que_les_success(monkeypatch):
+    """F9 (PRA VM run 11, 13/11/2026) : le dernier backup d'une app peut être
+    en status 'failed' (aucun fichier ZIP sur le serveur) → réinjection 404.
+    La sélection ne doit retenir que les backups 'success'."""
+    captured = {}
+
+    class FakeResult:
+        stdout = "exemple-app|6dfd9d90\napp-b|"
+
+    def fake_psql(sql, **kwargs):
+        captured["sql"] = sql
+        return FakeResult()
+
+    monkeypatch.setattr(pra_restore, "_psql", fake_psql)
+    apps = pra_restore.list_apps_with_backups()
+    assert "status = 'success'" in captured["sql"].lower()
+    assert apps == [{"slug": "exemple-app", "backup_id": "6dfd9d90"},
+                    {"slug": "app-b", "backup_id": None}]
+
+
+def test_wait_healthy_boucle_et_expire(monkeypatch):
+    """F10 (PRA VM run 12) : après un restore multi-minutes, hub-api n'est
+    healthy que longtemps après le restart — wait_healthy doit poller
+    jusqu'au timeout (et pas rendre la main trop tôt)."""
+    state = {"checks": 0, "t": 0.0}
+    monkeypatch.setattr(pra_restore.time, "monotonic", lambda: state["t"])
+
+    def fake_sleep(s):
+        state["t"] += s
+
+    monkeypatch.setattr(pra_restore.time, "sleep", fake_sleep)
+
+    class FakeCompleted:
+        def __init__(self, status):
+            self.returncode = 0
+            self.stdout = status
+
+    def fake_run(cmd, **k):
+        state["checks"] += 1
+        return FakeCompleted("healthy" if state["checks"] >= 3 else "starting")
+
+    monkeypatch.setattr(pra_restore.subprocess, "run", fake_run)
+    assert pra_restore.wait_healthy(None, timeout_s=10) is True
+    state["checks"] = 0
+    state["t"] = 0.0
+    assert pra_restore.wait_healthy(None, timeout_s=3) is False
+
+
+def test_timeouts_couverts_pour_gros_restores():
+    """F10 : après un restore de snapshot multi-Go sur petite machine,
+    le boot hub-api + le healthcheck dépassent largement 2-5 minutes."""
+    assert pra_restore.HEALTH_TIMEOUT_S >= 600
+    assert pra_restore.RESTORE_TIMEOUT_S >= 600
+
+
+def test_rebuild_app_resout_le_dossier_par_app_slug(monkeypatch, tmp_path):
+    """F12 (PRA VM run 13) : le slug DB ne correspond pas toujours au nom du
+    dossier APPS (exemple-app vs exemple-app). Le dossier réel est
+    résolu via APP_SLUG dans le .env de chaque app ; fallback sur APPS/<slug>."""
+    apps = tmp_path / "APPS"
+    camel = apps / "exemple-app"
+    camel.mkdir(parents=True)
+    (camel / "Makefile").write_text("build: up\nup:\n\techo ok\n")
+    (camel / ".env").write_text("APP_SLUG=exemple-app\n")
+    (apps / "exemple-app").mkdir(parents=True)
+    (apps / "exemple-app" / "Makefile").write_text("build: up\nup:\n\techo ok\n")
+    (apps / "exemple-app" / ".env").write_text("APP_SLUG=exemple-app\n")
+    monkeypatch.setattr(hub_state, "APPS_DIR", apps)
+
+    assert pra_restore.rebuild_app("exemple-app", None) is True
+    assert pra_restore.rebuild_app("exemple-app", None) is True
+
+
+def test_rebuild_app_sans_dossier_echoue_proprement(monkeypatch, tmp_path):
+    apps = tmp_path / "APPS"
+    apps.mkdir(parents=True)
+    monkeypatch.setattr(hub_state, "APPS_DIR", apps)
+    assert pra_restore.rebuild_app("inconnu", None) is False
