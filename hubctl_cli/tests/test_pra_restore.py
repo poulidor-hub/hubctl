@@ -892,3 +892,23 @@ def test_admin_login_poste_sur_api_auth_token():
         assert hits == ["/api/auth/token"]
     finally:
         server.shutdown()
+
+
+def test_list_apps_with_backups_ne_retient_que_les_success(monkeypatch):
+    """F9 (PRA VM run 11, 13/11/2026) : le dernier backup d'une app peut être
+    en status 'failed' (aucun fichier ZIP sur le serveur) → réinjection 404.
+    La sélection ne doit retenir que les backups 'success'."""
+    captured = {}
+
+    class FakeResult:
+        stdout = "exemple-app|6dfd9d90\napp-b|"
+
+    def fake_psql(sql, **kwargs):
+        captured["sql"] = sql
+        return FakeResult()
+
+    monkeypatch.setattr(pra_restore, "_psql", fake_psql)
+    apps = pra_restore.list_apps_with_backups()
+    assert "status = 'success'" in captured["sql"].lower()
+    assert apps == [{"slug": "exemple-app", "backup_id": "6dfd9d90"},
+                    {"slug": "app-b", "backup_id": None}]

@@ -363,7 +363,8 @@ def count_apps() -> int:
 def list_apps_with_backups() -> list[dict]:
     sql = ("SELECT a.slug, b.backup_id FROM applications a "
            "LEFT JOIN LATERAL (SELECT backup_id FROM app_backups "
-           "WHERE app_slug = a.slug ORDER BY created_at DESC LIMIT 1) b ON true "
+           "WHERE app_slug = a.slug AND status = 'success' "
+           "ORDER BY created_at DESC LIMIT 1) b ON true "
            "WHERE a.is_active = true ORDER BY a.slug")
     r = _psql(sql, tty_out=True)
     apps: list[dict] = []
