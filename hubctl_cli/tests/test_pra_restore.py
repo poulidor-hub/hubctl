@@ -912,3 +912,38 @@ def test_list_apps_with_backups_ne_retient_que_les_success(monkeypatch):
     assert "status = 'success'" in captured["sql"].lower()
     assert apps == [{"slug": "exemple-app", "backup_id": "6dfd9d90"},
                     {"slug": "app-b", "backup_id": None}]
+
+
+def test_wait_healthy_boucle_et_expire(monkeypatch):
+    """F10 (PRA VM run 12) : après un restore multi-minutes, hub-api n'est
+    healthy que longtemps après le restart — wait_healthy doit poller
+    jusqu'au timeout (et pas rendre la main trop tôt)."""
+    state = {"checks": 0, "t": 0.0}
+    monkeypatch.setattr(pra_restore.time, "monotonic", lambda: state["t"])
+
+    def fake_sleep(s):
+        state["t"] += s
+
+    monkeypatch.setattr(pra_restore.time, "sleep", fake_sleep)
+
+    class FakeCompleted:
+        def __init__(self, status):
+            self.returncode = 0
+            self.stdout = status
+
+    def fake_run(cmd, **k):
+        state["checks"] += 1
+        return FakeCompleted("healthy" if state["checks"] >= 3 else "starting")
+
+    monkeypatch.setattr(pra_restore.subprocess, "run", fake_run)
+    assert pra_restore.wait_healthy(None, timeout_s=10) is True
+    state["checks"] = 0
+    state["t"] = 0.0
+    assert pra_restore.wait_healthy(None, timeout_s=3) is False
+
+
+def test_timeouts_couverts_pour_gros_restores():
+    """F10 : après un restore de snapshot multi-Go sur petite machine,
+    le boot hub-api + le healthcheck dépassent largement 2-5 minutes."""
+    assert pra_restore.HEALTH_TIMEOUT_S >= 600
+    assert pra_restore.RESTORE_TIMEOUT_S >= 600

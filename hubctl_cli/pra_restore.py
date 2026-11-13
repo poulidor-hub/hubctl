@@ -37,8 +37,8 @@ from hubctl_cli.coffre import Vault
 VAULT_FILENAME = pra_config.VAULT_FILENAME
 SNAPSHOT_GLOB = "snapshot_*.tar.zst.enc"
 HUB_API_CONTAINER = "hub-api"
-HEALTH_TIMEOUT_S = 300
-RESTORE_TIMEOUT_S = 180
+HEALTH_TIMEOUT_S = 900  # gros restore multi-Go : boot + healthcheck > 2-5 min sur petite machine (F10)
+RESTORE_TIMEOUT_S = 600
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, console=None,
