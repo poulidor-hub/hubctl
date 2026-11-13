@@ -402,7 +402,7 @@ def admin_login(base_url: str, username: str, password: str) -> str:
     data = urllib.parse.urlencode({"username": username, "password": password,
                                    "grant_type": "password"}).encode()
     req = urllib.request.Request(
-        base_url + "/api/token", data=data,
+        base_url + "/api/auth/token", data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         payload = _json.loads(resp.read())

@@ -282,7 +282,9 @@ def test_admin_login_posts_form_and_returns_token(monkeypatch):
     monkeypatch.setattr(ur, "urlopen", fake_urlopen)
     token = pra_restore.admin_login("http://localhost:8000", "admin", "pw")
     assert token == "TOK"
-    assert captured["url"] == "http://localhost:8000/api/token"
+    # F7 (PRA VM run 9) : le hub expose /api/auth/token (prefix router auth),
+    # pas /api/token → l'ancienne URL rendait le login impossible en PRA.
+    assert captured["url"] == "http://localhost:8000/api/auth/token"
     assert "username=admin" in captured["data"] and "grant_type=password" in captured["data"]
     assert "form" in (captured["ctype"] or "")
 
@@ -852,3 +854,41 @@ def test_restore_files_kit_without_key_prompts(tmp_path, monkeypatch):
     from rich.console import Console
     pra_restore.restore_files_from_kit(kit, Console())
     assert (tmp_path / "HUB_base" / ".env").exists()
+
+
+def test_admin_login_poste_sur_api_auth_token():
+    """F7 (PRA VM run 9, 13/11/2026) : admin_login appelait /api/token → 404.
+    Le hub expose POST /api/auth/token (prefix router auth = /api/auth)."""
+    import http.server
+    import json as _json
+    import threading
+
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            hits.append(self.path)
+            if self.path == "/api/auth/token":
+                body = _json.dumps({"access_token": "tok"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *a):  # silence
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        token = pra_restore.admin_login(f"http://127.0.0.1:{port}", "admin", "pw")
+        assert token == "tok"
+        assert hits == ["/api/auth/token"]
+    finally:
+        server.shutdown()
