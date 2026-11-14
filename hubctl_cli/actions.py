@@ -18,6 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from hubctl_cli import hub_state, utils, env_manager
+from hubctl_cli.docker_pools import network_prune
 from hubctl_cli import park_checks
 
 import string as _string_module
@@ -1871,6 +1872,12 @@ def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False)
                 con.print(f"[red]✗ {name} erreur : {e}[/red]")
                 fail += 1
         con.print(f"[bold]{ok} succès, {fail} échec(s)[/bold]")
+
+    # F14 : purge des networks Docker orphelins (apps down depuis longtemps)
+    # — sinon ils s'accumulent et saturent les pools d'adresses du daemon
+    # (« invalid pool request: Pool overlaps » au prochain start d'app).
+    if target in ("all", "prod") and network_prune():
+        con.print("[dim]✓ réseaux Docker orphelins purgés[/dim]")
 
 
 def _ensure_branch_attached(path: Path, console=None, *, dry_run: bool = False) -> str | None:
