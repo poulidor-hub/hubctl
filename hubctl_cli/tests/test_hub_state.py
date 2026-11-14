@@ -210,3 +210,48 @@ def test_docker_api_containers_accepts_labels_as_dict(tmp_path):
     assert hub_state._norm("appA") in result
     assert hub_state._norm("appB") in result
     assert hub_state._norm("appC") not in result  # service=db ignoré
+
+
+# ── _git_dirty : « sale » = fichiers SUIVIS modifiés seulement ──────────────
+
+
+def _git(*args: str, cwd: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=cwd, check=True,
+                   capture_output=True, text=True)
+
+
+def _init_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    _git("init", "-b", "main", cwd=path)
+    _git("config", "user.email", "test@test.local", cwd=path)
+    _git("config", "user.name", "test", cwd=path)
+    return path
+
+
+def test_git_dirty_true_on_tracked_modification(tmp_path):
+    """Fichier suivi modifié → dirty True (sémantique conservée)."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "VERSION").write_text("1.0.0\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-m", "init", cwd=repo)
+    (repo / "VERSION").write_text("2.0.0\n")
+    assert hub_state._git_dirty(repo) is True
+
+
+def test_git_dirty_false_on_untracked_only(tmp_path):
+    """Fichier NON SUIVI seul → dirty False.
+
+    Bug 1 (volet dirty-check) : aligné sur ``park_checks._dirty_tracked`` —
+    un artefact runtime non suivi (secrets, uploads, .env local) ne doit
+    pas afficher un dépôt « sale » permanent (AppInfo.git_dirty alimente
+    les panneaux Apps, statut d'affichage uniquement).
+    """
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "VERSION").write_text("1.0.0\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-m", "init", cwd=repo)
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "atelier_token").write_text("token\n")
+    assert hub_state._git_dirty(repo) is False

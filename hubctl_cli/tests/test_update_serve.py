@@ -158,6 +158,23 @@ def test_status_dirty(tmp_path):
     assert status["meta"]["dirty"] is True
 
 
+def test_status_dirty_ignores_untracked(tmp_path):
+    """Fichier NON SUIVI seul → dirty is False.
+
+    Bug 1 (volet dirty-check) : « sale » = fichiers SUIVIS modifiés,
+    même définition que ``park_checks._dirty_tracked`` (pré-checks
+    ``update hub``). Un artefact runtime non suivi (ex. ``secrets/``,
+    uploads) ne doit pas afficher un arbre « sale » permanent dans
+    l'UI Mises à jour avec un remède « committer ou nettoyer »
+    inapplicable à un secret.
+    """
+    parc, _sub, _sub_origin = _make_parc(tmp_path)
+    (parc / "secrets").mkdir()
+    (parc / "secrets" / "atelier_token").write_text("token\n")
+    status = update_serve.collect_update_status(parc)
+    assert status["meta"]["dirty"] is False
+
+
 def test_status_fetch_failure_isolated_per_component(tmp_path):
     """Origin HS (chmod 000) : error sur le composant, statut global intact."""
     parc, _sub, sub_origin = _make_parc(tmp_path)
