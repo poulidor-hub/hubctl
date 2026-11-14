@@ -226,8 +226,11 @@ def _component_status(parc_root: Path, rel: str) -> dict:
         # refs absentes (jamais fetché, repo vide) → 0 + error
         entry["error"] = entry["error"] or "origin/main introuvable"
 
-    rc, out, _ = park_checks._run("git", "status", "--porcelain", cwd=repo)
-    entry["dirty"] = rc == 0 and bool(out.strip())
+    # « sale » = fichiers SUIVIS modifiés seulement (_dirty_tracked) : le
+    # non-suivi (artefacts runtime : secrets, uploads…) ne rend plus l'arbre
+    # « sale » — même définition que les pré-checks de ``update hub``
+    # (Bug 1 volet dirty-check). Échec git → [] → False (comme avant).
+    entry["dirty"] = bool(park_checks._dirty_tracked(repo))
 
     entry["version"] = _read_version(repo)
     entry["version_target"] = _read_version(repo, "origin/main")

@@ -9,6 +9,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import park_checks
+
 def _find_parc_root() -> Path:
     """Trouve la racine du parc POULIDOR en cherchant le ``manifest.json``.
 
@@ -166,12 +168,19 @@ def _read_version(path: Path) -> str:
 
 
 def _git_dirty(path: Path) -> bool:
+    """Dépôt « sale » = fichiers SUIVIS modifiés (le non-suivi ne compte pas).
+
+    Bug 1 (volet dirty-check) : même définition que
+    ``park_checks._dirty_tracked`` (pré-checks ``update hub``) — un
+    artefact runtime non suivi (secrets, uploads, .env local) ne doit
+    pas afficher un dépôt « sale » permanent. Appelants : get_apps /
+    get_workshop_apps (``AppInfo.git_dirty``, statut d'affichage).
+    Les gardes historiques sont conservées : git absent ou timeouts →
+    ``False`` (``_dirty_tracked`` convertit déjà un timeout en échec
+    ``rc 124`` → ``[]`` ; seul ``FileNotFoundError`` peut propager).
+    """
     try:
-        out = subprocess.run(
-            ["git", "-C", str(path), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return bool(out.stdout.strip())
+        return bool(park_checks._dirty_tracked(path))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
