@@ -211,6 +211,15 @@ def build_parser() -> argparse.ArgumentParser:
     socle_build_p.add_argument("--force", action="store_true", help="Reconstruire même si le tag existe")
     socle_sub.add_parser("status", help="Version socle par app (drift flotte)")
 
+    # docker — daemon : pools d'adresses (F14, anti-saturation networks)
+    docker_parser = sub.add_parser(
+        "docker", help="Daemon Docker : pools d'adresses (anti-saturation networks)")
+    docker_sub = docker_parser.add_subparsers(dest="docker_cmd")
+    docker_setup_p = docker_sub.add_parser(
+        "setup-pools", help="Configurer default-address-pools dans /etc/docker/daemon.json")
+    docker_setup_p.add_argument("--yes", action="store_true", help="Appliquer sans confirmation")
+    docker_sub.add_parser("check", help="Vérifier si les pools recommandés sont en place")
+
     return p
 
 
@@ -594,6 +603,20 @@ def _run(args) -> int:
         if args.socle_cmd == "build":
             return socle_build(force=getattr(args, "force", False), dry_run=global_dry_run)
         return socle_status()
+
+    if args.command == "docker":
+        from hubctl_cli.docker_pools import check_pools, setup_pools
+        from rich.console import Console as _Console
+        con = _Console()
+        if args.docker_cmd == "check":
+            ok = check_pools()
+            con.print(
+                "[green]✓ Pools d'adresses Docker configurés[/green]"
+                if ok
+                else "[red]✗ Pools non configurés — hubctl docker setup-pools[/red]"
+            )
+            return 0 if ok else 1
+        return setup_pools(con, yes=getattr(args, "yes", False))
 
     # ── TUI (pas de sous-commande ou flags seuls) ──
 
