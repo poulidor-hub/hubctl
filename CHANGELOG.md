@@ -1,3 +1,23 @@
+## [0.18.4] - 14 novembre 2026
+
+### ⚡ Pools d'adresses Docker : fin de la saturation récurrente des réseaux
+
+Les pools par défaut du daemon (≈31 sous-réseaux) saturaient avec la
+flotte (33 apps × 1 network compose + hub + stacks de test) →
+« invalid pool request: Pool overlaps » récurrent au démarrage des apps
+(constaté au test PRA VM et en prod au start de flotte).
+
+- Nouvelle sous-commande `hubctl docker setup-pools` : merge idempotent
+  de `default-address-pools` (172.16.0.0/12 et 10.200.0.0/14 en /24,
+  ~5100 réseaux /24) dans /etc/docker/daemon.json, en préservant dns et
+  runtimes ; `hubctl docker check` pour l'état.
+- `hubctl stop all` / `stop prod` : purge des networks Docker orphelins
+  en fin de run (ils s'accumulent sinon).
+- Installs récents : config posée manuellement sur le serveur et le
+  labo VM pendant le test PRA (14/11/2026) — cette release l'automatise.
+
+---
+
 ## [0.18.3] - 14 novembre 2026
 
 ### ⚡ pra-restore : restauration complète des apps opérationnelle
