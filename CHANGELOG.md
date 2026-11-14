@@ -1,3 +1,25 @@
+## [0.18.5] - 14 novembre 2026
+
+### ⚡ Statut « sale » = fichiers suivis modifiés (fin du badge permanent sur les secrets runtime)
+
+- `update_serve._component_status` : le champ `dirty` (GET /update/status →
+  badge « arbre sale » de l'UI Mises à jour) utilise désormais
+  `park_checks._dirty_tracked` — les fichiers **non suivis** ne comptent plus.
+  Cas déclencheur : `secrets/atelier_token` (créé hors git par `hubctl init`)
+  = statut sale permanent avec un remède « committer ou nettoyer » inapplicable
+  à un secret. Définition désormais identique aux pré-checks de `update hub`.
+- `hub_state._git_dirty` : aligné tracked-only pour ses deux appelants
+  (`get_apps`, `get_workshop_apps` — affichage panneau Apps/Ateliers).
+  Les gardes historiques (git absent / timeout → False) sont conservées.
+- **Inchangé volontairement** : `actions._ws_worktree_clean` (garde atelier
+  avant `--maj/--prod`) reste sur le porcelain brut — fail-closed : un
+  pull/checkout ne doit jamais écraser du non-suivi.
+- Tests : 3 nouveaux (untracked seul → dirty False ; tracked modifié → True) ;
+  suite complète 729 passed / 7 skipped (1 flake préexistant sur
+  `test_park_checks.py::test_run_timeout_*`, prouvé sur baseline avant le fix).
+
+---
+
 ## [0.18.4] - 14 novembre 2026
 
 ### ⚡ Pools d'adresses Docker : fin de la saturation récurrente des réseaux
