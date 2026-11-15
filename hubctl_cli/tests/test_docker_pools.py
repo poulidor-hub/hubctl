@@ -105,3 +105,39 @@ def test_stop_all_appelle_le_prune_reseaux(monkeypatch):
     monkeypatch.setattr(actions, "network_prune", lambda: calls.append("prune") or True)
     actions.action_stop_all(console=None, target="all")
     assert calls == ["prune"]
+
+
+# ── docker0_gateway : passerelle réelle pour le bind des units hôte ──
+
+
+def test_docker0_gateway_lit_l_inet_de_docker0(monkeypatch):
+    """Retourne l'IP inet de docker0 — pas 172.17.0.1 codé en dur (bug
+    15/11/2026 : docker0 déplacé en 10.200.0.1 par les pools F14 → unit
+    bindée sur une IP inexistante, « Service de mise a jour hôte
+    injoignable » côté Hub)."""
+    class FakeCompleted:
+        stdout = ("2: docker0    inet 10.200.0.1/24 brd 10.200.0.255 scope "
+                  "global docker0\\       valid_lft forever preferred_lft forever\n")
+        returncode = 0
+
+    monkeypatch.setattr(dp.subprocess, "run", lambda cmd, **k: FakeCompleted())
+    assert dp.docker0_gateway() == "10.200.0.1"
+
+
+def test_docker0_gateway_repli_historique_si_docker0_absent(monkeypatch):
+    """Interface absente / `ip` manquant / timeout → 172.17.0.1 (comportement
+    historique), JAMAIS d'exception (appelé au rendu d'unit — jamais fatal)."""
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("ip")
+
+    monkeypatch.setattr(dp.subprocess, "run", fake_run)
+    assert dp.docker0_gateway() == "172.17.0.1"
+
+
+def test_docker0_gateway_repli_si_sortie_sans_inet(monkeypatch):
+    class FakeCompleted:
+        stdout = "2: docker0    <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500\n"
+        returncode = 0
+
+    monkeypatch.setattr(dp.subprocess, "run", lambda cmd, **k: FakeCompleted())
+    assert dp.docker0_gateway() == "172.17.0.1"

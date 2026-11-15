@@ -62,7 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Avec --serve : port d'écoute (défaut : 8778)")
     update_parser.add_argument("--host", dest="update_host", default="127.0.0.1", metavar="HOST",
                                help="Avec --serve : interface d'écoute (défaut : 127.0.0.1). "
-                                    "Ex : 172.17.0.1 (passerelle docker0) pour être joignable "
+                                    "Ex : la passerelle docker0 (ip -4 addr show docker0 — PAS "
+                                    "toujours 172.17.0.1, cf. pools du daemon) pour être joignable "
                                     "des conteneurs via host.docker.internal, sans exposition LAN")
     update_parser.add_argument("--token-file", type=Path, dest="update_token_file", default=None,
                                metavar="CHEMIN",
@@ -99,7 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Avec --serve : port d'écoute (défaut : 8777)")
     atelier_parser.add_argument("--host", dest="atelier_host", default="127.0.0.1", metavar="HOST",
                                 help="Avec --serve : interface d'écoute (défaut : 127.0.0.1). "
-                                     "Ex : 172.17.0.1 (passerelle docker0) pour être joignable "
+                                     "Ex : la passerelle docker0 (ip -4 addr show docker0 — PAS "
+                                     "toujours 172.17.0.1, cf. pools du daemon) pour être joignable "
                                      "des conteneurs via host.docker.internal, sans exposition LAN")
     atelier_parser.add_argument("--token-file", type=Path, dest="atelier_token_file", default=None,
                                 metavar="CHEMIN",

@@ -478,9 +478,11 @@ def build_server(port: int, token_file: Path, host: str = "127.0.0.1", *,
                  log_dir: Path) -> ThreadingHTTPServer:
     """Construit le serveur (bind host:port, token lu au démarrage).
 
-    host : défaut 127.0.0.1 (recette atelier_serve). 172.17.0.1 (passerelle
-    docker0) rend le serveur joignable des conteneurs via
-    host.docker.internal sans être visible du LAN.
+    host : défaut 127.0.0.1 (recette atelier_serve). La passerelle docker0
+    (ip -4 addr show docker0 — PAS toujours 172.17.0.1 : les pools
+    personnalisés du daemon peuvent la déplacer, ex. 10.200.0.1) rend le
+    serveur joignable des conteneurs via host.docker.internal sans être
+    visible du LAN.
 
     port=0 → port libre choisi par l'OS (utile aux tests) : le port réel
     se lit sur server_address après construction.

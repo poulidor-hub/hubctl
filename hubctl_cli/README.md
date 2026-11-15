@@ -64,9 +64,13 @@ Mini-serveur HTTP que le Hub proxy pour piloter les ateliers et le coffre :
 `GET /vault/status`, `POST /vault/backup`. Toute route
 sauf `/health` exige le header `X-Atelier-Token` (le vrai garde-fou
 d'exposition). Bind `127.0.0.1` par défaut ; `--host` permet de l'ouvrir au
-strict nécessaire — ex. `172.17.0.1` (passerelle docker0) pour être joignable
-des conteneurs via `host.docker.internal`, sans être visible du LAN
-(c'est le bind de l'unit systemd, cf. `ExecStart`).
+strict nécessaire — ex. la passerelle docker0 (`ip -4 addr show docker0`,
+souvent `172.17.0.1`, mais PAS toujours : les pools personnalisés du
+daemon, cf. `docker setup-pools`, peuvent la déplacer — ex. `10.200.0.1`)
+pour être joignable des conteneurs via `host.docker.internal`, sans être
+visible du LAN (c'est le bind de l'unit systemd, cf. `ExecStart` :
+placeholder `@DOCKER_GATEWAY@` substitué au rendu par
+`docker_pools.docker0_gateway`).
 
 ```bash
 ./hubctl atelier --serve                                        # port 8777, token ~/.config/hubctl/atelier_token
@@ -135,10 +139,16 @@ Serveur HTTP que le Hub proxy pour le « Centre de mises à jour » :
 Même auth `X-Atelier-Token` que l'atelier — le token est **réutilisé**
 (`~/.config/hubctl/atelier_token`, rien à générer ni copier). Port par
 défaut `8778`, bind `127.0.0.1` ; `--host` permet de l'ouvrir au strict
-nécessaire — ex. `172.17.0.1` (passerelle docker0, le bind de l'unit
-systemd) pour être joignable des conteneurs via `host.docker.internal`,
-sans être visible du LAN. L'agent met à jour le PARC ENTIER : ne pas lui
-passer de cible (`update <cible> --serve` refuse, code 2 — la cible se passe
+nécessaire — ex. la passerelle docker0 (`ip -4 addr show docker0`,
+souvent `172.17.0.1`, mais PAS toujours : les pools personnalisés du
+daemon, cf. `docker setup-pools`, peuvent la déplacer — ex. `10.200.0.1`)
+pour être joignable des conteneurs via `host.docker.internal`,
+sans être visible du LAN. L'unit systemd porte le placeholder
+`@DOCKER_GATEWAY@`, substitué au rendu par `docker_pools.docker0_gateway`
+(jamais d'IP en dur — un bind sur une IP absente rend le service
+injoignable depuis les conteneurs, cf. CHANGELOG 15/11/2026). L'agent met
+à jour le PARC ENTIER : ne pas lui passer de cible
+(`update <cible> --serve` refuse, code 2 — la cible se passe
 à `POST /update/run`) :
 
 ```bash

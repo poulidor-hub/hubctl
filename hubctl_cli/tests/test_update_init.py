@@ -33,7 +33,7 @@ Description=hubctl agent de mise a jour du parc
 [Service]
 User=@REAL_USER@
 WorkingDirectory=@PARC_ROOT@
-ExecStart=@PARC_ROOT@/hubctl update --serve --host 172.17.0.1 --port 8778
+ExecStart=@PARC_ROOT@/hubctl update --serve --host @DOCKER_GATEWAY@ --port 8778
 ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl /home/@REAL_USER@/.docker
 
 [Install]
@@ -102,9 +102,12 @@ def test_tty_runs_install_commands(tmp_path, monkeypatch):
 
 
 def test_rendered_unit_substitutes_placeholders(tmp_path, monkeypatch):
-    """L'unit rendue ne contient aucun placeholder : user courant + parc réel ;
-    le gabarit source reste un gabarit (placeholders intacts)."""
+    """L'unit rendue ne contient aucun placeholder : user courant + parc réel
+    + passerelle docker0 réelle ; le gabarit source reste un gabarit
+    (placeholders intacts). La passerelle est mockée : le test ne doit pas
+    dépendre du docker0 de la machine qui lance la suite."""
     _patch_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(actions, "docker0_gateway", lambda con=None: "172.30.0.1")
     monkeypatch.setattr(actions.utils, "run_shell", mock.Mock(return_value=0))
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
     actions._ensure_update_service(mock.Mock())
@@ -112,10 +115,11 @@ def test_rendered_unit_substitutes_placeholders(tmp_path, monkeypatch):
     assert "User=utilisateur-test" in rendered
     assert f"WorkingDirectory={tmp_path.resolve()}" in rendered
     assert (f"ExecStart={tmp_path.resolve()}/hubctl update --serve "
-            f"--host 172.17.0.1 --port 8778") in rendered
+            f"--host 172.30.0.1 --port 8778") in rendered
     assert (f"ReadWritePaths={tmp_path.resolve()} /home/utilisateur-test/.config/hubctl /home/utilisateur-test/.docker") in rendered
     assert "@REAL_USER@" not in rendered
     assert "@PARC_ROOT@" not in rendered
+    assert "@DOCKER_GATEWAY@" not in rendered
     assert "User=@REAL_USER@" in actions._UPDATE_UNIT_GABARIT.read_text()
 
 
@@ -185,8 +189,11 @@ def test_gabarit_livre_utilise_placeholders():
     assert "User=@REAL_USER@" in text
     assert "@PARC_ROOT@" in text
     assert "Description=hubctl agent de mise a jour du parc" in text
+    assert "@DOCKER_GATEWAY@" in text, "bind docker0 substitué au rendu — PAS d'IP en dur"
     assert ("ExecStart=@PARC_ROOT@/hubctl update --serve "
-            "--host 172.17.0.1 --port 8778") in text
+            "--host @DOCKER_GATEWAY@ --port 8778") in text
+    assert "ExecStart" in text and "172.17.0.1" not in text.split("ExecStart")[1].splitlines()[0], \
+        "172.17.0.1 codé en dur = bug 15/11/2026 (docker0 déplacé par les pools F14 → service injoignable)"
     assert "ReadWritePaths=@PARC_ROOT@ /home/@REAL_USER@/.config/hubctl" in text
     # Durcissement hérité de l'atelier, jamais allégé
     for directive in ("NoNewPrivileges=true", "ProtectSystem=strict",

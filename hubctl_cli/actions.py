@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from hubctl_cli import hub_state, utils, env_manager
-from hubctl_cli.docker_pools import network_prune
+from hubctl_cli.docker_pools import docker0_gateway, network_prune
 from hubctl_cli import park_checks
 
 import string as _string_module
@@ -468,18 +468,24 @@ def _atelier_user() -> str:
 
 
 def _render_unit(con, gabarit: Path, rendered: Path) -> Path | None:
-    """Rend une unit (atelier, update) : substitue @REAL_USER@/@PARC_ROOT@
-    dans le gabarit.
+    """Rend une unit (atelier, update) : substitue @REAL_USER@/@PARC_ROOT@/
+    @DOCKER_GATEWAY@ dans le gabarit.
 
-    Le gabarit ne porte aucun utilisateur ni chemin en dur (hôtes variés) ;
-    la substitution se fait à l'installation et écrit un fichier rendu
-    persistant (packaging/.rendered/, gitigné). Retourne le chemin rendu,
-    None si KO (l'appelant replie sur le gabarit brut — jamais fatal).
+    Le gabarit ne porte aucun utilisateur, chemin ni IP en dur (hôtes
+    variés) ; la substitution se fait à l'installation et écrit un fichier
+    rendu persistant (packaging/.rendered/, gitigné). Le bind des serveurs
+    hôte (ports 8777/8778) est la passerelle docker0 réelle
+    (`docker_pools.docker0_gateway`) — PAS 172.17.0.1 codé en dur : les
+    pools personnalisés (F14) peuvent déplacer docker0, et un bind sur une
+    IP absente rend le service injoignable depuis les conteneurs. Retourne
+    le chemin rendu, None si KO (l'appelant replie sur le gabarit brut —
+    jamais fatal).
     """
     try:
         text = gabarit.read_text(encoding="utf-8")
         text = (text.replace("@REAL_USER@", _atelier_user())
-                    .replace("@PARC_ROOT@", str(hub_state.PARC_ROOT.resolve())))
+                    .replace("@PARC_ROOT@", str(hub_state.PARC_ROOT.resolve()))
+                    .replace("@DOCKER_GATEWAY@", docker0_gateway(con)))
         rendered.parent.mkdir(parents=True, exist_ok=True)
         rendered.write_text(text, encoding="utf-8")
         return rendered

@@ -20,6 +20,7 @@ Plages choisies sans conflit parc :
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -104,3 +105,38 @@ def network_prune() -> bool:
     de `hubctl stop all` : les networks d'apps s'accumulent sinon."""
     proc = subprocess.run(["docker", "network", "prune", "-f"], capture_output=True, text=True)
     return proc.returncode == 0
+
+
+def docker0_gateway(console=None) -> str:
+    """IP de docker0 — la passerelle que les conteneurs voient via
+    `host.docker.internal` (extra_hosts host-gateway).
+
+    Le réflexe « 172.17.0.1 » est faux dès que les pools personnalisés
+    (DEFAULT_POOLS ci-dessus, F14) ou un daemon.json local déplacent le
+    bridge par défaut (ex. 10.200.0.1 sur les ateliers POULIDOR) : l'unit
+    rendue se bindait alors sur une IP inexistante → « Service de mise a
+    jour hôte injoignable » côté Hub (15/11/2026). Les gabarits packaging/
+    portent le placeholder @DOCKER_GATEWAY@, substitué au rendu de l'unit
+    (`actions._render_unit`) par cette valeur.
+
+    Lit l'inet de docker0 (`ip -4 -o addr show dev docker0`) ; repli
+    172.17.0.1 (comportement historique) avec avertissement si docker0 est
+    introuvable — jamais d'exception (le rendu d'unit ne doit pas casser).
+    """
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", "docker0"],
+            capture_output=True, text=True, timeout=5)
+        m = re.search(r"inet (\d+(?:\.\d+){3})", out.stdout)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    if console is not None:
+        try:
+            console.print(
+                "[yellow]⚠ docker0 introuvable — bind 172.17.0.1 historique "
+                "(à ajuster si le bridge par défaut utilise un autre subnet)[/yellow]")
+        except Exception:
+            pass
+    return "172.17.0.1"

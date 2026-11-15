@@ -1,3 +1,34 @@
+## [Non publié]
+
+### ⚡ Units hôte (atelier 8777, update 8778) : bind sur la passerelle docker0 RÉELLE, plus d'IP en dur
+
+- **Bug constaté en prod 15/11/2026** : vue Admin → Mises à jour
+  « Service de mise à jour hôte injoignable ». Cause : les gabarits
+  `packaging/*.service` codeaient `--host 172.17.0.1` en dur, mais le
+  daemon Docker — reconfiguré par `hubctl docker setup-pools` (0.18.4) ou
+  un daemon.json local — avait déplacé docker0 en `10.200.0.1` sur
+  l'atelier. Bind sur une IP inexistante → injoignable depuis hub-api
+  (`host.docker.internal` résout vers la VRAIE passerelle), alors que le
+  service systemd affichait « active ».
+- `docker_pools.docker0_gateway()` : lit l'inet de docker0
+  (`ip -4 -o addr show dev docker0`), repli 172.17.0.1 + avertissement
+  (jamais fatal — appelé au rendu).
+- Gabarits `hubctl-atelier.service` / `hubctl-update.service` :
+  `--host @DOCKER_GATEWAY@` substitué au rendu (`actions._render_unit`),
+  comme @REAL_USER@/@PARC_ROOT@. Même posture sécurité (docker0 non routé
+  du LAN, auth X-Atelier-Token inchangée).
+- README + aide `--host` des deux sous-commandes : « 172.17.0.1 » présenté
+  comme un exemple parmi d'autres, pas LA valeur.
+- Tests : +3 sur `docker0_gateway` (lecture inet, repli sans `ip`, repli
+  sans inet) ; rendu d'unit testé avec passerelle mockée (plus de
+  dépendance au docker0 de la machine de test) ; garde-fous packaging
+  étendus (pas d'IP en dur dans ExecStart).
+- Correctif runtime sur l'atelier concerné : unit installée passée à
+  `--host 10.200.0.1` + restart (hubctl-update ET hubctl-atelier, les deux
+  étaient touchés).
+
+---
+
 ## [0.18.5] - 14 novembre 2026
 
 ### ⚡ Statut « sale » = fichiers suivis modifiés (fin du badge permanent sur les secrets runtime)

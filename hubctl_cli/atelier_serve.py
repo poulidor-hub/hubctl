@@ -10,8 +10,9 @@ contrat).
 Contraintes (spec §4) :
 - stdlib uniquement : ThreadingHTTPServer, aucune dépendance nouvelle ;
 - bind 127.0.0.1 par défaut (--host pour l'ouvrir au strict nécessaire :
-  p. ex. 172.17.0.1, passerelle docker0, pour la joignabilité des
-  conteneurs via host.docker.internal — l'auth token reste le garde-fou) ;
+  p. ex. la passerelle docker0 (ip -4 addr show docker0), PAS toujours
+  172.17.0.1, pour la joignabilité des conteneurs via
+  host.docker.internal — l'auth token reste le garde-fou) ;
 - routes fixes sans paramètre libre (5) ;
 - auth par header ``X-Atelier-Token`` comparé en constant-time
   (hmac.compare_digest) contre le contenu du fichier --token-file
@@ -254,9 +255,11 @@ def build_server(port: int, token_file: Path,
                  host: str = "127.0.0.1") -> ThreadingHTTPServer:
     """Construit le serveur (bind host:port, token lu au démarrage).
 
-    host : défaut 127.0.0.1 (comportement historique inchangé). 172.17.0.1
-    (passerelle docker0) rend le serveur joignable des conteneurs via
-    host.docker.internal sans être visible du LAN.
+    host : défaut 127.0.0.1 (comportement historique inchangé). La
+    passerelle docker0 (ip -4 addr show docker0 — PAS toujours 172.17.0.1 :
+    les pools personnalisés du daemon peuvent la déplacer, ex. 10.200.0.1)
+    rend le serveur joignable des conteneurs via host.docker.internal sans
+    être visible du LAN.
 
     port=0 → port libre choisi par l'OS (utile aux tests) : le port réel
     se lit sur server_address après construction.

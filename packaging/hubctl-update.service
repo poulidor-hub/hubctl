@@ -7,7 +7,8 @@
 #
 # (`hubctl update --serve` : agent « Centre de mises a jour » piloté par le
 #  Hub via GET /health, GET /update/status, POST /update/run,
-#  GET /update/job — port 8778. Bind 172.17.0.1, cf. ExecStart :
+#  GET /update/job — port 8778. Bind @DOCKER_GATEWAY@ (passerelle docker0
+#  réelle, substituée au rendu), cf. ExecStart :
 #  joignable des conteneurs via host.docker.internal, invisible du LAN ;
 #  l'auth X-Atelier-Token (token atelier réutilisé) reste le vrai
 #  garde-fou d'exposition.)
@@ -36,11 +37,14 @@ Type=simple
 # chemin réel du parc : substitués à l'installation — voir en-tête.
 User=@REAL_USER@
 WorkingDirectory=@PARC_ROOT@
-# --host 172.17.0.1 = passerelle docker0 : le conteneur hub-api joint le
-# serveur via host.docker.internal (résout vers la passerelle). 172.17.0.1
-# n'est pas routé depuis le LAN → pas d'exposition réseau ; le token
-# X-Atelier-Token reste le vrai garde-fou.
-ExecStart=@PARC_ROOT@/hubctl update --serve --host 172.17.0.1 --port 8778
+# --host @DOCKER_GATEWAY@ = passerelle docker0 (substituée au rendu par
+# docker_pools.docker0_gateway — PAS 172.17.0.1 codé en dur : les pools
+# personnalisés du daemon, F14, peuvent déplacer docker0, et un bind sur
+# une IP absente rend le service injoignable depuis les conteneurs). Le
+# conteneur hub-api joint le serveur via host.docker.internal (résout vers
+# cette passerelle). docker0 n'est pas routé depuis le LAN → pas
+# d'exposition réseau ; le token X-Atelier-Token reste le vrai garde-fou.
+ExecStart=@PARC_ROOT@/hubctl update --serve --host @DOCKER_GATEWAY@ --port 8778
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5s
