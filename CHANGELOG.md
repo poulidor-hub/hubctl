@@ -1,4 +1,4 @@
-## [Non publié]
+## [0.18.6] - 15 novembre 2026
 
 ### ⚡ Units hôte (atelier 8777, update 8778) : bind sur la passerelle docker0 RÉELLE, plus d'IP en dur
 
