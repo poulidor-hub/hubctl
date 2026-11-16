@@ -1,3 +1,14 @@
+## [0.20.3] - 17 novembre 2026
+
+### ⚡ Tests — fin du flake pause (issue #3) ; MonkeyPatch manuels convertis
+
+- **Cause racine** (lecture + confirmation à l'exécution) : trois tests créaient `pytest.MonkeyPatch()` à la main SANS `undo()` — `test_run_action_returns_true_on_success` et `test_run_action_returns_false_on_failure` laissaient `menu.pause` remplacé par un no-op pour tout le reste du process, et `test_refresh_apps_status_updates_module_var` laissait `hub_state.get_apps_status` remplacé (fuite jumelle découverte pendant l'enquête). Conséquence visible : `test_pause_waits_for_enter` (test_actions) échouait si `test_menu_loop` passait avant lui dans le même process — `pause()` rend pourtant inconditionnellement, d'où `render.call_count == 0`, signature d'un pause no-op.
+- **Fix** : les 3 tests convertis à la fixture pytest `monkeypatch` (auto-undo garantie).
+- **+2 gardes d'intégrité de module** (TDD, regardés rouges sur l'état fautif en lançant les fichiers complets) : `test_menu_pause_not_polluted` et `test_hub_state_get_apps_status_not_polluted` assertent que les attributs partagés restent les fonctions réelles après la suite — tout futur MonkeyPatch manuel oublié sera détecté dans le fichier fautif lui-même.
+- **Vérifié** : batch historique déclencheur (`test_menu_loop` → `test_pause_waits_for_enter`) vert, ordre inverse vert ; 2 full-suites consécutives 767 passed / 7 skipped / 0 failed.
+
+---
+
 ## [0.20.2] - 16 novembre 2026
 
 ### ⚡ Tests — fin du flake park_checks ; poll worker du menu arrêtable (issue #2)
