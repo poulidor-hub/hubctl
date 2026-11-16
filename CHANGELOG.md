@@ -1,3 +1,20 @@
+## [0.20.0] - 16 novembre 2026
+
+### 📣 Pour les utilisateurs
+- **Ajouté** : `hubctl` mesure désormais les ressources du serveur (CPU, mémoire, disque, charge) et les met à disposition du Hub — c'est la source du nouveau « cockpit » de la page Administration.
+- **Amélioré** : mesure du CPU fiable (calcul réel au lieu d'une approximation).
+
+### ⚡ Agent hôte — route `GET /stats` (métriques serveur pour le cockpit HUB_base)
+
+- **Nouveau module `hubctl_cli/stats.py`** : parseurs purs testables — uptime (`/proc/uptime`), mémoire (`/proc/meminfo` : total/available/used/percent + swap), charge (`/proc/loadavg`), échantillon CPU (`/proc/stat`) et `cpu_percent_between()` par différentiel idle/total (remplace l'approximation `load1 × 25` du menu TUI) ; `get_stats()` assemble le contrat JSON `cpu.percent/cores/load1`, `memory.total_mb/used_mb/available_mb/percent/swap_percent`, `disk.path/total_gb/used_gb/free_gb/percent` (via `hub_state.get_disk_usage()`), timestamp ISO local.
+- **CPU honnête** : échantillon précédent conservé en module (sous `threading.Lock`, serveur ThreadingHTTPServer) ; au premier appel, 2 échantillons espacés (~0,6 s, `_cpu_delay()` monkeypatchable en test) ; valeur bornée [0, 100], Δtotal ≤ 0 → 0,0.
+- **Route `GET /stats`** dans `update_serve.py` : même protection token `X-Atelier-Token` que `/update/status` (pas publique), POST → 405, docstrings/route doc à jour. Dégradation par section : capteur en échec → valeurs neutres **clés du contrat toujours présentes** + `errors: {section}` + `service: "degraded"` (le consommateur lit sans test d'existence).
+- **Contrat consommé tel quel** par le nouveau proxy HUB_base `GET /api/admin/system/stats` (cockpit admin) — ne pas renommer les champs.
+- **tests** : `tests/test_stats.py` — 13 tests (parseurs sur `/proc` factices, garde Δtotal=0, double échantillon 1ᵉʳ appel, dégradation isolée, route 401/403/200/405 via la recette serveur existante) ; suite ciblée 39 passed (stats + régression update_serve).
+- `hubctl_cli/pyproject.toml` resynchronisé sur `VERSION` (0.16.7 → 0.20.0, drift préexistant).
+
+---
+
 ## [0.19.0] - 16 novembre 2026
 
 ### ⚡ Coffre — sauvegarde et restauration de `certs/ca` (CA HTTPS du parc)

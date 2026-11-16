@@ -67,6 +67,9 @@ Serveur HTTP (contrat, spec §4.1) :
   tel quel par le Hub), POST /update/run → :func:`start_update` (body
   JSON optionnel ``{"dry_run": bool}``, défaut False ; 202/409
   passthrough du couple ``(code, payload)``) ;
+- GET /stats → :func:`hubctl_cli.stats.get_stats` (métriques hôte pour
+  le cockpit de l'admin Hub : uptime, CPU, RAM, disque, charge — même
+  auth token que les routes /update, PAS publique) ;
 - le handler ne lève JAMAIS : chaque route répond un JSON (400 body
   invalide, 404 route inconnue, 405 méthode interdite, 500 générique en
   dernier recours — même convention atelier_serve).
@@ -86,7 +89,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from hubctl_cli import hub_state, park_checks
+from hubctl_cli import hub_state, park_checks, stats
 
 # Durée de vie (secondes) du cache statut : le front rafraîchit souvent,
 # un seul cycle de fetch par minute suffit (spec §5.1).
@@ -460,8 +463,8 @@ def start_update(*, parc_root: Path, state_file: Path, log_dir: Path,
 
 DEFAULT_TOKEN_FILE = Path.home() / ".config" / "hubctl" / "atelier_token"
 
-_ROUTES_DOC = ("GET /health · GET /update/status · POST /update/run · "
-               "GET /update/job")
+_ROUTES_DOC = ("GET /health · GET /stats · GET /update/status · "
+               "POST /update/run · GET /update/job")
 
 
 def _read_token(token_file: Path) -> bytes:
@@ -497,10 +500,11 @@ def build_server(port: int, token_file: Path, host: str = "127.0.0.1", *,
 
 
 class UpdateHandler(BaseHTTPRequestHandler):
-    """Handlers JSON des 4 routes (contrat §4.1). Auth X-Atelier-Token
-    (sauf /health). Ne lève JAMAIS : chaque route répond un JSON — 400
-    body invalide, 404 route inconnue, 405 méthode interdite, 500
-    générique en dernier recours (même convention atelier_serve)."""
+    """Handlers JSON des 5 routes (contrat §4.1 + /stats). Auth
+    X-Atelier-Token (sauf /health). Ne lève JAMAIS : chaque route répond
+    un JSON — 400 body invalide, 404 route inconnue, 405 méthode
+    interdite, 500 générique en dernier recours (même convention
+    atelier_serve)."""
 
     server_version = "hubctl-update/0.1"
 
@@ -557,6 +561,11 @@ class UpdateHandler(BaseHTTPRequestHandler):
                                              "ok": True})
             if not self._authorized():
                 return
+            if route == "/stats":
+                # Métriques hôte (cockpit admin Hub) : même protection
+                # token que /update/status — PAS publique (hardware info).
+                return self._send_json(
+                    200, stats.get_stats(parc_root=self.server.parc_root))
             if route == "/update/status":
                 status = collect_update_status(self.server.parc_root,
                                                force=self._refresh())
@@ -588,7 +597,7 @@ class UpdateHandler(BaseHTTPRequestHandler):
                     state_file=self.server.state_file,
                     log_dir=self.server.log_dir, dry_run=dry_run)
                 return self._send_json(code, payload)
-            if route in ("/update/status", "/update/job"):
+            if route in ("/update/status", "/update/job", "/stats"):
                 return self._send_json(405, {"erreur": "méthode interdite : GET requis"})
             return self._send_json(404, {"erreur": "route inconnue"})
         except Exception as e:
