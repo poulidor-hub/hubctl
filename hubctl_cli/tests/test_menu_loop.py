@@ -341,17 +341,28 @@ def test_coffre_submenu_esc(monkeypatch):
 # ── run_action ──
 
 
-def test_run_action_returns_true_on_success():
+def test_run_action_returns_true_on_success(monkeypatch):
+    """Fixture monkeypatch (auto-undo) — Hubctl#3 : l'ancien
+    pytest.MonkeyPatch() manuel sans undo laissait menu.pause no-op pour tout
+    le reste du process (flake test_pause_waits_for_enter)."""
     c = _fake_canvas()
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
     result = menu._run_action(c, "test", lambda: None)
     assert result is True
 
 
-def test_run_action_returns_false_on_failure():
+def test_run_action_returns_false_on_failure(monkeypatch):
     c = _fake_canvas()
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
     result = menu._run_action(c, "test", lambda: 1 / 0)
     assert result is False
+
+
+def test_menu_pause_not_polluted():
+    """Hubctl#3 : les tests run_action ci-dessus créaient pytest.MonkeyPatch()
+    à la main, SANS undo — menu.pause restait remplacé par un no-op pour tout
+    le reste du process : test_pause_waits_for_enter (test_actions) voyait
+    alors render.call_count == 0 alors que pause() rend inconditionnellement.
+    Garde : après la suite, menu.pause doit être la fonction réelle."""
+    assert getattr(menu.pause, "__name__", "") == "pause", \
+        "menu.pause a été remplacé et jamais restauré (MonkeyPatch manuel sans undo)"
