@@ -856,6 +856,37 @@ def test_restore_files_kit_without_key_prompts(tmp_path, monkeypatch):
     assert (tmp_path / "HUB_base" / ".env").exists()
 
 
+def test_restore_files_from_kit_restores_ca_with_modes(tmp_path, monkeypatch):
+    """Le chemin PRA (coffre DU KIT) doit lui aussi remettre la CA avec ses
+    permissions (ca.crt 0644, ca.key 0600, dossier 0700) : même coffre, même
+    chemin commun Vault.restore() — la confiance navigateurs survit au PRA."""
+    from rich.console import Console
+    from hubctl_cli.coffre import Vault
+    _patch_parc(tmp_path, monkeypatch)
+    kit = tmp_path / "usb"
+    kit.mkdir(exist_ok=True)
+    (tmp_path / "HUB_base").mkdir(exist_ok=True)
+    v = Vault(kit / pra_config.VAULT_FILENAME)
+    v.unlock("kit-passphrase")
+    v.set_file("HUB_base/certs/ca/ca.crt", b"CERT")
+    v.set_file("HUB_base/certs/ca/ca.key", b"KEY")
+    v.save()
+    v.store_passphrase("kit-passphrase")
+
+    def _no_prompt(*a, **k):
+        raise AssertionError("getpass ne doit pas être appelé (clé du kit valide)")
+    monkeypatch.setattr("getpass.getpass", _no_prompt)
+
+    pra_restore.restore_files_from_kit(kit, Console())
+
+    ca_dir = tmp_path / "HUB_base" / "certs" / "ca"
+    assert (ca_dir / "ca.crt").read_bytes() == b"CERT"
+    assert (ca_dir / "ca.key").read_bytes() == b"KEY"
+    assert (ca_dir / "ca.crt").stat().st_mode & 0o777 == 0o644
+    assert (ca_dir / "ca.key").stat().st_mode & 0o777 == 0o600
+    assert ca_dir.stat().st_mode & 0o777 == 0o700
+
+
 def test_admin_login_poste_sur_api_auth_token():
     """F7 (PRA VM run 9, 13/11/2026) : admin_login appelait /api/token → 404.
     Le hub expose POST /api/auth/token (prefix router auth = /api/auth)."""

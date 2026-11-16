@@ -195,6 +195,7 @@ def _vault_state() -> dict:
             "files": len(files),
             "apps": len(apps),
             "db_dump": "HUB_base/backup/hub_dump.sql" in files,
+            "ca_certs": "HUB_base/certs/ca/ca.key" in files,
         },
         "divergences": sorted(mgr.check_divergence().keys()),
         "pra": _pra_info(),

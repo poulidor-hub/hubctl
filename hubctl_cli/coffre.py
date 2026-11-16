@@ -22,6 +22,28 @@ MAGIC = b"HUBCTLV1"
 # déjà en clair sur le disque serveur — la clé côte-à-côte est assumée (cf. spec).
 VAULT_KEY_FILENAME = "parc.vault.key"
 
+# Permissions de restauration des fichiers du coffre (__files__). Défaut
+# 0600 (secrets, clés privées). Exception : la CA publique du HTTPS local
+# (HUB_base/certs/ca/ca.crt) doit rester 0644 — elle est importée dans les
+# navigateurs et lue par les services ; sa clé (ca.key) reste 0600 et le
+# dossier certs/ca 0700. Retrouver ces modes au restore préserve la confiance
+# navigateurs : un PRA remet EXACTEMENT la CA d'origine, pas une régénérée
+# (qui rejetterait toute la flotte en SEC_ERROR_BAD_SIGNATURE).
+_FILE_RESTORE_MODES: dict[str, int] = {"ca.crt": 0o644}
+_CERTS_CA_DIR = "HUB_base/certs/ca"
+
+
+def _apply_restore_modes(target: Path) -> None:
+    """Applique les permissions d'un fichier restauré du coffre : mode par
+    basename (défaut 0600) et 0700 sur le dossier certs/ca conteneur."""
+    os.chmod(target, _FILE_RESTORE_MODES.get(target.name, 0o600))
+    ca_dir = hub_state.PARC_ROOT / _CERTS_CA_DIR
+    try:
+        if target.resolve().is_relative_to(ca_dir.resolve()):
+            os.chmod(ca_dir, 0o700)
+    except (ValueError, OSError):
+        pass
+
 
 def generate_passphrase() -> str:
     """Passphrase forte pour le coffre (~43 caractères urlsafe)."""
@@ -288,7 +310,7 @@ class Vault:
             target.parent.mkdir(parents=True, exist_ok=True)
             if not dry_run:
                 target.write_bytes(raw)
-                os.chmod(target, 0o600)
+                _apply_restore_modes(target)
             written.append(str(target))
         return written
 
