@@ -268,18 +268,43 @@ def test_import_vault_missing_src(tmp_path):
 
 _SNAPSHOT = b"-- snapshot live --\nINSERT INTO users VALUES (1);\n"
 
+# Dump coffre réaliste (format pg_dump --inserts capturé par _backup_db) :
+# les marqueurs « -- Data for Name: » sont ce que _restore_db parse pour
+# connaître les tables à tronquer et les counts attendus post-restore.
+_DUMP_COFFRE = (
+    b"--\n-- PostgreSQL database dump\n--\n\n"
+    b"-- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: hubadmin\n\n"
+    b"INSERT INTO users VALUES (1, 'admin');\n\n"
+    b"-- Data for Name: applications; Type: TABLE DATA; Schema: public; Owner: hubadmin\n\n"
+    b"INSERT INTO applications VALUES (1, 'app1');\n"
+    b"INSERT INTO applications VALUES (2, 'app2');\n"
+)
+_COUNTS_OK = {"users": 1, "applications": 2}
 
-def _db_dispatch(cmd, success_replay):
-    """Fake subprocess.run : simule pg_dump (snapshot), TRUNCATE, et psql replay."""
+
+def _db_dispatch_strict(cmd, *, replay_ok=True, truncate_ok=True, counts=None):
+    """Fake subprocess.run : simule pg_dump (snapshot), TRUNCATE, replay psql
+    et requête de vérification count(*) — routage par contenu de la commande."""
     from unittest import mock
     joined = " ".join(str(c) for c in cmd)
-    inp = cmd  # placeholder
     if "pg_dump" in joined:
         return mock.Mock(returncode=0, stdout=_SNAPSHOT, stderr=b"")
     if "TRUNCATE" in joined:
-        return mock.Mock(returncode=0, stdout=b"", stderr=b"")
-    return mock.Mock(returncode=0 if success_replay else 1,
-                     stdout=b"", stderr=b"ERROR: bad dump")
+        return mock.Mock(returncode=0 if truncate_ok else 1,
+                         stdout=b"", stderr=b"ERROR: cannot truncate table")
+    if "count(*)" in joined:
+        lines = "".join(f"{t}|{n}\n" for t, n in (counts or {}).items())
+        return mock.Mock(returncode=0, stdout=lines.encode(), stderr=b"")
+    return mock.Mock(returncode=0 if replay_ok else 1, stdout=b"",
+                     stderr=b"ERROR: violates foreign key constraint")
+
+
+def _is_psql_stream_cmd(cmd):
+    """psql alimenté par stdin (replay dump / rollback snapshot) — ni pg_dump,
+    ni TRUNCATE -c, ni requête de vérification count(*)."""
+    joined = " ".join(str(x) for x in cmd)
+    return ("psql" in joined and "TRUNCATE" not in joined
+            and "pg_dump" not in joined and "count(*)" not in joined)
 
 
 def test_restore_db_rolls_back_on_failure(monkeypatch):
@@ -292,11 +317,11 @@ def test_restore_db_rolls_back_on_failure(monkeypatch):
 
     def fake_run(cmd, **kw):
         calls.append({"cmd": list(cmd), "input": kw.get("input")})
-        return _db_dispatch(cmd, success_replay=False)
+        return _db_dispatch_strict(cmd, replay_ok=False, counts=_COUNTS_OK)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     logs = []
-    ok = vault_manager._restore_db(b"DUMP_COFFRE", on_log=logs.append)
+    ok = vault_manager._restore_db(_DUMP_COFFRE, on_log=logs.append)
 
     assert ok is False
     # 1) un snapshot live est pris AVANT le 1er truncate
@@ -321,16 +346,175 @@ def test_restore_db_success_takes_snapshot(monkeypatch):
 
     def fake_run(cmd, **kw):
         calls.append({"cmd": list(cmd), "input": kw.get("input")})
-        return _db_dispatch(cmd, success_replay=True)
+        return _db_dispatch_strict(cmd, counts=_COUNTS_OK)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    ok = vault_manager._restore_db(b"DUMP_COFFRE")
+    ok = vault_manager._restore_db(_DUMP_COFFRE)
 
     assert ok is True
     # snapshot pris
     assert any("pg_dump" in " ".join(str(x) for x in c["cmd"]) for c in calls)
     # pas de rollback : le snapshot n'est jamais rejoué en psql
     assert not any(c["input"] == _SNAPSHOT for c in calls)
+
+
+# ── _restore_db : détection d'échec du replay (issue Hubctl#1) ──
+#
+# Sans ON_ERROR_STOP, psql continue sur erreur SQL (conflit FK, dup key) et
+# sort 0 : un dump partiellement joué était déclaré « DB restaurée » alors que
+# des applications n'étaient pas rejouées. Ces tests verrouillent le contrat :
+# replay sous ON_ERROR_STOP, TRUNCATE vérifié avant replay, comptage de lignes
+# post-restore comparé au dump, et rollback du snapshot au moindre écart.
+
+
+def test_replay_psql_uses_on_error_stop(monkeypatch):
+    """Le replay (et le rollback) doivent porter -v ON_ERROR_STOP=1 : c'est ce
+    qui transforme une erreur SQL intra-dump (conflit FK) en code de sortie
+    non nul, au lieu d'un « succès » partiel silencieux."""
+    import subprocess
+    from hubctl_cli import vault_manager
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        return _db_dispatch_strict(cmd, counts=_COUNTS_OK)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ok = vault_manager._restore_db(_DUMP_COFFRE)
+
+    assert ok is True
+    streams = [c for c in calls if _is_psql_stream_cmd(c)]
+    assert streams, "le replay du dump (psql + stdin) doit avoir lieu"
+    for c in streams:
+        assert "-v" in c and "ON_ERROR_STOP=1" in c, \
+            "psql doit être lancé avec -v ON_ERROR_STOP=1 (sinon conflits FK silencieux)"
+
+
+def test_truncate_failure_aborts_before_replay(monkeypatch):
+    """Un TRUNCATE en échec doit arrêter le restore AVANT le replay et recharger
+    le snapshot : rejouer le dump sur des tables non vidées garantit dup keys et
+    conflits FK en cascade (le scénario de l'incident Hubctl#1)."""
+    import subprocess
+    from hubctl_cli import vault_manager
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), "input": kw.get("input")})
+        return _db_dispatch_strict(cmd, truncate_ok=False, counts=_COUNTS_OK)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    logs = []
+
+    ok = vault_manager._restore_db(_DUMP_COFFRE, on_log=logs.append)
+
+    assert ok is False
+    assert not any(c["input"] == _DUMP_COFFRE for c in calls), \
+        "aucun replay ne doit être tenté quand un TRUNCATE échoue"
+    assert any(c["input"] == _SNAPSHOT for c in calls), \
+        "le snapshot live doit être rechargé (tables partiellement tronquées)"
+    assert any("TRUNCATE" in l for l in logs), "l'échec du TRUNCATE doit être loggé"
+
+
+def test_row_count_mismatch_triggers_rollback(monkeypatch):
+    """Replay « réussi » (psql sort 0) mais counts post-restore ≠ dump → échec
+    explicite + rollback : c'est exactement le bug Hubctl#1, psql continuait sur
+    les conflits FK et le restore déclarait succès avec des apps manquantes."""
+    import subprocess
+    from hubctl_cli import vault_manager
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), "input": kw.get("input")})
+        # DB vide après replay alors que le dump contient 3 lignes
+        return _db_dispatch_strict(cmd, counts={"users": 0, "applications": 0})
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    logs = []
+
+    ok = vault_manager._restore_db(_DUMP_COFFRE, on_log=logs.append)
+
+    assert ok is False, "un restore partiel (counts ≠ dump) ne doit pas rapporter succès"
+    assert any(c["input"] == _SNAPSHOT for c in calls), "rollback du snapshot requis"
+    assert logs, "l'écart de comptage doit être loggé"
+
+
+def test_row_count_match_is_verified(monkeypatch):
+    """Chemin nominal : la vérification count(*) est réellement exécutée et le
+    restore réussit sans rollback quand les counts correspondent au dump."""
+    import subprocess
+    from hubctl_cli import vault_manager
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append({"cmd": list(cmd), "input": kw.get("input")})
+        return _db_dispatch_strict(cmd, counts=_COUNTS_OK)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ok = vault_manager._restore_db(_DUMP_COFFRE)
+
+    assert ok is True
+    assert any("count(*)" in " ".join(str(x) for x in c["cmd"]) for c in calls), \
+        "les counts post-restore doivent être vérifiés"
+    assert not any(c["input"] == _SNAPSHOT for c in calls), "pas de rollback en succès"
+
+
+def test_dump_without_data_section_is_rejected(monkeypatch):
+    """Un contenu sans section « -- Data for Name: » (pas un dump pg_dump
+    --inserts) doit être refusé AVANT tout truncate : on ne vide pas la base
+    pour rejouer du SQL inconnu."""
+    import subprocess
+    from hubctl_cli import vault_manager
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        return _db_dispatch_strict(cmd, counts={})
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    logs = []
+
+    ok = vault_manager._restore_db(b"-- fichier quelconque, pas un dump\nSELECT 1;\n",
+                                   on_log=logs.append)
+
+    assert ok is False
+    assert not any("TRUNCATE" in " ".join(c) for c in calls), "aucun truncate sans dump reconnu"
+    assert not any(_is_psql_stream_cmd(c) for c in calls), "aucun replay sans dump reconnu"
+    assert logs, "le refus d'un dump méconnaissable doit être loggé"
+
+
+def test_restore_all_reports_db_failure(tmp_path, monkeypatch):
+    """restore_all ne doit plus déclarer « DB restaurée » quand le replay a
+    échoué (issue Hubctl#1 : la valeur de retour de _restore_db était ignorée)."""
+    mgr = _setup(tmp_path, monkeypatch)
+    mgr.vault.set_file("HUB_base/backup/hub_dump.sql", _DUMP_COFFRE)
+    from hubctl_cli import vault_manager as vm
+    monkeypatch.setattr(vm, "_restore_db", lambda sql, on_log=None: False)
+
+    restored = restore_all(mgr.vault)
+
+    assert not any("DB restaurée" in r for r in restored), \
+        "un échec de replay ne doit pas être rapporté comme un succès"
+    assert any("NON restaurée" in r for r in restored), \
+        "l'échec DB doit apparaître explicitement dans le rapport"
+
+
+def test_restore_all_reports_db_success(tmp_path, monkeypatch):
+    """Pin du chemin nominal : quand le replay réussit, le rapport mentionne
+    toujours la restauration DB."""
+    mgr = _setup(tmp_path, monkeypatch)
+    mgr.vault.set_file("HUB_base/backup/hub_dump.sql", _DUMP_COFFRE)
+    from hubctl_cli import vault_manager as vm
+    monkeypatch.setattr(vm, "_restore_db", lambda sql, on_log=None: True)
+
+    restored = restore_all(mgr.vault)
+    assert any("DB restaurée" in r for r in restored)
 
 
 # ── Hook réplication PRA ──

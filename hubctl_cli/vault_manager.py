@@ -147,8 +147,13 @@ def restore_all(vault, *, dry_run: bool = False, force: bool = False) -> list[st
     db_sql = vault.get_file("HUB_base/backup/hub_dump.sql")
     if db_sql:
         if not dry_run:
-            _restore_db(db_sql)
-        restored.append("HUB_base/backup/hub_dump.sql → DB restaurée")
+            if _restore_db(db_sql):
+                restored.append("HUB_base/backup/hub_dump.sql → DB restaurée")
+            else:
+                restored.append("HUB_base/backup/hub_dump.sql → ⚠ DB NON restaurée "
+                                "(replay en échec — voir logs, snapshot live rechargé)")
+        else:
+            restored.append("HUB_base/backup/hub_dump.sql → DB (dry-run : rien rejoué)")
     # CA HTTPS : écrite par le chemin commun vault.restore() (les modes
     # ca.crt 0644 / ca.key 0600 / dossier 0700 sont posés par
     # coffre._apply_restore_modes) ; on la met en évidence — retrouver la CA
@@ -200,8 +205,11 @@ def _backup_certs_ca(vault, *, on_log=None) -> int:
     return count
 
 
-_RESTORE_TABLES = ["user_app_roles", "service_account_app_access", "service_accounts",
-                   "applications", "app_settings", "users"]
+# NB : la liste des tables restaurées n'est plus codée en dur — elle est
+# parsée du dump lui-même (_dump_tables), de sorte que truncate/snapshot/
+# vérification couvrent exactement ce que _backup_db a capturé (issue
+# Hubctl#1 : schema_migrations capturée mais jamais tronquée → dup keys en
+# replay).
 
 
 def _pg_dump_tables(tables, *, on_log=None) -> bytes | None:
@@ -220,32 +228,127 @@ def _pg_dump_tables(tables, *, on_log=None) -> bytes | None:
     return None
 
 
+def _dump_tables(sql: bytes) -> list[str]:
+    """Tables d'un dump pg_dump --inserts, dans l'ordre du dump (marqueurs
+    « -- Data for Name: »). Vide si le contenu n'est pas un dump reconnaissable."""
+    tables: list[str] = []
+    for line in sql.decode(errors="replace").splitlines():
+        if line.startswith("-- Data for Name: "):
+            name = line.split(":", 1)[1].split(";", 1)[0].strip()
+            if name and name not in tables:
+                tables.append(name)
+    return tables
+
+
+def _dump_row_counts(sql: bytes) -> dict[str, int]:
+    """Lignes attendues par table (en --inserts, un INSERT par enregistrement),
+    lues section par section du dump."""
+    counts: dict[str, int] = {}
+    current: str | None = None
+    for line in sql.decode(errors="replace").splitlines():
+        if line.startswith("-- Data for Name: "):
+            current = line.split(":", 1)[1].split(";", 1)[0].strip()
+            counts.setdefault(current, 0)
+        elif current and line.startswith("INSERT INTO"):
+            counts[current] += 1
+    return counts
+
+
+def _verify_row_counts(expected: dict[str, int], *, on_log=None) -> bool:
+    """Compare les counts post-restore aux counts attendus du dump.
+
+    Sans ce contrôle, un psql sorti 0 malgré des INSERTs en échec déclarait
+    « DB restaurée » avec des tables vides (issue Hubctl#1)."""
+    if not expected:
+        return True
+    select = " UNION ALL ".join(f"SELECT '{t}', count(*) FROM {t}" for t in expected)
+    try:
+        r = subprocess.run(
+            ["docker", "exec", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
+             "-v", "ON_ERROR_STOP=1", "-t", "-A", "-F", "|", "-c", select],
+            capture_output=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        if on_log:
+            on_log(f"[vault] vérification post-restore impossible: {e}")
+        return False
+    if r.returncode != 0:
+        if on_log:
+            on_log(f"[vault] vérification post-restore échouée: "
+                   f"{r.stderr.decode(errors='replace')[:200]}")
+        return False
+    actual: dict[str, int] = {}
+    for line in r.stdout.decode(errors="replace").splitlines():
+        t, sep, n = line.partition("|")
+        if sep:
+            try:
+                actual[t.strip()] = int(n.strip())
+            except ValueError:
+                pass
+    mismatch = {t: (exp, actual.get(t))
+                for t, exp in expected.items() if actual.get(t) != exp}
+    if mismatch:
+        if on_log:
+            detail = ", ".join(f"{t}: attendu {e}, obtenu {a}"
+                               for t, (e, a) in mismatch.items())
+            on_log(f"[vault] restore DB INCOMPLET (counts post-restore ≠ dump) — {detail}")
+        return False
+    return True
+
+
 def _restore_db(sql: bytes, *, on_log=None) -> bool:
-    """Rejoue le dump SQL dans la base.
+    """Rejoue le dump SQL dans la base, avec détection d'échec explicite.
 
     Safety net : on snapshot la base live AVANT tout truncate, puis on la
     restaurera si le replay échoue — sinon un dump partiel/corrompu laissait la
     base vidée (TRUNCATE CASCADE) sans recours, perdant users/apps/settings.
+
+    Détections ajoutées (issue Hubctl#1 : restore déclaré « succès » avec des
+    apps non rejouées) :
+    - psql -v ON_ERROR_STOP=1 : toute erreur SQL (conflit FK, dup key) donne un
+      code de sortie non nul au lieu d'un replay partiel silencieux ;
+    - TRUNCATE vérifié : un truncate raté garantit un replay en échec (dup
+      keys), on abandonne AVANT de vider davantage ;
+    - comptage de lignes post-restore comparé aux sections du dump.
     """
-    snapshot = _pg_dump_tables(_RESTORE_TABLES, on_log=on_log)
+    tables = _dump_tables(sql)
+    if not tables:
+        if on_log:
+            on_log("[vault] restore DB annulé : contenu sans section DATA "
+                   "(-- Data for Name:) — pas un dump pg_dump --inserts reconnaissable")
+        return False
+    snapshot = _pg_dump_tables(tables, on_log=on_log)
     if snapshot is None:
         if on_log:
             on_log("[vault] restore DB annulé : snapshot live impossible (hub-db injoignable ?)")
         return False
-    # Truncate des tables cibles.
-    for t in _RESTORE_TABLES:
+    expected = _dump_row_counts(sql)
+    # Truncate des tables cibles — vérifié : un truncate raté rend le replay
+    # dangereux (dup keys sur tables non vidées), on arrête tout.
+    for t in tables:
         try:
-            subprocess.run(
+            r = subprocess.run(
                 ["docker", "exec", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
-                 "-c", f"TRUNCATE {t} CASCADE"],
+                 "-v", "ON_ERROR_STOP=1", "-c", f"TRUNCATE {t} CASCADE"],
                 capture_output=True, timeout=10,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-    # Replay du dump du coffre.
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            if on_log:
+                on_log(f"[vault] restore DB annulé : TRUNCATE {t} impossible: {e}")
+            _rollback_db(snapshot, on_log=on_log)
+            return False
+        if r.returncode != 0:
+            if on_log:
+                on_log(f"[vault] restore DB annulé : TRUNCATE {t} échoué "
+                       f"(code {r.returncode}): {r.stderr.decode(errors='replace')[:200]}")
+            _rollback_db(snapshot, on_log=on_log)
+            return False
+    # Replay du dump du coffre — ON_ERROR_STOP=1 : toute erreur SQL interrompt
+    # psql avec un code non nul (sans lui, les conflits FK passaient inaperçus).
     try:
         r = subprocess.run(
-            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth"],
+            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
+             "-v", "ON_ERROR_STOP=1"],
             input=sql, capture_output=True, timeout=30,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
@@ -259,6 +362,10 @@ def _restore_db(sql: bytes, *, on_log=None) -> bool:
                    f"{r.stderr.decode(errors='replace')[:200]}")
         _rollback_db(snapshot, on_log=on_log)
         return False
+    # Post-vérification : la base doit contenir exactement les lignes du dump.
+    if not _verify_row_counts(expected, on_log=on_log):
+        _rollback_db(snapshot, on_log=on_log)
+        return False
     return True
 
 
@@ -266,7 +373,8 @@ def _rollback_db(snapshot: bytes, *, on_log=None) -> None:
     """Restaure le snapshot live pris avant le truncate (best-effort)."""
     try:
         r = subprocess.run(
-            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth"],
+            ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
+             "-v", "ON_ERROR_STOP=1"],
             input=snapshot, capture_output=True, timeout=30,
         )
         if r.returncode == 0 and on_log:
