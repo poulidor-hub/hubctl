@@ -1,3 +1,27 @@
+## [0.19.0] - 16 novembre 2026
+
+### ⚡ Coffre — sauvegarde et restauration de `certs/ca` (CA HTTPS du parc)
+
+- **Contexte** : la CA « Hub Local CA » (`HUB_base/certs/ca/ca.crt` + `ca.key`)
+  n'était sauvegardée par aucun chemin du coffre — les postes/navigateurs
+  l'ont importée ; une perte de disque suivie d'une restauration PRA
+  régénérait une NOUVELLE CA et remettait toute la flotte en
+  `SEC_ERROR_BAD_SIGNATURE` (incident réel du 3→16 nov 2026).
+- **`backup_all`** : `vault_manager._backup_certs_ca()` packe `certs/ca/`
+  (rglob, skip symlinks, même pattern que `secrets/`), dégradé silencieux si
+  absente ; compteur `"ca"` dédié dans le résumé.
+- **Restore — chemin commun** : `Vault.restore()` (coffre.py) est le chemin
+  partagé de `restore_all` ET `pra_restore.restore_files_from_kit` → la CA
+  est restaurée sans duplication via `_apply_restore_modes()` :
+  `ca.crt` 0644 (publique navigateurs), `ca.key` 0600, dossier `certs/ca`
+  0700 ; autres secrets inchangés (0600). Vieux coffre sans `certs/ca` :
+  no-op, pas de crash.
+- **Sorties enrichies** : CLI `hubctl vault backup`, TUI Coffre (menu.py),
+  contrat Hub `/vault/status` (`entries.ca_certs`).
+- Tests : +6 (backup captures/dégradé, restore modes au chemin commun,
+  vieux coffre, kit PRA, contrat atelier) ; suite complète 739 passed,
+  7 skipped.
+
 ## [0.18.6] - 15 novembre 2026
 
 ### ⚡ Units hôte (atelier 8777, update 8778) : bind sur la passerelle docker0 RÉELLE, plus d'IP en dur
