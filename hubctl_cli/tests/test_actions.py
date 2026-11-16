@@ -10,6 +10,16 @@ import pytest
 from hubctl_cli import actions, env_manager
 
 
+@pytest.fixture(autouse=True)
+def _stop_poll_worker():
+    """Hubctl#2 : les tests qui passent par main_loop/menu laissent un poll
+    worker daemon — arrêt en teardown pour ne pas polluer la suite
+    (subprocess.run globaux des tests suivants)."""
+    yield
+    from hubctl_cli import menu
+    menu.stop_poll_worker()
+
+
 
 
 def test_hub_make_builds_make_command():

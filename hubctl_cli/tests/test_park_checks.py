@@ -43,11 +43,22 @@ def _branch_exists(repo: Path, name: str) -> bool:
 # ── Timeout configurable & fetch non-interactif (retours lien lent) ─────────
 
 
-def _spy_run(captured_key: str, monkeypatch, store: dict) -> None:
+def _spy_run(captured_key: str, monkeypatch, store: dict, *,
+             argv_prefix: tuple[str, ...] = ("git", "rev-parse")) -> None:
+    """Spy subprocess.run : ne recorder QUE les appels au argv_prefix attendu.
+
+    Hubctl#2 : subprocess.run est le module GLOBAL du process — pendant la
+    fenêtre du spy, tout appel venant d'un autre thread (thread résiduel laissé
+    par un test antérieur) écrasait store et faisait échouer les tests de
+    timeout de façon intermittente en suite complète. Le filtrage par argv
+    immunise les tests contre toute pollution étrangère. Passer argv_prefix
+    explicite pour un espionnage d'une autre commande (ex. (« git », « fetch »)).
+    """
     real_run = park_checks.subprocess.run
 
     def spy(args, **kwargs):
-        store[captured_key] = kwargs.get(captured_key)
+        if tuple(str(a) for a in args[:len(argv_prefix)]) == argv_prefix:
+            store[captured_key] = kwargs.get(captured_key)
         return real_run(args, **kwargs)
 
     monkeypatch.setattr(park_checks.subprocess, "run", spy)
@@ -98,9 +109,29 @@ def test_run_non_interactif(monkeypatch, tmp_path):
     """GIT_TERMINAL_PROMPT=0 : jamais d'attente de saisie d'identifiants HTTPS."""
     repo = _init_repo(tmp_path / "r")
     store: dict = {}
-    _spy_run("env", monkeypatch, store)
+    _spy_run("env", monkeypatch, store, argv_prefix=("git", "fetch"))
     park_checks._run("git", "fetch", "--prune", "origin", cwd=repo)
     assert (store["env"] or {}).get("GIT_TERMINAL_PROMPT") == "0"
+
+
+def test_spy_run_ignores_foreign_subprocess_calls(monkeypatch):
+    """Hubctl#2 : _spy_run patche subprocess.run GLOBAL du process. Un thread
+    résiduel (ex. _state_poll_worker du menu : « docker compose » timeout=20,
+    « git status » timeout=120) qui appelle subprocess.run pendant la fenêtre
+    écrasait store → échecs intermittents des tests de timeout en suite
+    complète. Contrat : seuls les appels au argv_prefix attendu alimentent
+    store, tout appel étranger est ignoré."""
+    store: dict = {}
+
+    _spy_run("timeout", monkeypatch, store)
+
+    # appel « étranger » pendant la fenêtre (type poll worker docker)
+    subprocess.run(["python3", "-c", "pass"], capture_output=True, timeout=20)
+    assert store.get("timeout") is None, \
+        "un appel étranger (hors argv_prefix) ne doit pas écraser store"
+    # l'appel attendu est bien enregistré
+    subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, timeout=120)
+    assert store.get("timeout") == 120
 
 
 def test_check_hub_base_timeout_donner_finding(monkeypatch, tmp_path):

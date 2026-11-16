@@ -494,10 +494,47 @@ def _state_poll_worker(canvas: Canvas) -> None:
     # Premier refresh immédiat : on veut le cache peuplé au plus vite au démarrage.
     _refresh_state_snapshot()
     _refresh_apps_status()
-    while True:
-        time.sleep(3.0)
+    while not _poll_stop.is_set():
+        # Event.wait au lieu de time.sleep : arrêt immédiat sur stop_poll_worker
+        # (sans lui, chaque main_loop laissait un thread daemon qui sous-traite
+        # docker/git en boucle pour toujours — flake Hubctl#2 : des workers
+        # résiduels des tests menu polluaient les subprocess.run des tests
+        # suivants de la suite).
+        if _poll_stop.wait(_POLL_INTERVAL):
+            return
         _refresh_state_snapshot()
         _refresh_apps_status()
+
+
+_POLL_INTERVAL = 3.0          # seconde entre deux polls (monkeypatchable en test)
+_poll_stop = threading.Event()
+_poll_threads: list[threading.Thread] = []
+
+
+def _start_poll_worker(canvas: Canvas) -> threading.Thread:
+    """Démarre le poll worker d'arrière-plan et l'enregistre pour un arrêt
+    propre via stop_poll_worker(). Retourne le thread (utile aux tests)."""
+    _poll_stop.clear()
+    t = threading.Thread(target=_state_poll_worker, args=(canvas,),
+                         daemon=True, name="state-poll-worker")
+    t.start()
+    _poll_threads.append(t)
+    return t
+
+
+def stop_poll_worker() -> None:
+    """Arrête les poll workers démarrés par _start_poll_worker.
+
+    Sans API d'arrêt, chaque main_loop laissait derrière lui un thread daemon
+    qui sous-traite docker/git en boucle indéfiniment — dans la suite de
+    tests, ces threads résiduels appelaient subprocess.run pendant les
+    fenêtres des tests suivants et les polluaient (Hubctl#2). Les tests menu
+    appellent cette fonction en teardown."""
+    _poll_stop.set()
+    threads, _poll_threads[:] = _poll_threads[:], []
+    for t in threads:
+        if t.is_alive():
+            t.join(timeout=5)
 
 
 # ── Views ──
@@ -862,7 +899,7 @@ def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = 
     # Amorce le cache depuis l'état pré-calculé par le preload (docker/services),
     # puis lance le poll worker qui maintiendra le cache à jour en arrière-plan.
     seed_state_snapshot(initial_state)
-    threading.Thread(target=_state_poll_worker, args=(canvas,), daemon=True).start()
+    _start_poll_worker(canvas)
 
     _render_interval = 0.25  # 4 fps max — évite l'étranglement du terminal
     _last_render = 0.0
