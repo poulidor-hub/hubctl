@@ -11,6 +11,16 @@ from hubctl_cli import menu
 from hubctl_cli.keys import KeyChar, KeyCtrlC, KeyEsc
 
 
+@pytest.fixture(autouse=True)
+def _stop_poll_worker():
+    """Hubctl#2 : chaque main_loop démarre un poll worker daemon — sans arrêt
+    en teardown, ces threads résiduels sous-traitent docker/git en boucle et
+    leurs subprocess.run polluent les fenêtres des tests suivants de la
+    suite (échecs intermittents de test_park_checks)."""
+    yield
+    menu.stop_poll_worker()
+
+
 def _fake_canvas():
     c = mock.Mock()
     c.inner_rows = 28
@@ -22,6 +32,31 @@ def _fake_canvas():
 
     c.stream_command = _stream_command
     return c
+
+
+# ── Poll worker : arrêt propre (flake Hubctl#2) ──
+
+
+def test_poll_worker_stops_on_stop_api(monkeypatch):
+    """Hubctl#2 : main_loop démarre un poll worker daemon dont la boucle était
+    « while True: sleep(3) » — inarrêtable. Chaque test passant par main_loop
+    accumulait un thread vivant qui sous-traite docker/git en boucle pour
+    toujours : 14 _state_poll_worker étaient encore actifs pendant
+    test_park_checks, leurs subprocess.run écrasaient le spy global des tests
+    de timeout → échecs intermittents en suite complète. Contrat : les workers
+    sont enregistrés (_start_poll_worker) et stop_poll_worker() les arrête."""
+    import threading
+
+    monkeypatch.setattr(menu, "_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(menu, "_refresh_state_snapshot", lambda: None)
+    monkeypatch.setattr(menu, "_refresh_apps_status", lambda: None)
+
+    t = menu._start_poll_worker(None)  # canvas inutilisé par les refreshs
+
+    assert isinstance(t, threading.Thread) and t.is_alive()
+    menu.stop_poll_worker()
+    t.join(timeout=2)
+    assert not t.is_alive(), "le poll worker doit s'arrêter sur stop_poll_worker()"
 
 
 # ── main_loop tests ──
