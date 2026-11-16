@@ -1,3 +1,17 @@
+## [0.20.1] - 16 novembre 2026
+
+### ⚡ Coffre — restore DB : fin du succès mensonger sur conflits FK (issue #1)
+
+- **Contexte (run réel du 16/11/2026)** : `hubctl vault restore` déclarait « DB restaurée » alors que deux applications n'avaient pas été rejouées — psql, sans `ON_ERROR_STOP`, continuait sur les conflits FK et sortait 0 ; `restore_all` ignorait de surcroît la valeur de retour de `_restore_db`. Dump du coffre sain (replay manuel vérifié) : le problème était le replay, pas la capture.
+- **`ON_ERROR_STOP=1`** sur les trois psql du chemin restore (replay, rollback snapshot, TRUNCATE) : toute erreur SQL (conflit FK, dup key) interrompt psql avec un code non nul — le filet de sécurité (rollback du snapshot live pris avant truncate), jusque-là inatteignable, joue désormais son rôle.
+- **TRUNCATE vérifié** : returncode contrôlé, exceptions loggées — un échec abandonne le restore AVANT le replay et recharge le snapshot (rejouer le dump sur des tables non vidées garantissait dup keys et conflits FK en cascade, le scénario de l'incident).
+- **Comptage de lignes post-restore** : counts attendus parsés des sections `-- Data for Name:` du dump, comparés à un `SELECT count(*)` par table (`-t -A -F |`, `ON_ERROR_STOP=1`) ; tout écart → échec explicite + rollback.
+- **Tables parsées du dump** (fin de la liste en dur `_RESTORE_TABLES`) : truncate/snapshot/vérification couvrent exactement ce que `_backup_db` a capturé — `schema_migrations`, capturée mais jamais tronquée, ne fait plus peser de risque de dup keys sur les re-restores ; un contenu sans section DATA est refusé avant tout truncate.
+- **Rapport honnête** : `restore_all` ajoute « ⚠ DB NON restaurée (replay en échec — voir logs, snapshot live rechargé) » au lieu de « DB restaurée » quand le replay a échoué ; le dry-run affiche « DB (dry-run : rien rejoué) ».
+- **tests** : +7 dans `test_vault_manager.py` (ON_ERROR_STOP présent, abort sur TRUNCATE, mismatch de counts avec rollback, vérification exécutée en nominal, rejet d'un dump méconnaissable, rapport restore_all échec/succès) ; 2 tests existants adaptés au contrat de fixture (dump réaliste pg_dump --inserts). Suite : 763 collected — 762 passed + 1 flake préexistant `park_checks` (pollution `subprocess.run` global par thread résiduel, issue dédiée), 7 skipped.
+
+---
+
 ## [0.20.0] - 16 novembre 2026
 
 ### 📣 Pour les utilisateurs
