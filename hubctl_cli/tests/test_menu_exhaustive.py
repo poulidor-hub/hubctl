@@ -149,13 +149,23 @@ def test_install_layout_sets_four_builders():
 # ── Polling ──
 
 
-def test_refresh_apps_status_updates_module_var():
+def test_refresh_apps_status_updates_module_var(monkeypatch):
+    """Fixture monkeypatch (auto-undo) — Hubctl#3 (fuite jumelle) : l'ancien
+    pytest.MonkeyPatch() manuel sans undo laissait hub_state.get_apps_status
+    remplacé pour tout le process."""
     from hubctl_cli.hub_state import AppStatus
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(menu.hub_state, "get_apps_status",
                         lambda: [AppStatus("x", "running", "Up", False)])
     menu._refresh_apps_status()
     assert menu._app_status_rows[0].name == "x"
+
+
+def test_hub_state_get_apps_status_not_polluted():
+    """Hubctl#3 (fuite jumelle) : MonkeyPatch() manuel sans undo sur
+    hub_state.get_apps_status — l'attribut restait remplacé pour tout le
+    process. Garde : après ce test, l'attribut doit être la fonction réelle."""
+    assert getattr(menu.hub_state.get_apps_status, "__name__", "") == "get_apps_status", \
+        "hub_state.get_apps_status a été remplacé et jamais restauré (MonkeyPatch manuel sans undo)"
 
 
 def test_refresh_apps_status_swallows_errors(monkeypatch):
