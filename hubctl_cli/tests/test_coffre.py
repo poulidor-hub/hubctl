@@ -235,6 +235,31 @@ def test_restore_blocks_path_traversal(tmp_path, monkeypatch):
     assert all("evil_outside" not in w for w in written)
 
 
+def test_restore_applies_ca_cert_modes(tmp_path, monkeypatch):
+    """La CA HTTPS restaurée doit retrouver ses permissions d'origine :
+    ca.crt 0644 (publique, distribuée aux navigateurs), ca.key 0600,
+    dossier certs/ca 0700 — les autres fichiers restent 0600.
+    Chemin commun : restore_all ET pra_restore.restore_files_from_kit."""
+    from hubctl_cli.coffre import Vault
+    parc = tmp_path / "parc"
+    parc.mkdir()
+    monkeypatch.setattr(hub_state, "PARC_ROOT", parc)
+
+    v = Vault(tmp_path / "v.enc")
+    v.unlock("pw")
+    v.set_file("HUB_base/certs/ca/ca.crt", b"CERT")
+    v.set_file("HUB_base/certs/ca/ca.key", b"KEY")
+    v.set_file("HUB_base/secrets/token.env", b"T=1")
+
+    v.restore()
+
+    ca_dir = parc / "HUB_base" / "certs" / "ca"
+    assert (ca_dir / "ca.crt").stat().st_mode & 0o777 == 0o644
+    assert (ca_dir / "ca.key").stat().st_mode & 0o777 == 0o600
+    assert ca_dir.stat().st_mode & 0o777 == 0o700
+    assert (parc / "HUB_base" / "secrets" / "token.env").stat().st_mode & 0o777 == 0o600
+
+
 # ── Validation des git_url avant clone (anti file:// / hooks locaux) ──
 
 

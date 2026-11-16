@@ -503,7 +503,10 @@ def _run(args) -> int:
 
             if args.vault_action == "backup":
                 summary = vault_mgr.backup_all(on_log=lambda msg: console.print(msg))
-                console.print(f"[green]Coffre sauvegarde : {summary['env']} .env, {summary['files']} fichiers[/green]")
+                msg = f"Coffre sauvegarde : {summary['env']} .env, {summary['files']} fichiers"
+                if summary.get("ca"):
+                    msg += f", CA HTTPS incluse ({summary['ca']} fichiers)"
+                console.print(f"[green]{msg}[/green]")
                 return 0
 
             elif args.vault_action == "restore":

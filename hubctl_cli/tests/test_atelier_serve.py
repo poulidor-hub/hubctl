@@ -203,7 +203,7 @@ def test_vault_status_ok(serve_env, monkeypatch):
         "locked": False,
         "last_backup": "2026-10-28T09:30:00+00:00",
         "vault_size": 4096,
-        "entries": {"env": 3, "files": 5, "apps": 2, "db_dump": True},
+        "entries": {"env": 3, "files": 5, "apps": 2, "db_dump": True, "ca_certs": True},
         "divergences": ["app:canari", "hub"],
         "pra": {"configured": True, "location": "/mnt/pra"},
     }
@@ -213,7 +213,7 @@ def test_vault_status_ok(serve_env, monkeypatch):
     body = r.json()
     assert body == fake
     # shape exact consommé par le Hub (Task 4/5)
-    assert set(body["entries"]) == {"env", "files", "apps", "db_dump"}
+    assert set(body["entries"]) == {"env", "files", "apps", "db_dump", "ca_certs"}
     assert body["divergences"] == sorted(body["divergences"])
 
 
@@ -376,6 +376,7 @@ def test_vault_state_real_vault(monkeypatch, tmp_path):
     v.set_entry("hub", {"SECRET_HUB": "1"})
     v.set_entry("app:canari", {"SECRET": "1"})
     v.set_file("HUB_base/backup/hub_dump.sql", b"-- dump")
+    v.set_file("HUB_base/certs/ca/ca.key", b"KEY")
     v._data["__apps__"] = [{"slug": "canari", "git_url": None, "version": None}]
     v.save()
     v.store_passphrase("pw")
@@ -391,7 +392,8 @@ def test_vault_state_real_vault(monkeypatch, tmp_path):
 
     state = atelier_serve._vault_state()
     assert state["status"] == "ok" and state["locked"] is False
-    assert state["entries"] == {"env": 2, "files": 1, "apps": 1, "db_dump": True}
+    assert state["entries"] == {"env": 2, "files": 2, "apps": 1,
+                                "db_dump": True, "ca_certs": True}
     assert state["divergences"] == ["app:canari"]
     assert state["vault_size"] == vp.stat().st_size
     assert state["last_backup"] == datetime.fromtimestamp(

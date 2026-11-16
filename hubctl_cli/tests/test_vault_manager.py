@@ -3,7 +3,7 @@
 
 from hubctl_cli import hub_state
 from hubctl_cli.coffre import Vault
-from hubctl_cli.vault_manager import VaultManager
+from hubctl_cli.vault_manager import VaultManager, restore_all
 
 
 def _setup(tmp_path, monkeypatch):
@@ -125,6 +125,88 @@ def test_backup_all_cleans_stale_app_entries(tmp_path, monkeypatch):
     (app / ".env").unlink(); app.rmdir()
     mgr.backup_all()
     assert "app:gone" not in v.list_entries()
+
+
+# ── CA HTTPS (HUB_base/certs/ca) : sauvegarde + restauration ──
+
+
+def _write_ca(tmp_path):
+    """Pose une CA factice sur le disque (comme HUB_base/certs/ca en prod)."""
+    ca_dir = tmp_path / "HUB_base" / "certs" / "ca"
+    ca_dir.mkdir(parents=True)
+    (ca_dir / "ca.crt").write_bytes(b"-----BEGIN CERTIFICATE-----")
+    (ca_dir / "ca.key").write_bytes(b"-----BEGIN PRIVATE KEY-----")
+    return ca_dir
+
+
+def _mock_backup_db(monkeypatch):
+    """Hermetise backup_all : sans ce mock, lancé sur un serveur HUB (docker
+    + hub-db vivants), le coffre de test embarquerait un VRAI dump — et un
+    restore_all rejouerait un TRUNCATE sur la base réelle."""
+    from hubctl_cli import vault_manager as vm
+    monkeypatch.setattr(vm, "_backup_db", lambda vault, on_log=None: False)
+
+
+def test_backup_all_captures_certs_ca(tmp_path, monkeypatch):
+    """backup_all doit capturer ca.crt + ca.key sous leur relpath PARC_ROOT :
+    la CA est importée dans les navigateurs — un PRA sans elle rejette toute
+    la flotte (SEC_ERROR_BAD_SIGNATURE)."""
+    mgr = _setup(tmp_path, monkeypatch)
+    _write_ca(tmp_path)
+    _mock_backup_db(monkeypatch)
+    logs = []
+    summary = mgr.backup_all(on_log=logs.append)
+    assert mgr.vault.get_file("HUB_base/certs/ca/ca.crt") == b"-----BEGIN CERTIFICATE-----"
+    assert mgr.vault.get_file("HUB_base/certs/ca/ca.key") == b"-----BEGIN PRIVATE KEY-----"
+    assert summary["ca"] == 2
+    assert any("HUB_base/certs/ca/ca.crt" in l for l in logs)
+
+
+def test_backup_all_without_certs_ca_is_graceful(tmp_path, monkeypatch):
+    """HUB_base sans certs/ca (HTTPS non déployé) → pas de crash, compteur 0,
+    rien d'inventé dans le coffre."""
+    mgr = _setup(tmp_path, monkeypatch)
+    _mock_backup_db(monkeypatch)
+    summary = mgr.backup_all()
+    assert summary["ca"] == 0
+    assert not any(f.startswith("HUB_base/certs/ca/") for f in mgr.vault.list_files())
+
+
+def test_restore_all_restores_certs_ca_with_modes(tmp_path, monkeypatch):
+    """restore_all doit remettre EXACTEMENT la CA d'origine : ca.key 0600,
+    ca.crt 0644, dossier 0700 — c'est ce qui préserve la confiance des
+    navigateurs après une restauration PRA."""
+    mgr = _setup(tmp_path, monkeypatch)
+    ca_dir = _write_ca(tmp_path)
+    _mock_backup_db(monkeypatch)
+    mgr.backup_all()
+    # Simule la perte du disque : la CA disparaît, le coffre seul la connaît.
+    for f in ca_dir.iterdir():
+        f.unlink()
+    ca_dir.rmdir()
+
+    restored = restore_all(mgr.vault)
+
+    crt = ca_dir / "ca.crt"
+    key = ca_dir / "ca.key"
+    assert crt.read_bytes() == b"-----BEGIN CERTIFICATE-----"
+    assert key.read_bytes() == b"-----BEGIN PRIVATE KEY-----"
+    assert key.stat().st_mode & 0o777 == 0o600
+    assert crt.stat().st_mode & 0o777 == 0o644
+    assert ca_dir.stat().st_mode & 0o777 == 0o700
+    assert any("certs/ca" in r for r in restored)
+    assert any("CA HTTPS" in r for r in restored)
+
+
+def test_restore_all_old_vault_without_certs_ca(tmp_path, monkeypatch):
+    """Coffre ancien sans certs/ca → pas de crash, rien d'écrit sous certs/
+    (comportement dégradé attendu sur les coffres d'avant la feature)."""
+    mgr = _setup(tmp_path, monkeypatch)
+    _mock_backup_db(monkeypatch)
+    mgr.backup_all()
+    restored = restore_all(mgr.vault)
+    assert not (tmp_path / "HUB_base" / "certs").exists()
+    assert not any("certs/ca" in r for r in restored)
 
 
 # ── import_vault : validation + backup de l'ancien coffre ──

@@ -578,8 +578,10 @@ def view_coffre(canvas: Canvas, vault_mgr) -> None:
                 continue
             try:
                 summary = vault_mgr.backup_all()
+                ca_note = (f", CA HTTPS incluse ({summary['ca']} fichiers)"
+                           if summary.get("ca") else "")
                 pause(canvas, Text(
-                    f"✓ Sauvegardé : {summary['env']} .env, {summary['files']} fichiers.",
+                    f"✓ Sauvegardé : {summary['env']} .env, {summary['files']} fichiers{ca_note}.",
                     style="green"))
             except Exception as e:
                 pause(canvas, Text(f"✗ Erreur lors de la sauvegarde :\n{e}", style="red"))
@@ -804,8 +806,11 @@ def _require_vault(canvas: Canvas, vault_mgr) -> None:
             pause(canvas)
     if vault_mgr:
         summary = vault_mgr.backup_all()
+        ca_note = (f", CA HTTPS incluse ({summary['ca']} fichiers)"
+                   if summary.get("ca") else "")
         canvas.render(Text(
-            f"✓ Coffre prêt — sauvegarde : {summary['env']} .env, {summary['files']} fichiers.",
+            f"✓ Coffre prêt — sauvegarde : {summary['env']} .env, "
+            f"{summary['files']} fichiers{ca_note}.",
             style="bold green"))
         pause(canvas)
         _offer_pra_setup(canvas)

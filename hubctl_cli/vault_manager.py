@@ -40,7 +40,7 @@ class VaultManager:
 
     def backup_all(self, *, on_log=None) -> dict:
         if self.vault.is_locked or self.vault._data is None:
-            return {"env": 0, "files": 0, "db": False}
+            return {"env": 0, "files": 0, "ca": 0, "db": False}
         self.vault.sync()
         files = 0
         secrets_dir = hub_state.HUB_DIR / "secrets"
@@ -53,6 +53,10 @@ class VaultManager:
                 files += 1
                 if on_log:
                     on_log(f"[vault] backup {rel}")
+        # Backup CA HTTPS (certs/ca) : la CA est importée dans les navigateurs
+        # du parc — la perdre ferait régénérer une CA au PRA et toute la
+        # flotte repartirait en SEC_ERROR_BAD_SIGNATURE.
+        ca_files = _backup_certs_ca(self.vault, on_log=on_log)
         # Backup DB : utilisateurs, apps, service accounts, settings
         db_ok = _backup_db(self.vault, on_log=on_log)
         self.vault.save()
@@ -67,7 +71,7 @@ class VaultManager:
             if on_log:
                 on_log(f"[pra] réplication ignorée : {e}")
         env_count = sum(1 for k in self.vault.list_entries() if not k.startswith("__"))
-        return {"env": env_count, "files": files, "db": db_ok, "pra": pra}
+        return {"env": env_count, "files": files, "ca": ca_files, "db": db_ok, "pra": pra}
 
     def export_recovery(self) -> "Path":
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -137,7 +141,7 @@ class VaultManager:
 
 
 def restore_all(vault, *, dry_run: bool = False, force: bool = False) -> list[str]:
-    """Restaure tous les .env, secrets, et la DB depuis le coffre."""
+    """Restaure tous les .env, secrets, la CA HTTPS et la DB depuis le coffre."""
     restored = vault.restore(dry_run=dry_run, force=force)
     # Restaurer la DB si présente
     db_sql = vault.get_file("HUB_base/backup/hub_dump.sql")
@@ -145,6 +149,12 @@ def restore_all(vault, *, dry_run: bool = False, force: bool = False) -> list[st
         if not dry_run:
             _restore_db(db_sql)
         restored.append("HUB_base/backup/hub_dump.sql → DB restaurée")
+    # CA HTTPS : écrite par le chemin commun vault.restore() (les modes
+    # ca.crt 0644 / ca.key 0600 / dossier 0700 sont posés par
+    # coffre._apply_restore_modes) ; on la met en évidence — retrouver la CA
+    # d'origine est ce qui préserve la confiance des navigateurs post-PRA.
+    if vault.get_file("HUB_base/certs/ca/ca.key") is not None:
+        restored.append("HUB_base/certs/ca → CA HTTPS restaurée")
     return restored
 
 
@@ -167,6 +177,27 @@ def _backup_db(vault, *, on_log=None) -> bool:
         if on_log:
             on_log(f"[vault] backup DB échoué: {e}")
     return False
+
+
+def _backup_certs_ca(vault, *, on_log=None) -> int:
+    """Sauvegarde la CA HTTPS locale (HUB_base/certs/ca : ca.crt + ca.key).
+
+    Sans elle, un PRA sur disque perdu régénérerait une CA et les navigateurs
+    du parc rejetteraient le HTTPS (SEC_ERROR_BAD_SIGNATURE). Dégradé
+    silencieux si absente (HTTPS non déployé), comme secrets/ inexistant.
+    """
+    ca_dir = hub_state.HUB_DIR / "certs" / "ca"
+    count = 0
+    if ca_dir.exists():
+        for f in sorted(ca_dir.rglob("*")):
+            if not f.is_file() or f.is_symlink():
+                continue
+            rel = f.relative_to(hub_state.PARC_ROOT).as_posix()
+            vault.set_file(rel, f.read_bytes())
+            count += 1
+            if on_log:
+                on_log(f"[vault] backup {rel}")
+    return count
 
 
 _RESTORE_TABLES = ["user_app_roles", "service_account_app_access", "service_accounts",
