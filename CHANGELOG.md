@@ -1,3 +1,17 @@
+## [0.20.2] - 16 novembre 2026
+
+### ⚡ Tests — fin du flake park_checks ; poll worker du menu arrêtable (issue #2)
+
+- **Cause racine prouvée par instrumentation** : les tests de timeout de `test_park_checks` échouaient de façon intermittente en suite complète (2 échecs sur 3 runs, tests alternés). Journal `subprocess.run` de la fenêtre du spy : 14 threads résiduels `_state_poll_worker` (laissés par `test_actions`/`test_main`/`test_menu_loop` via `main_loop`) appelaient `docker compose` (timeout=20) et `git status` (timeout=120) pendant la fenêtre et écrasaient `store["timeout"]` (spy posé sur le module `subprocess` global).
+- **`menu.py` — poll worker arrêtable** : `_start_poll_worker()` enregistre le thread, `stop_poll_worker()` arrête via `Event` + join ; boucle en `Event.wait(_POLL_INTERVAL)` au lieu de `time.sleep(3.0)` — le worker daemon qui sous-traitait docker/git « pour toujours » est désormais stoppé proprement (utilisé par les tests, disponible pour l'app).
+- **Tests menu** : fixture autouse `stop_poll_worker()` en teardown dans les 3 fichiers pilotant `main_loop`.
+- **`test_park_checks._spy_run` — défense en profondeur** : le spy ne recorder que les appels au `argv_prefix` attendu (`git rev-parse` par défaut, `git fetch` explicite pour le site « env ») — la fenêtre est immunisée contre tout appel étranger, même si un futur test laisse fuir un thread.
+- **+2 tests** : contrat d'arrêt du worker (TDD, rouge avant implémentation) ; immunité du spy reproduisant le mécanisme du flake en unitaire (un appel étranger timeout=20 ne doit pas écraser store).
+- **Effet de bord mesuré** : suite intégrale 440 s → 127 s (×3,5) — les workers résiduels sous-traitaient docker/git réel pendant toute la suite. 765 passed, 7 skipped, 0 failed (2 runs consécutifs).
+- Flakes annexes documentés : `test_pause_waits_for_enter` (dépendance d'ordre, préexistant, ordre canonique épargné) → issue #3.
+
+---
+
 ## [0.20.1] - 16 novembre 2026
 
 ### ⚡ Coffre — restore DB : fin du succès mensonger sur conflits FK (issue #1)
