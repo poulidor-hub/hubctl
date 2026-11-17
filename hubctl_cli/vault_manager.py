@@ -296,6 +296,16 @@ def _verify_row_counts(expected: dict[str, int], *, on_log=None) -> bool:
     return True
 
 
+def _replay_timeout(sql: bytes) -> int:
+    """Timeout des flux psql (replay du dump, rollback du snapshot),
+    proportionnel au volume rejoué (issue Hubctl#1 point 5 : le timeout fixe
+    30 s tuait en PRA un gros dump légitime — --inserts rejoue ligne par
+    ligne, ~20 Ko/s conservateur sur VM ; et un rollback tué en plein rejeu
+    laisse la base à l'état post-truncate). Plancher 30 s (petits dumps),
+    plafond 900 s (garde-fou anti-hang)."""
+    return min(900, max(30, len(sql) // 20_000))
+
+
 def _restore_db(sql: bytes, *, on_log=None) -> bool:
     """Rejoue le dump SQL dans la base, avec détection d'échec explicite.
 
@@ -349,7 +359,7 @@ def _restore_db(sql: bytes, *, on_log=None) -> bool:
         r = subprocess.run(
             ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
              "-v", "ON_ERROR_STOP=1"],
-            input=sql, capture_output=True, timeout=30,
+            input=sql, capture_output=True, timeout=_replay_timeout(sql),
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         if on_log:
@@ -375,7 +385,7 @@ def _rollback_db(snapshot: bytes, *, on_log=None) -> None:
         r = subprocess.run(
             ["docker", "exec", "-i", "hub-db", "psql", "-U", "hubadmin", "-d", "hub_auth",
              "-v", "ON_ERROR_STOP=1"],
-            input=snapshot, capture_output=True, timeout=30,
+            input=snapshot, capture_output=True, timeout=_replay_timeout(snapshot),
         )
         if r.returncode == 0 and on_log:
             on_log("[vault] rollback DB effectué (base restaurée à l'état d'avant truncate)")

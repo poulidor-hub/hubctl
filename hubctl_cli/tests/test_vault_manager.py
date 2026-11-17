@@ -392,6 +392,91 @@ def test_replay_psql_uses_on_error_stop(monkeypatch):
             "psql doit être lancé avec -v ON_ERROR_STOP=1 (sinon conflits FK silencieux)"
 
 
+def test_replay_timeout_scales_with_dump_size(monkeypatch):
+    """Le timeout des flux psql (replay du dump, rollback du snapshot) doit
+    croître avec le volume rejoué : un timeout fixe (30 s) tuerait en PRA un
+    dump légitime volumineux — psql --inserts rejoue ligne par ligne et peut
+    largement dépasser 30 s sur un gros parc (issue Hubctl#1, point 5). Pire
+    sur le rollback : tué en plein rejeu, il laisserait la base post-truncate."""
+    import subprocess
+    from unittest import mock
+    from hubctl_cli import vault_manager
+
+    captured = []
+
+    def fake_run(cmd, **kw):
+        captured.append({"cmd": list(cmd), "input": kw.get("input"),
+                         "timeout": kw.get("timeout")})
+        return _db_dispatch_strict(cmd, counts=_COUNTS_OK)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    # Petit dump : le plancher de 30 s est conservé.
+    assert vault_manager._restore_db(_DUMP_COFFRE) is True
+    small = [c for c in captured
+             if c["input"] == _DUMP_COFFRE and _is_psql_stream_cmd(c["cmd"])]
+    assert small, "replay du dump introuvable"
+    assert small[0]["timeout"] >= 30, "plancher de 30 s conservé sur petit dump"
+
+    # Dump volumineux (~0,9 Mo) : timeout proportionnel, au-dessus du plancher.
+    extra = b"INSERT INTO applications VALUES (999, 'bulk');\n" * 20_000
+    dump_big = _DUMP_COFFRE.replace(
+        b"INSERT INTO applications VALUES (2, 'app2');\n",
+        b"INSERT INTO applications VALUES (2, 'app2');\n" + extra)
+    counts_big = {"users": 1, "applications": 2 + 20_000}
+
+    def fake_run_big(cmd, **kw):
+        captured.append({"cmd": list(cmd), "input": kw.get("input"),
+                         "timeout": kw.get("timeout")})
+        return _db_dispatch_strict(cmd, counts=counts_big)
+
+    monkeypatch.setattr(subprocess, "run", fake_run_big)
+    captured.clear()
+
+    assert vault_manager._restore_db(dump_big) is True
+    big = [c for c in captured
+           if c["input"] == dump_big and _is_psql_stream_cmd(c["cmd"])]
+    assert big, "replay du gros dump introuvable"
+    assert big[0]["timeout"] > 30, \
+        "le timeout du replay doit croître avec la taille du dump"
+
+    # Le rollback rejoue le snapshot live (volume comparable au dump en réel) :
+    # même proportionnalité — un rollback plafonné à 30 s serait tué en plein
+    # rejeu et laisserait la base à l'état post-truncate.
+    big_snapshot = b"-- Data for Name: users;\n\n" + \
+        b"INSERT INTO users VALUES (1, 'x');\n" * 20_000
+
+    def fake_run_big_fail(cmd, **kw):
+        captured.append({"cmd": list(cmd), "input": kw.get("input"),
+                         "timeout": kw.get("timeout")})
+        if "pg_dump" in " ".join(str(c) for c in cmd):
+            return mock.Mock(returncode=0, stdout=big_snapshot, stderr=b"")
+        return _db_dispatch_strict(cmd, counts={"users": 0, "applications": 0})
+
+    monkeypatch.setattr(subprocess, "run", fake_run_big_fail)
+    captured.clear()
+
+    assert vault_manager._restore_db(dump_big) is False
+    rollback = [c for c in captured
+                if c["input"] == big_snapshot and _is_psql_stream_cmd(c["cmd"])]
+    assert rollback, "rollback du snapshot introuvable"
+    assert rollback[0]["timeout"] > 30, \
+        "le rollback doit avoir le même timeout proportionnel au volume rejoué"
+
+
+def test_replay_timeout_bounds():
+    """Formule du timeout : plancher 30 s (petits dumps), croissance
+    proportionnelle (~20 Ko/s conservateur pour du --inserts sur VM),
+    plafond 900 s (garde-fou anti-hang — un PRA ne reste pas suspendu
+    indéfiniment)."""
+    from hubctl_cli.vault_manager import _replay_timeout
+
+    assert _replay_timeout(b"-- dump vide --") == 30
+    assert _replay_timeout(b"x" * 600_000) == 30, "600 Ko reste au plancher"
+    assert _replay_timeout(b"x" * 1_000_000) == 50, "1 Mo → 50 s (20 Ko/s)"
+    assert _replay_timeout(b"x" * 20_000_000) == 900, "plafond 900 s"
+
+
 def test_truncate_failure_aborts_before_replay(monkeypatch):
     """Un TRUNCATE en échec doit arrêter le restore AVANT le replay et recharger
     le snapshot : rejouer le dump sur des tables non vidées garantit dup keys et
