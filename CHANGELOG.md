@@ -1,3 +1,15 @@
+## [0.20.4] - 17 novembre 2026
+
+### ⚡ Coffre — restore DB : timeout des flux psql proportionnel au volume rejoué (issue #1, suite)
+
+- **Cause** : timeout fixe de 30 s sur le replay (`_restore_db`) et le rollback (`_rollback_db`) — un dump légitime volumineux en PRA (psql --inserts rejoue ligne par ligne, ~20 Ko/s réels sur VM) serait tué en plein rejeu : faux « échec psql » + rollback. Pire sur le rollback : tué en plein rejeu, il laisse la base à l'état post-truncate (le pire état possible) en rapportant « rollback échoué ».
+- **Fix** : `_replay_timeout(sql)` — plancher 30 s (petits dumps), croissance proportionnelle (~20 Ko/s conservateur), plafond 900 s (garde-fou anti-hang — un PRA ne reste pas suspendu indéfiniment) ; branché sur le replay ET le rollback (snapshot de volume comparable en réel).
+- **Tests** (+2, TDD) : timeout proportionnel capturé sur les deux flux psql (replay d'un gros dump strictement au-dessus du plancher ; rollback soumis au même contrat) + bornes de la formule (plancher 30 s, 1 Mo → 50 s, plafond 900 s). Suite dépôt : 769 passed, 7 skipped.
+- **Validation PRA end-to-end** (labo VM `repro-hubctl1`, scénario exact de l'incident du 16/11 — Hub frais, registre propre, coffre externe 3 apps) : restore → 3 applications présentes, counts base = dump sur toutes les tables ; dump corrompu (INSERT FK invalide) → échec explicitement remonté (« ⚠ DB NON restaurée ») + base live intacte (rollback du snapshot). Journal archivé (VM détruite après validation).
+- **Résidu documenté** : un dump corrompu échouant EN MILIEU de replay (des INSERTs déjà joués) peut voir le rollback best-effort buter sur des dup keys (rejeu du snapshot sans TRUNCATE préalable) et laisser la base partiellement remplie — l'échec reste toujours remonté, aucun faux succès possible. Amélioration future : TRUNCATE avant rejeu du snapshot dans `_rollback_db`.
+
+---
+
 ## [0.20.3] - 17 novembre 2026
 
 ### ⚡ Tests — fin du flake pause (issue #3) ; MonkeyPatch manuels convertis
