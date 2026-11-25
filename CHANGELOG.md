@@ -179,7 +179,7 @@ cascade pour 4 causes distinctes.
   fichier ZIP produit) et faisait échouer le restore en 404.
 - `rebuild_app` : dossier d'app résolu par `APP_SLUG` du `.env` — le
   slug DB et le nom du checkout divergent pour 25 apps de la flotte
-  (exemple-app vs exemple-app…).
+  (Exemple_App vs exemple-app…).
 - Timeouts couverts pour les gros restores : `HEALTH_TIMEOUT_S` 300→900,
   `RESTORE_TIMEOUT_S` 180→600 (boot hub-api post-restore multi-minutes
   sur petite machine).
@@ -235,7 +235,7 @@ Le Hub central peut désormais détecter les mises à jour disponibles et lancer
 
 ### ⚡ Ateliers : overrides compose par app (`.workshop.overrides.env`) + create en allowlist
 
-Parité CLI de HUB_base 3.83.0 — fix durable du bug « Task 0 » (exemple-app) : les apps qui bindent des ports host métier depuis leur `.env` prod retombaient sur ces ports dans l'atelier (conflit → restart loop).
+Parité CLI de HUB_base 3.83.0 — fix durable du bug « Task 0 » (constaté sur une app du parc) : les apps qui bindent des ports host métier depuis leur `.env` prod retombaient sur ces ports dans l'atelier (conflit → restart loop).
 
 | Élément | Détail |
 |---------|--------|
@@ -244,7 +244,7 @@ Parité CLI de HUB_base 3.83.0 — fix durable du bug « Task 0 » (exemple-app)
 | **`_create_workshop`** | correction au passage : l'env subprocess passait `os.environ` complet au compose (contraire à la politique `_COMPOSE_ENV_ALLOWLIST`, incident 2026-09) → route `_ws_merge_env` (allowlist + overrides + contrat 8 clés ; `DATABASE_URL` hôte non transmise — testé) |
 | **Tests** | +8 (`TestWsOverrideEnv`, `TestCreateWorkshopOverrides`) — workshop e2e : 94 verts ; étendu : 164 verts ; plein suite : 682 passed / 1 failed préexistant flaky (couplage d'ordre `test_park_checks`), présent aussi sur la base |
 
-> Consommateur : `APPS/exemple-app/.workshop.overrides.env` (`PHILIA_NG_PORT=5290`, `PHILIA_NG_HTTPS_PORT=5291`, committé en 3.5.2). Requiert HUB_base ≥ 3.83.0 pour la parité voie UI.
+> Consommateur : le `.workshop.overrides.env` committé par une app du parc (`PHILIA_NG_PORT`, `PHILIA_NG_HTTPS_PORT`). Requiert HUB_base ≥ 3.83.0 pour la parité voie UI.
 
 ## [0.16.7] - 4 novembre 2026
 
@@ -252,7 +252,7 @@ Parité CLI de HUB_base 3.83.0 — fix durable du bug « Task 0 » (exemple-app)
 
 | Élément | Détail |
 |---------|--------|
-| **code/tests** | `exemple-app`→`app-exemple`, `exemple-app-2`→`APP_EXEMPLE`, `exemple-app`→`APP_EXEMPLE_E`, `vikunja`→`service-exemple`, `hub-legacy`→`PARC_EXEMPLE` (commentaires, docstrings, fixtures) |
+| **code/tests** | noms d'apps privées et du hub legacy remplacés par des génériques (`app-exemple`, `APP_EXEMPLE`, `APP_EXEMPLE_E`, `service-exemple`, `PARC_EXEMPLE`) : commentaires, docstrings, fixtures |
 | **test_vault_path** | garde-fou d'existence du coffre local : `skipif` sans `parc.vault.enc` (le coffre n'est pas versionné — clone frais) |
 | **README (×2)** | instructions de test reproductibles après clone frais (venv + `pip install -e hubctl_cli[dev]`) au lieu du `.venv` du poste ; section « Installation autonome » ; footer « Projet interne » retiré |
 | **Tests** | 677 passed ; 5 échecs plein-suite analysés = interférences d'isolation préexistantes (présentes aussi sur main) + coffre local absent du worktree |
@@ -577,7 +577,7 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
 ### ⚡ fix atelier — health : accepter le format « status ok »
 
 - `_is_healthy_body` exigeait `status == "healthy"` (format template
-  courant). Les apps Node d'ancien template (ex. exemple-app)
+  courant). Les apps Node d'ancien template (ex. mon-app)
   répondent `{"status":"ok", …}` → faux négatif systématique : rollback à
   chaque création d'atelier, quel que soit le timeout (constaté après la
   montée à 90 s du 0.10.4 — la vraie cause n'était pas le délai).
@@ -598,7 +598,7 @@ silencieusement en conditions réelles. Trois corrections + une investigation.
   composes à naming dynamique. Source : datadir PostgreSQL du conteneur
   prod en cours (`docker inspect APP_SLUG-postgres`). Fallbacks sur la
   convention historique.
-  Conséquence terrain (exemple-app) : l'atelier ne démarre plus sur
+  Conséquence terrain (mon-app) : l'atelier ne démarre plus sur
   une DB vide — et ne peut plus monter la DB de prod sur un compose à
   volumes épinglés dont le `name:` viserait le volume prod.
 - Timeout health de création : 30 s → **90 s** (premier boot = initdb +

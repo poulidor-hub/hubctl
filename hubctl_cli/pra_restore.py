@@ -433,7 +433,7 @@ def _resolve_app_dir(slug: str) -> Path | None:
     """Dossier réel d'une app : APPS/<slug> direct, sinon résolution par
     APP_SLUG dans le .env de chaque checkout.
 
-    Le slug DB et le nom du dossier divergent souvent (exemple-app
+    Le slug DB et le nom du dossier divergent souvent (Exemple_App
     vs exemple-app) : 25 apps du parc sont concernées (F12 — test PRA
     VM 13/11/2026, rebuild_app prenait APPS/<slug> aveuglément)."""
     apps_dir = hub_state.APPS_DIR

@@ -932,7 +932,7 @@ def test_list_apps_with_backups_ne_retient_que_les_success(monkeypatch):
     captured = {}
 
     class FakeResult:
-        stdout = "exemple-app|6dfd9d90\napp-b|"
+        stdout = "app-a|6dfd9d90\napp-b|"
 
     def fake_psql(sql, **kwargs):
         captured["sql"] = sql
@@ -941,7 +941,7 @@ def test_list_apps_with_backups_ne_retient_que_les_success(monkeypatch):
     monkeypatch.setattr(pra_restore, "_psql", fake_psql)
     apps = pra_restore.list_apps_with_backups()
     assert "status = 'success'" in captured["sql"].lower()
-    assert apps == [{"slug": "exemple-app", "backup_id": "6dfd9d90"},
+    assert apps == [{"slug": "app-a", "backup_id": "6dfd9d90"},
                     {"slug": "app-b", "backup_id": None}]
 
 
@@ -982,20 +982,20 @@ def test_timeouts_couverts_pour_gros_restores():
 
 def test_rebuild_app_resout_le_dossier_par_app_slug(monkeypatch, tmp_path):
     """F12 (PRA VM run 13) : le slug DB ne correspond pas toujours au nom du
-    dossier APPS (exemple-app vs exemple-app). Le dossier réel est
+    dossier APPS (Exemple_App vs exemple-app). Le dossier réel est
     résolu via APP_SLUG dans le .env de chaque app ; fallback sur APPS/<slug>."""
     apps = tmp_path / "APPS"
-    camel = apps / "exemple-app"
+    camel = apps / "Exemple_App"
     camel.mkdir(parents=True)
     (camel / "Makefile").write_text("build: up\nup:\n\techo ok\n")
     (camel / ".env").write_text("APP_SLUG=exemple-app\n")
-    (apps / "exemple-app").mkdir(parents=True)
-    (apps / "exemple-app" / "Makefile").write_text("build: up\nup:\n\techo ok\n")
-    (apps / "exemple-app" / ".env").write_text("APP_SLUG=exemple-app\n")
+    (apps / "mon-app").mkdir(parents=True)
+    (apps / "mon-app" / "Makefile").write_text("build: up\nup:\n\techo ok\n")
+    (apps / "mon-app" / ".env").write_text("APP_SLUG=mon-app\n")
     monkeypatch.setattr(hub_state, "APPS_DIR", apps)
 
     assert pra_restore.rebuild_app("exemple-app", None) is True
-    assert pra_restore.rebuild_app("exemple-app", None) is True
+    assert pra_restore.rebuild_app("mon-app", None) is True
 
 
 def test_rebuild_app_sans_dossier_echoue_proprement(monkeypatch, tmp_path):

@@ -414,7 +414,7 @@ def test_is_healthy_body_unhealthy_status():
 
 
 def test_is_healthy_body_accepte_status_ok_apps_node():
-    """Apps Node d'ancien template (ex. exemple-app) : /api/health répond
+    """Apps Node d'ancien template (ex. mon-app) : /api/health répond
     {"status":"ok", …} — reconnues saines au même titre que "healthy",
     sinon health check faux négatif systématique → rollback à chaque
     création d'atelier, quel que soit le timeout."""
@@ -1179,12 +1179,12 @@ def test_load_seed_file_valid_apps(tmp_path):
     p = tmp_path / "seed.yaml"
     p.write_text(_yaml.dump({"apps": [
         "git@github.com:exemple/APP_EXEMPLE.git",
-        "git@github.com:POULIDOR-Audit-Developpement/exemple-app.git",
+        "git@github.com:POULIDOR-Audit-Developpement/Mon-App.git",
     ]}))
     result = actions._load_seed_file(Path(p))
     assert result == [
         ("git@github.com:exemple/APP_EXEMPLE.git", "app-exemple"),
-        ("git@github.com:POULIDOR-Audit-Developpement/exemple-app.git", "exemple-app"),
+        ("git@github.com:POULIDOR-Audit-Developpement/Mon-App.git", "mon-app"),
     ]
 
 
