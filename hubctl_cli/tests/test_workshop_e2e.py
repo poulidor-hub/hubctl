@@ -53,7 +53,7 @@ class TestWsProject:
     def test_slug_with_uppercase(self):
         # hubctl 0.7.2 : le nom de projet compose est entièrement slugifié
         # (lowercase, `_` → `-`) pour que la résolution des rôles JWT matche
-        assert _ws_project("exemple-app") == "exemple-app-ws"
+        assert _ws_project("MonApp") == "monapp-ws"
 
 
 class TestWsEnvPath:
@@ -1236,14 +1236,14 @@ class TestResolveRunningDbVolume:
 
     def test_trouve_le_volume_pgdata(self):
         out = (
-            "volume|exemple-app_backend_logs|/app/logs\n"
+            "volume|mon-app_backend_logs|/app/logs\n"
             "bind||/app/uploads\n"
-            "volume|exemple-app_postgres_data|/var/lib/postgresql/data\n"
+            "volume|mon-app_postgres_data|/var/lib/postgresql/data\n"
         )
         fake = subprocess.CompletedProcess([], 0, stdout=out, stderr="")
         with patch.object(actions_mod.subprocess, "run", return_value=fake):
-            assert actions_mod._resolve_running_db_volume("exemple-app-postgres") == \
-                "exemple-app_postgres_data"
+            assert actions_mod._resolve_running_db_volume("mon-app-postgres") == \
+                "mon-app_postgres_data"
 
     def test_variant_datadir_versionne(self):
         # postgres:18 : PGDATA inclut la version (/var/lib/postgresql/18/docker)
@@ -1289,12 +1289,12 @@ class TestResolveComposeDbVolume:
     def test_naming_compose_par_defaut(self, tmp_path):
         fake = subprocess.CompletedProcess(
             [], 0, stdout=json.dumps(self._CFG_DEFAULT), stderr="")
-        env = {"APP_SLUG": "exemple-app-ws"}
+        env = {"APP_SLUG": "mon-app-ws"}
         with patch.object(actions_mod.subprocess, "run", return_value=fake):
             vol = actions_mod._resolve_compose_db_volume(
                 tmp_path, [tmp_path / "docker-compose.yml"],
-                "exemple-app-ws", env)
-        assert vol == "exemple-app-ws_postgres_data"
+                "mon-app-ws", env)
+        assert vol == "mon-app-ws_postgres_data"
 
     def test_name_explicite_prio(self, tmp_path):
         cfg = {

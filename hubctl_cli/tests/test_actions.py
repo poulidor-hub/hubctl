@@ -1179,12 +1179,12 @@ def test_load_seed_file_valid_apps(tmp_path):
     p = tmp_path / "seed.yaml"
     p.write_text(_yaml.dump({"apps": [
         "git@github.com:exemple/APP_EXEMPLE.git",
-        "git@github.com:POULIDOR-Audit-Developpement/exemple-app.git",
+        "git@github.com:POULIDOR-Audit-Developpement/Mon-App.git",
     ]}))
     result = actions._load_seed_file(Path(p))
     assert result == [
         ("git@github.com:exemple/APP_EXEMPLE.git", "app-exemple"),
-        ("git@github.com:POULIDOR-Audit-Developpement/exemple-app.git", "exemple-app"),
+        ("git@github.com:POULIDOR-Audit-Developpement/Mon-App.git", "mon-app"),
     ]
 
 
