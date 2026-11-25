@@ -1,3 +1,9 @@
+## [0.20.5] - 25 novembre 2026
+### ⚡ Neutralisation open source : valeurs d'exemple dans le code, les tests et la documentation
+- Valeurs réelles (adresses IP, noms d'hôtes, identifiants de clients, slugs d'applications
+  privées) remplacées par des valeurs d'exemple (9 fichiers). Aucune valeur du parc ne
+  subsiste dans les fichiers suivis (garde `oss-guard` du méta-repo).
+- Aucune modification fonctionnelle de la CLI ; tests : 769 passed, 7 skipped.
 ## [0.20.4] - 17 novembre 2026
 
 ### ⚡ Coffre — restore DB : timeout des flux psql proportionnel au volume rejoué (issue #1, suite)
