@@ -414,7 +414,7 @@ def test_is_healthy_body_unhealthy_status():
 
 
 def test_is_healthy_body_accepte_status_ok_apps_node():
-    """Apps Node d'ancien template (ex. exemple-app) : /api/health répond
+    """Apps Node d'ancien template (ex. mon-app) : /api/health répond
     {"status":"ok", …} — reconnues saines au même titre que "healthy",
     sinon health check faux négatif systématique → rollback à chaque
     création d'atelier, quel que soit le timeout."""

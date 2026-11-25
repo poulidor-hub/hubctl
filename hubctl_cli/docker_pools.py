@@ -7,7 +7,7 @@ Sans `default-address-pools`, le daemon n'offre que ≈31 sous-réseaux
 (15 × /16 dans 172.16.0.0/12 + 16 × /20 dans 192.168.0.0/16) pour 33 apps
 qui créent chacune leur network compose + hub + stacks de test →
 « invalid pool request: Pool overlaps with other one on this address
-space » de façon récurrente (test PRA VM 13-14/11/2026, exemple-app,
+space » de façon récurrente (test PRA VM 13-14/11/2026,
 exemple-app).
 
 Plages choisies sans conflit parc :

@@ -1467,7 +1467,7 @@ def _is_healthy_body(text: str | None) -> bool:
 
     Les deux formats réels du parc sont acceptés :
     - `"healthy"` : template courant (HUB_base & apps alignées) ;
-    - `"ok"` : apps Node d'ancien template (ex. exemple-app) — leur
+    - `"ok"` : apps Node d'ancien template (ex. mon-app) — leur
       /api/health répond `{"status":"ok", …}`. Même garde grossière que le
       template courant : la validation métier reste manuelle avant --prod.
     """
