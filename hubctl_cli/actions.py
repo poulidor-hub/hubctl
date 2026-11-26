@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from hubctl_cli import hub_state, utils, env_manager
@@ -1235,13 +1236,35 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout
     )
 
 
-def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> bool:
-    """Build + up + health check. Retourne True si l'app est saine.
+# ── Budgets de démarrage d'une app (secondes) ──
+# Deux situations, deux budgets — le même chemin (cf. _build_up_health) :
+#  - PREMIER DÉMARRAGE d'une app (seed CAS A/B, `app install`) : build des
+#    images api + frontend sans cache, migrations, auto-enregistrement. Même
+#    famille de budget que le premier boot du Hub (_build_timeout) : sur une
+#    petite VM, le seul build du Hub dépasse 120 s (E2E 26/11) — les anciens
+#    600/120/60 ne laissaient aucune marge à un premier build d'app.
+#  - CONVERGENCE d'une app déjà déployée (seed CAS C) : images en cache,
+#    mêmes valeurs que `hubctl update`.
+INSTALL_BUILD_TIMEOUT = 1800
+INSTALL_UP_TIMEOUT = 600
+INSTALL_HEALTH_TIMEOUT = 300
+_CONVERGE_BUILD_TIMEOUT = 600
+_CONVERGE_UP_TIMEOUT = 120
+_CONVERGE_HEALTH_TIMEOUT = 60
 
-    Étapes :
-    1. make build (docker compose build, avec cache) — timeout 600s
-    2. make up (docker compose up -d) — timeout 120s
-    3. Health check — timeout 60s
+
+def _build_up_health(console, dest, *, dry_run: bool = False,
+                     build_timeout: int = INSTALL_BUILD_TIMEOUT,
+                     up_timeout: int = INSTALL_UP_TIMEOUT,
+                     health_timeout: int = INSTALL_HEALTH_TIMEOUT,
+                     before_up=None) -> tuple[bool, str]:
+    """Le chemin unique build → up → health d'une app. Retourne (ok, étape).
+
+    `étape` nomme celle qui a échoué (« build », « up », « health check »,
+    préfixée « timeout » quand le budget est épuisé) — « » si l'app est saine.
+    `before_up` : crochet exécuté entre le build et le démarrage (`app install`
+    y pré-crée l'app approuvée au registre du Hub : lancée avant, elle naîtrait
+    « en attente d'approbation »).
 
     On ne peut pas faire seulement 'make up' car certains Makefiles n'ont
     pas --build dans la cible up (template canonique). On ne fait pas non
@@ -1253,22 +1276,33 @@ def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> boo
 
     if dry_run:
         con.print(f"[dim](dry-run) make -C {dest} build + up[/dim]")
-        return True
+        return True, ""
 
     con.print(f"[cyan]🔨 Build de {app_name}...[/cyan]")
-    rc = app_make(app_name, "build", dry_run=False, console=con, timeout=600)
+    rc = app_make(app_name, "build", dry_run=False, console=con, timeout=build_timeout)
     if rc != 0:
+        if rc == 124:
+            con.print(f"[red]✗ Build de {app_name} toujours en cours après {build_timeout}s (budget épuisé).[/red]")
+            con.print(f"[dim]Le travail continue côté Docker — suivez `docker compose logs -f` dans {dest}, "
+                      "puis relance `make up`.[/dim]")
+            return False, "timeout build"
         con.print("[red]✗ Échec du build.[/red]")
-        return False
+        return False, "build"
+
+    if before_up is not None:
+        before_up()
 
     con.print(f"[cyan]🚀 Démarrage de {app_name}...[/cyan]")
-    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=120)
+    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=up_timeout)
     if rc != 0:
+        if rc == 124:
+            con.print(f"[red]✗ Démarrage de {app_name} toujours en cours après {up_timeout}s (budget épuisé).[/red]")
+            return False, "timeout up"
         con.print("[red]✗ Échec du démarrage.[/red]")
-        return False
+        return False, "up"
 
     con.print("[cyan]💚 Health check...[/cyan]")
-    ok = _health_check(app_name, console=con, timeout=60)
+    ok = _health_check(app_name, console=con, timeout=health_timeout)
     if not ok:
         con.print("[yellow]⚠ L'app n'a pas passé le health check.[/yellow]")
         con.print("[dim]Logs récents :[/dim]")
@@ -1281,9 +1315,19 @@ def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> boo
         except Exception:
             pass
         con.print(f"[yellow]L'app est clonée dans {dest} — corrige le .env et relance 'make up'.[/yellow]")
-        return False
+        return False, "health check"
 
-    return True
+    return True, ""
+
+
+def _build_and_start_app(console, dest, config, *, dry_run: bool = False, before_up=None) -> bool:
+    """Premier démarrage d'une app : build + up + health check (cf. _build_up_health).
+
+    Retourne True si l'app est saine. Chemin partagé par le seed (nouvelle app)
+    et `app install` — `config` est conservé par compatibilité de signature.
+    """
+    ok, _step = _build_up_health(console, dest, dry_run=dry_run, before_up=before_up)
+    return ok
 
 
 def _get_vault():
@@ -1367,12 +1411,13 @@ def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tup
         rc = utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
         if rc != 0:
             return (False, "git pull failed")
-        if app_make(slug, "build", dry_run=False, console=con, timeout=600) != 0:
-            return (False, "build failed")
-        if app_make(slug, "up", dry_run=False, console=con, timeout=120) != 0:
-            return (False, "up failed")
-        if not _health_check(slug, console=con, timeout=60):
-            return (False, "health check failed")
+        # Même chemin que le premier démarrage, budget de convergence.
+        ok, step = _build_up_health(
+            con, dest, dry_run=False,
+            build_timeout=_CONVERGE_BUILD_TIMEOUT, up_timeout=_CONVERGE_UP_TIMEOUT,
+            health_timeout=_CONVERGE_HEALTH_TIMEOUT)
+        if not ok:
+            return (False, f"{step} failed")
         return (True, "mise à jour")
 
     except Exception as e:
@@ -1471,6 +1516,16 @@ def _seed_report(console, results: list[tuple[str, bool, str]]) -> None:
     con.print(f"[bold]{ok_count}/{len(results)} app(s) réussies[/bold]")
 
 
+def _hub_precheck(con) -> bool:
+    """Le Hub doit être sain avant de déployer (précheck commun au seed et à
+    `app install` ; skippé en dry-run par les deux appelants)."""
+    con.print("[cyan]♢ Précheck : le hub doit être sain…[/cyan]")
+    if not _health_check("hub", console=con, timeout=30):
+        con.print("[red]✗ Hub non disponible. Lancez `hubctl start` d'abord.[/red]")
+        return False
+    return True
+
+
 def action_seed(console, seed_file: str, *, prune: bool = False, dry_run: bool = False) -> int:
     """Déploie/converge les apps listées dans un fichier seed YAML.
 
@@ -1479,11 +1534,8 @@ def action_seed(console, seed_file: str, *, prune: bool = False, dry_run: bool =
     con = console or _console
 
     # 1. Précheck hub (skippé en dry-run)
-    if not dry_run:
-        con.print("[cyan]♢ Précheck : le hub doit être sain…[/cyan]")
-        if not _health_check("hub", console=con, timeout=30):
-            con.print("[red]✗ Hub non disponible. Lancez `hubctl start` d'abord.[/red]")
-            return 1
+    if not dry_run and not _hub_precheck(con):
+        return 1
 
     # 2. Lecture du fichier seed
     from pathlib import Path
@@ -1616,8 +1668,13 @@ def _is_healthy_body(text: str | None) -> bool:
 
 
 def _health_check(target: str, console=None, timeout: int = 60, port_override: str | None = None) -> bool:
-    """Wait for hub API to be healthy. Returns True if healthy within timeout."""
+    """Wait for hub API to be healthy. Returns True if healthy within timeout.
+
+    `target` : « hub » ou le slug d'une app (port API lu dans son .env).
+    """
     con = console or _console
+    # « Hub » pour le précheck, le nom de l'app sinon (seed, update, app install).
+    label = "Hub" if target == "hub" else f"« {escape(target)} »"
     # Port API : HUB_API_PORT du .env Hub (défaut 8000) pour target "hub",
     # sinon API_PORT de l'app cible.
     if port_override is not None:
@@ -1645,14 +1702,14 @@ def _health_check(target: str, console=None, timeout: int = 60, port_override: s
                 capture_output=True, text=True, timeout=5,
             )
             if _is_healthy_body(result.stdout):
-                con.print(f"[green]✓ Hub healthy après {int(time.monotonic() - start)}s[/green]")
+                con.print(f"[green]✓ {label} healthy après {int(time.monotonic() - start)}s[/green]")
                 return True
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
             # FileNotFoundError = curl absent ; on continue à réessayer jusqu'au timeout.
             pass
         time.sleep(3)
         con.print(f"  ... attente {int(time.monotonic() - start)}s/{timeout}s")
-    con.print(f"[yellow]⚠ Hub pas healthy après {timeout}s[/yellow]")
+    con.print(f"[yellow]⚠ {label} pas healthy après {timeout}s[/yellow]")
     return False
 
 
