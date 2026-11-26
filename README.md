@@ -86,7 +86,7 @@ lecture seule pour les clients (GitHub le garantit).
 | `update <cible…>` | Mettre à jour une cible : `hub`, un ou plusieurs slugs d'app, `*`/`all` = Hub + toutes les apps (git pull + rebuild + rollback auto ; sans cible : usage, rien n'exécuté) |
 | `atelier <app> [--maj] [--prod]` | Cycle atelier d'une app (créer, tester, déployer) |
 | `atelier --close-all [--yes]` | Fermer TOUS les ateliers actifs (confirmation globale ; `--yes` pour scripter) |
-| `init [--force]` | Bootstrap du Hub (.env, démarrage, health check) |
+| `init [--force]` | Bootstrap du Hub (.env, démarrage, health check). Relançable sans risque : si le `.env` existe déjà, `init` **reprend** (rien n'est régénéré, aucun prompt) ; `--force` régénère le `.env` (avertissement explicite) |
 | `export` / `restore <archive>` | Archive chiffrée du parc complet / restauration |
 | `pra-restore [kit]` | Restauration PRA sur serveur neuf (assistant) |
 | `vault <backup\|restore\|status\|export\|import\|app>` | Coffre de secrets |
