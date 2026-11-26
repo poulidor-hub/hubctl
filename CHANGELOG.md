@@ -1,3 +1,20 @@
+## [0.20.7] - 26 novembre 2026
+### ⚡ init : le premier boot ne doit plus échouer à 120 s sur le build des images
+- E2E VM 26/11 (×2, reproductible sur VM 2 vCPU) : le 1ᵉʳ `make up-prod` build les
+  images Hub (> 120 s) → timeout du défaut générique → « ✗ Échec du build/démarrage
+  du Hub » alors que le build continuait orphelin et finissait healthy. Le nouvel
+  utilisateur était accueilli par une erreur sur le premier start.
+- `hub_make` : budget généreux (1800 s, surcharge `HUBCTL_BUILD_TIMEOUT`) pour les
+  cibles de build (`up-prod`, `up`, `build`, `rebuild`) ; les autres cibles gardent le
+  défaut historique (kwarg absent, pas `timeout=None` qui désactiverait la limite).
+- Health check d'init : plafond 120 s → 600 s (polling conditionné inchangé),
+  surcharge `HUBCTL_HEALTH_TIMEOUT`.
+- Timeout de build (rc 124) : guidance actionable — « Relancez ./hubctl init : il
+  convergera » (le build orphelin a continué, l'init reprise détecte un Hub
+  opérationnel) — au lieu de la seule ligne d'échec.
+- pyproject.toml resynchronisé sur VERSION (0.20.3 → 0.20.7, dérive constatée).
+- Tests : test_init_first_boot.py (6, dont le défaut historique verrouillé) ;
+  scope élargi 170 verts.
 ## [0.20.6] - 26 novembre 2026
 ### ⚡ README public mis à jour — URLs voisines vers poulidor-hub, section Mise à jour d'un déploiement
 - Badge de version du README corrigé (0.9.0 -> 0.20.5) ; URLs des dépôts voisins pointées
