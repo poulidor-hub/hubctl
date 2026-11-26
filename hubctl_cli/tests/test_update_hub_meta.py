@@ -5,6 +5,9 @@
 
 Tout l'environnement est mocké (run_shell, park_checks, snapshot DB, health,
 SHA) : les tests valident la SÉQUENCE et le rollback étendu, pas git lui-même.
+Une dernière section laisse tourner les VRAIS pré-checks `park_checks` sur un
+dépôt réel (déploiement en HEAD détaché) : seuls les problèmes bloquants
+doivent refuser l'update, pas les constats d'information.
 """
 from pathlib import Path
 from unittest import mock
@@ -14,6 +17,8 @@ from rich.console import Console
 
 from hubctl_cli import actions
 from hubctl_cli.park_checks import Finding
+from hubctl_cli.tests.test_park_checks import (
+    _commit, _git, _make_deployment)
 
 META_SHA = "a" * 40
 HUB_SHA = "b" * 40
@@ -124,3 +129,94 @@ def test_update_hub_pull_ff_only_never_plain_pull(monkeypatch):
     old_flow = ["git", "-C", str(actions.hub_state.HUB_DIR),
                 "pull", "--recurse-submodules"]
     assert old_flow not in calls, "l'ancien flux (pull dans HUB_base) est mort"
+
+
+# ── Pré-checks : l'information ne bloque pas, seul un problème bloque ──────
+#
+# VM 26/11 : sur un clone public frais, `update hub` (CLI comme bouton
+# « Mettre à jour » de l'UI) refusait de démarrer parce que les pré-checks
+# prenaient pour des problèmes deux constats normaux d'un déploiement
+# (HUB_base détaché, origin/main du composant en avance).
+
+def _pull_meta_cmd() -> list[str]:
+    return ["git", "-C", str(actions.hub_state.PARC_ROOT), "pull", "--ff-only"]
+
+
+def test_update_hub_shows_information_findings_without_blocking(monkeypatch):
+    info = Finding(check="hub_base.aligned_origin", ok=True, info=True,
+                   detail="mise à jour disponible : HUB_base aaa1111 → bbb2222 "
+                          "(origin/main) — mettre le méta à jour d'abord")
+    calls, rollback = _setup(monkeypatch, precheck_problems=[info])
+    con = Console(record=True, width=250)
+    assert actions._update_hub_via_meta(con, dry_run=False) is True
+    text = con.export_text()
+    assert "ℹ hub_base.aligned_origin — mise à jour disponible" in text
+    assert "pré-checks échoués" not in text
+    assert _pull_meta_cmd() in calls
+    rollback.assert_not_called()
+
+
+def _setup_real_prechecks(monkeypatch, meta: Path):
+    """Comme ``_setup``, mais les VRAIS pré-checks tournent sur le dépôt
+    ``meta`` (hub_state pointé dessus) — seule l'exécution reste mockée."""
+    real_prechecks = actions.park_checks.run_update_prechecks
+    calls, rollback = _setup(monkeypatch)
+    monkeypatch.setattr(actions.park_checks, "run_update_prechecks", real_prechecks)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", meta)
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", meta / "HUB_base")
+    return calls, rollback
+
+
+def test_update_hub_starts_on_deployment_reporting_only_information(monkeypatch,
+                                                                   tmp_path):
+    """Déploiement sain (détaché au gitlink), origin/main en avance :
+    l'information « mise à jour disponible » ne refuse pas l'update."""
+    meta, _hub, hub_origin = _make_deployment(tmp_path)
+    _commit(hub_origin, "release.txt", "release du composant")
+    calls, rollback = _setup_real_prechecks(monkeypatch, meta)
+
+    con = Console(record=True, width=250)
+    assert actions._update_hub_via_meta(con, dry_run=False) is True
+    text = con.export_text()
+    assert "ℹ hub_base.aligned_origin — mise à jour disponible" in text
+    # le vrai chemin d'un déploiement, pas une commande qui ne ferait rien
+    assert "git fetch upstream && git merge --ff-only upstream/main" in text
+    assert "pré-checks échoués" not in text
+    assert _pull_meta_cmd() in calls, "l'update doit démarrer"
+    rollback.assert_not_called()
+
+
+def test_update_hub_refuses_on_blocking_problem_with_real_prechecks(monkeypatch,
+                                                                   tmp_path):
+    """Gitlink du méta modifié (HUB_base dérivé) : vrai problème → l'update
+    refuse proprement, sans lancer le moindre git, avec le remède."""
+    meta, hub, hub_origin = _make_deployment(tmp_path)
+    _commit(hub_origin, "release.txt", "release du composant")
+    _git("fetch", "origin", cwd=hub)
+    _git("checkout", "--detach", "HEAD~1", cwd=hub)  # gitlink du méta modifié
+    calls, rollback = _setup_real_prechecks(monkeypatch, meta)
+
+    con = Console(record=True, width=250)
+    assert actions._update_hub_via_meta(con, dry_run=False) is False
+    text = con.export_text()
+    assert "✗ hub_base.pointer" in text and "✗ meta.gitlink_clean" in text
+    assert "submodule update" in text
+    assert "✗ hub_base.aligned_origin" not in text, \
+        "l'information ne doit pas passer pour un problème bloquant"
+    assert not any(c and c[0] == "git" for c in calls), \
+        "pré-checks en échec → aucun git ne doit tourner"
+    rollback.assert_not_called()
+
+
+def test_update_hub_information_prints_git_text_verbatim(monkeypatch):
+    """Le message d'une information peut citer du stderr git : il est
+    imprimé tel quel — rich ne doit pas avaler un « [b] » pour une balise."""
+    info = Finding(check="hub_base.fetch", ok=True, info=True,
+                   detail="impossible de vérifier les mises à jour : remote: "
+                          "error: ref a[b] rejeté")
+    _setup(monkeypatch, precheck_problems=[info])
+    con = Console(record=True, width=250)
+    assert actions._update_hub_via_meta(con, dry_run=False) is True
+    text = con.export_text()  # un seul export : il vide l'enregistrement
+    assert "ℹ hub_base.fetch — impossible de vérifier" in text
+    assert "ref a[b] rejeté" in text

@@ -83,6 +83,8 @@ lecture seule pour les clients (GitHub le garantit).
 |---|---|
 | `start [all\|prod\|dev]` | Démarrer le Hub et/ou les apps |
 | `stop [all\|prod\|dev]` | Tout arrêter |
+| `restart` | Recharger la configuration (`.env`) et relancer le Hub et les apps actives — par recreate (un simple `restart` ne relit pas le `.env`) |
+| `doctor [--fix]` | État du parc : méta, pointeurs des composants, apps. ℹ = information, rien à faire ; ✗ = problème avec son remède. Sur un déploiement (composant au gitlink du méta), « mise à jour disponible » est une information : la mise à jour passe par le méta d'abord |
 | `update <cible…>` | Mettre à jour une cible : `hub`, un ou plusieurs slugs d'app, `*`/`all` = Hub + toutes les apps (git pull + rebuild + rollback auto ; sans cible : usage, rien n'exécuté) |
 | `atelier <app> [--maj] [--prod]` | Cycle atelier d'une app (créer, tester, déployer) |
 | `atelier --close-all [--yes]` | Fermer TOUS les ateliers actifs (confirmation globale ; `--yes` pour scripter) |

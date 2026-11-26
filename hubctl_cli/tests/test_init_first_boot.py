@@ -438,3 +438,50 @@ def test_existing_dotenv_credentials_reads_file_with_fallbacks(monkeypatch, tmp_
     assert actions._existing_dotenv_credentials() == {
         "admin_username": "admin", "host_ip": "192.0.2.99",
     }
+
+
+# ── Services hôtes dans le flux de l'installeur (verdict VM 26/11) ──
+# `install.sh` lance `hubctl init` sans TTY, puis installe lui-même les unités
+# en root (phase 3c). `hubctl init` affichait pourtant « commandes à lancer à
+# la main » : un avertissement trompeur pour une action faite juste après.
+# L'installeur signale sa présence par HUBCTL_INSTALLER=1.
+
+def _service_env(monkeypatch, tmp_path):
+    """Services hôtes sur des chemins jetables : ni /etc, ni ~/.config, ni le dépôt."""
+    from hubctl_cli import atelier_serve, hub_state
+
+    (tmp_path / "rend").mkdir()
+    monkeypatch.setattr(atelier_serve, "DEFAULT_TOKEN_FILE",
+                        tmp_path / "cfg" / "atelier_token")
+    monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    monkeypatch.setattr(actions, "_ATELIER_UNIT", tmp_path / "etc" / "hubctl-atelier.service")
+    monkeypatch.setattr(actions, "_UPDATE_UNIT", tmp_path / "etc" / "hubctl-update.service")
+    monkeypatch.setattr(actions, "_ATELIER_UNIT_RENDERED", tmp_path / "rend" / "atelier.service")
+    monkeypatch.setattr(actions, "_UPDATE_UNIT_RENDERED", tmp_path / "rend" / "update.service")
+
+
+def test_services_keep_manual_reminder_outside_installer(monkeypatch, tmp_path):
+    """Sans TTY et hors installeur : le rappel des commandes reste (init lancé seul)."""
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("HUBCTL_INSTALLER", raising=False)
+    con = Console(file=out, width=120)
+    actions._ensure_atelier_service(con)
+    actions._ensure_update_service(con)
+    text = out.getvalue()
+    assert "Service atelier : commandes à lancer à la main" in text
+    assert "Service update : commandes à lancer à la main" in text
+
+
+def test_services_do_not_ask_for_manual_steps_when_run_by_installer(monkeypatch, tmp_path):
+    """`HUBCTL_INSTALLER=1` : l'installeur pose les deux unités en root juste après —
+    `hubctl init` le dit au lieu de réclamer une action manuelle."""
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("HUBCTL_INSTALLER", "1")
+    con = Console(file=out, width=120)
+    actions._ensure_atelier_service(con)
+    actions._ensure_update_service(con)
+    text = out.getvalue()
+    assert "à lancer à la main" not in text
+    assert text.count("installé par l'installeur") == 2
