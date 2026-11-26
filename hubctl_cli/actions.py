@@ -504,6 +504,22 @@ def _render_unit(con, gabarit: Path, rendered: Path) -> Path | None:
         return None
 
 
+def _system_step_fallback(con, label: str, cmds: list[list[str]]) -> None:
+    """Pas de TTY (ou échec sudo) : rappel des commandes — sauf dans le flux de l'installeur.
+
+    ``install.sh`` lance ``hubctl init`` sans TTY puis installe lui-même, en
+    root, les deux unités (phase 3c) ; il signale sa présence par
+    ``HUBCTL_INSTALLER=1``. Sans cela, l'init réclamait une action manuelle
+    pour une étape faite juste après (constat VM 26/11/2026).
+    """
+    if os.environ.get("HUBCTL_INSTALLER") == "1":
+        con.print(f"[dim]Service {label} : installé par l'installeur (install.sh) juste après.[/dim]")
+        return
+    con.print(f"[yellow]⚠ Service {label} : commandes à lancer à la main :[/yellow]")
+    for cmd in cmds:
+        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+
+
 def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     """Étape `hubctl init` : service hôte hubctl-atelier (« ensure » idempotent).
 
@@ -615,10 +631,8 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
         con.print(f"[yellow]⚠ Service atelier (étape système) : {e}[/yellow]")
 
     # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
-    # rappeler les commandes à lancer à la main.
-    con.print("[yellow]⚠ Service atelier : commandes à lancer à la main :[/yellow]")
-    for cmd in cmds:
-        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+    # rappeler les commandes à lancer à la main (sauf flux de l'installeur).
+    _system_step_fallback(con, "atelier", cmds)
 
 
 def _ensure_update_service(console, dry_run: bool = False) -> None:
@@ -681,9 +695,7 @@ def _ensure_update_service(console, dry_run: bool = False) -> None:
 
     # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
     # rappeler les commandes à lancer à la main.
-    con.print("[yellow]⚠ Service update : commandes à lancer à la main :[/yellow]")
-    for cmd in cmds:
-        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+    _system_step_fallback(con, "update", cmds)
 
 
 def _summary_urls(host_ip: str) -> list[tuple[str, str]]:
@@ -3223,6 +3235,45 @@ def _stop_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = N
     return rc == 0
 
 
+def action_restart(console=None, *, dry_run: bool = False) -> int:
+    """Recharge la configuration et relance le Hub et les apps actives — par recreate.
+
+    ``compose restart`` (``hub.sh restart``) relance les processus SANS relire
+    le ``.env`` ; ``start prod`` est un no-op quand le Hub tourne déjà (et sans
+    app dans ``APPS/``). Ici ``compose up -d`` recrée chaque service dont la
+    configuration a changé — le Hub, puis les apps actives — les autres restent
+    en place. Retourne 0 si le Hub est sain et toutes les apps relancées.
+    """
+    con = console or _console
+    con.print("[bold]🔄 Rechargement de la configuration (recreate)…[/bold]")
+
+    con.print("[bold]→ Hub[/bold]")
+    if hub_make("up-prod", dry_run=dry_run, console=con) != 0:
+        con.print("[red]✗ Le Hub n'a pas pu être relancé.[/red]")
+        return 1
+    if dry_run:
+        con.print("[dim](dry-run) health check non exécuté[/dim]")
+    elif not _health_check("hub", console=con, timeout=_health_timeout()):
+        con.print("[red]✗ Le Hub ne répond pas après relance. Vérifiez `docker compose logs`.[/red]")
+        return 1
+
+    apps = [a.name for a in hub_state.get_apps()]
+    failed = 0
+    for app_name in apps:
+        con.print(f"[bold]→ {app_name}[/bold]")
+        if app_make(app_name, "up", dry_run=dry_run, console=con) == 0:
+            con.print(f"[green]✓ {app_name} relancée[/green]")
+        else:
+            con.print(f"[red]✗ {app_name} : relance échouée[/red]")
+            failed += 1
+
+    if failed:
+        con.print(f"[red]✗ {failed} app(s) en échec.[/red]")
+        return 1
+    con.print(f"[green]✓ Configuration rechargée : Hub + {len(apps)} app(s).[/green]")
+    return 0
+
+
 def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False) -> None:
     """Arrête toutes les apps actives puis le Hub en parallèle.
 
@@ -3408,9 +3459,16 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
     meta_root = hub_state.PARC_ROOT
     hub_path = hub_state.HUB_DIR
 
-    # Pré-checks : jamais de pull dans une divergence (échec propre)
-    problems = [f for f in park_checks.run_update_prechecks(meta_root)
-                if not f.ok]
+    # Pré-checks : jamais de pull dans une divergence (échec propre). Les
+    # constats d'information (Finding.info, ok=True — ex. « mise à jour
+    # disponible » sur un déploiement en HEAD détaché) sont montrés et ne
+    # bloquent pas : seuls les problèmes refusent l'update.
+    prechecks = park_checks.run_update_prechecks(meta_root)
+    for f in prechecks:
+        if f.info:
+            # markup=False : le message peut citer du stderr git, entre crochets
+            con.print(f"ℹ {f.check} — {f.detail}", style="dim", markup=False)
+    problems = [f for f in prechecks if not f.ok]
     if problems:
         for f in problems:
             con.print(f"[red]✗ {f.check} — {f.detail}[/red]")
@@ -3671,7 +3729,12 @@ def action_doctor(console=None, *, fix: bool = False, assume_yes: bool = False,
     problems = [f for f in findings if not f.ok]
 
     for f in findings:
-        mark = "[green]✓[/green]" if f.ok else "[red]✗[/red]"
+        if f.info:
+            # constat d'information (park_checks.Finding.info) : ℹ neutre —
+            # un vrai constat (« mise à jour disponible »), ni sain ni problème
+            mark = "[cyan]ℹ[/cyan]"
+        else:
+            mark = "[green]✓[/green]" if f.ok else "[red]✗[/red]"
         line = f"{mark} {f.check} — {f.detail}"
         if not f.ok and f.remedy:
             line += f"\n    [yellow]remède : {f.remedy}[/yellow]"

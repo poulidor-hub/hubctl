@@ -1,3 +1,27 @@
+## [0.21.0] - 26 novembre 2026
+### ⚡ doctor honnête sur un déploiement, `hubctl restart`, init clair — plan « installation sans friction » (phase 4)
+- **`hubctl doctor` sur un clone public frais ne sort plus en rouge** (verdict VM 26/11 : deux ✗
+  juste après une installation réussie). La lecture se fait par l'ÉTAT : un composant en HEAD
+  détaché sur le gitlink du méta = un déploiement qui suit les releases du méta. Dans ce cas
+  « HUB_base en retard sur origin/main » devient une information ℹ (« mise à jour disponible —
+  mettre le méta à jour d'abord, puis `./hubctl update hub` »), la branche `main` du sous-module
+  n'est plus listée comme « restante », `--fix` ne fait ni `checkout main` ni `reset --hard`
+  (idempotent, il ne réaligne que sur le gitlink), et le remède `pull --ff-only` n'est plus
+  proposé. Checkout de développement (HEAD attaché) : comportement inchangé. Les vrais
+  problèmes (gitlink modifié, sous-module dérivé) restent rouges.
+- **`hubctl update hub` n'est plus bloqué** par ces informations (seuls les problèmes bloquants bloquent).
+- **Nouvelle commande `hubctl restart`** : recharge la configuration par recreate (`compose up -d`
+  sur le Hub puis les apps actives) — `./hub.sh restart` et `start prod` ne relisent pas le `.env`.
+- **`doctor` signale un `.env` non appliqué** (ℹ « HUB_base/.env modifié après le dernier démarrage
+  du Hub — `./hubctl restart` »).
+- **Fetch impossible** : la cause réelle du stderr git (pas son conseil final tronqué) + remède SSH.
+- **Une information s'affiche ℹ**, plus avec un ✓ vert.
+- **`hubctl init --help`** expose les trois chemins (installation complète, reprise, `--force`).
+- **Sous l'installeur** (`HUBCTL_INSTALLER=1`, posé par `install.sh`) : plus de rappel « commandes
+  à lancer à la main » pour les services hôtes — l'installeur les pose en root juste après. Hors
+  installeur, le rappel reste.
+- README : lignes `restart` et `doctor`. Tests : 821 verts (25 + 11 + 8 + 5 nouveaux).
+
 ## [0.20.8] - 26 novembre 2026
 ### ⚡ init : relançable sans risque — reprise quand le .env existe déjà
 - `hubctl init` refusait quand `HUB_base/.env` existait sans `--force` (non-interactif :

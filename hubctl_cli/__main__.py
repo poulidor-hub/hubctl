@@ -11,7 +11,7 @@ from rich.text import Text
 
 from hubctl_cli import actions, animation, atelier_serve, menu, update_serve
 from hubctl_cli.actions import (
-    action_start_all, action_stop_all, action_update_all, action_update,
+    action_start_all, action_stop_all, action_restart, action_update_all, action_update,
     action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
     action_seed_export, action_doctor, action_app_install,
 )
@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser = sub.add_parser("start", help="Demarrer le Hub et/ou les apps")
     start_parser.add_argument("target", nargs="?", default="all",
                               choices=["all", "prod", "dev"])
+
+    # restart — recharger la configuration (recreate) et relancer
+    sub.add_parser("restart",
+                   help="Recharger la configuration (.env) et relancer le Hub et les apps actives "
+                        "(recreate : un simple restart ne relit pas le .env)")
 
     # stop — arreter tout
     stop_parser = sub.add_parser("stop", help="Arreter toutes les apps et le Hub")
@@ -113,9 +118,17 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Branche ou tag a tester avec --maj (defaut: main)")
 
     # init — bootstrap
-    init_parser = sub.add_parser("init", help="Bootstrap automatique du Hub (genere .env, demarre, verifie la sante) ; relancable : reprend une install existante (sans --force, le .env est conserve)")
+    init_parser = sub.add_parser(
+        "init",
+        help="Bootstrap automatique du Hub (genere .env, demarre, verifie la sante) ; relancable : reprend une install existante (sans --force, le .env est conserve)",
+        description=(
+            "Bootstrap du Hub, relançable sans risque. Si le .env est absent : installation "
+            "complète (secrets générés, démarrage, santé). S'il existe déjà : reprise — init "
+            "reprend l'installation en conservant le .env tel quel (aucun prompt, aucun secret "
+            "régénéré) et remonte la pile. Avec --force : régénère le .env (mots de passe, "
+            "clé Fernet) après un avertissement explicite."))
     init_parser.add_argument("--force", action="store_true",
-                             help="Ecraser le .env existant sans confirmation")
+                             help="Régénère le .env existant de zéro (avertissement explicite : les personnalisations et les secrets qu'il porte sont perdus)")
 
     # export — export parc
     export_parser = sub.add_parser("export", help="Exporter tout le parc dans une archive tar.gz")
@@ -458,6 +471,17 @@ def _run(args) -> int:
             return 0
         except Exception as e:
             print(f"❌ stop a echoue : {e}")
+            return 1
+
+    if args.command == "restart":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        _resolve_mode(args)
+        try:
+            rc = action_restart(console=console, dry_run=global_dry_run)
+            return 0 if rc == 0 else 1
+        except Exception as e:
+            print(f"❌ restart a echoue : {e}")
             return 1
 
     if args.command == "update":
