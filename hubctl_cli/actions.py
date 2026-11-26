@@ -1371,6 +1371,13 @@ def _sync_app_coffre(console, name, *, dry_run: bool = False) -> None:
     if dry_run:
         con.print(f"[dim](dry-run) Sync coffre : {name}[/dim]")
         return
+    # Pas encore de coffre (installation fraîche : il se crée à la première
+    # ouverture interactive du menu Coffre) — information, pas avertissement.
+    # L'avertissement ne garde de sens que pour un coffre EXISTANT verrouillé.
+    if not hub_state.vault_path().exists():
+        con.print(f"[cyan]ℹ Pas de coffre encore — les secrets de {name} restent dans son "
+                  ".env ; créez-le dans ./hubctl → Coffre pour les y sauvegarder.[/cyan]")
+        return
     try:
         from hubctl_cli.vault_manager import VaultManager
         vault = _get_vault()

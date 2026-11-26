@@ -1620,3 +1620,38 @@ def test_depends_yaml_unreadable_warns(tmp_path):
     plan, output = _plan_output(tmp_path, "depends_on: [42, {pas: une dependance\n  {{{\n")
     assert plan == []
     assert "depends.yaml" in output and "illisible" in output
+
+
+# ── Coffre pas encore créé (installation fraîche) : information, pas avertissement ──
+# Verdict VM du 26/11/2026 : le premier `app install` d'un déploiement neuf
+# affichait « ⚠ Coffre verrouillé — secrets non sauvegardés. Sync manuelle via le
+# menu Coffre. » — il n'y a simplement pas encore de coffre (créé à la première
+# ouverture interactive du menu Coffre).
+
+def _coffre_output(monkeypatch, tmp_path, *, coffre_existe):
+    import io
+    from types import SimpleNamespace
+    from hubctl_cli import actions, hub_state
+    from rich.console import Console
+
+    coffre = tmp_path / "vault" / "parc.vault.enc"
+    coffre.parent.mkdir(parents=True, exist_ok=True)
+    if coffre_existe:
+        coffre.write_bytes(b"coffre")
+    monkeypatch.setattr(hub_state, "vault_path", lambda *a, **k: coffre)
+    monkeypatch.setattr(actions, "_get_vault", lambda: SimpleNamespace(is_locked=True))
+    out = io.StringIO()
+    actions._sync_app_coffre(Console(file=out, width=120), "app-a")
+    return out.getvalue()
+
+
+def test_sync_coffre_without_any_vault_is_an_information(monkeypatch, tmp_path):
+    text = _coffre_output(monkeypatch, tmp_path, coffre_existe=False)
+    assert "⚠" not in text, "sans coffre, pas d'avertissement"
+    assert "Pas de coffre" in text and "app-a" in text and "Coffre" in text
+
+
+def test_sync_coffre_locked_existing_vault_keeps_its_warning(monkeypatch, tmp_path):
+    """Un coffre EXISTANT mais verrouillé : le rappel reste (il y a quelque chose à sync)."""
+    text = _coffre_output(monkeypatch, tmp_path, coffre_existe=True)
+    assert "⚠ Coffre verrouillé" in text
