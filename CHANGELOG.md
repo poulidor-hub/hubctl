@@ -1,3 +1,22 @@
+## [0.20.8] - 26 novembre 2026
+### ⚡ init : relançable sans risque — reprise quand le .env existe déjà
+- `hubctl init` refusait quand `HUB_base/.env` existait sans `--force` (non-interactif :
+  « utilisez --force » ; interactif : prompt « Écraser le .env existant ? »). Conséquences
+  constatées en VM le 26/11 : la guidance du timeout de build (« Relancez ./hubctl init »)
+  était fausse en non-interactif, et `install.sh` relancé Hub arrêté affichait « ✗
+  L'initialisation du Hub a échoué » (exit 1) alors qu'il se prétend idempotent.
+- **Reprise** (`.env` présent, sans `--force`) : le `.env` sert tel quel (octets inchangés,
+  aucun secret régénéré, aucun prompt même avec TTY), pas de nettoyage des conteneurs ni
+  de re-synchronisation du mot de passe DB ; `up-prod` (budget build 1800 s), health check
+  (600 s), étapes idempotentes (marker shell, services atelier/update), résumé construit
+  depuis le `.env` existant et signalé « ↻ Reprise ».
+- **`--force`** : régénération inchangée, précédée d'un avertissement explicite et vrai
+  (mots de passe PostgreSQL/admin, clé Fernet — les secrets chiffrés avec l'ancienne clé
+  deviennent illisibles —, secret du Service Account interne sont retirés ; clés JWT,
+  token atelier et volumes Docker conservés).
+- Installation fraîche et Docker injoignable : inchangés. README : ligne `init` alignée.
+- Tests : 7 nouveaux (rouge → vert sur l'ancien code), suite complète 784 verts.
+
 ## [0.20.7] - 26 novembre 2026
 ### ⚡ init : le premier boot ne doit plus échouer à 120 s sur le build des images
 - E2E VM 26/11 (×2, reproductible sur VM 2 vCPU) : le 1ᵉʳ `make up-prod` build les

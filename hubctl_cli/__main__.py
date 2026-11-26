@@ -113,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Branche ou tag a tester avec --maj (defaut: main)")
 
     # init — bootstrap
-    init_parser = sub.add_parser("init", help="Bootstrap automatique du Hub (genere .env, demarre, verifie la sante)")
+    init_parser = sub.add_parser("init", help="Bootstrap automatique du Hub (genere .env, demarre, verifie la sante) ; relancable : reprend une install existante (sans --force, le .env est conserve)")
     init_parser.add_argument("--force", action="store_true",
                              help="Ecraser le .env existant sans confirmation")
 

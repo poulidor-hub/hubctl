@@ -57,6 +57,10 @@ def _generate_dotenv(console, *, force: bool = False, dry_run: bool = False) -> 
 
     Retourne un dict avec admin_username, admin_password, host_ip,
     ou None si le .env existe déjà et que l'utilisateur refuse de l'écraser.
+
+    NB : `action_bootstrap` ne l'appelle jamais avec un .env existant sans
+    `--force` — c'est le chemin « reprise » (cf. `_existing_dotenv_credentials`)
+    — la garde ci-dessous ne reste qu'un filet pour un appel direct.
     """
     import secrets as _secrets
     env_path = hub_state.HUB_DIR / ".env"
@@ -688,10 +692,71 @@ def _summary_urls(host_ip: str) -> list[tuple[str, str]]:
             ("API", f"http://{host_ip}:{api}")]
 
 
+def _existing_dotenv_credentials() -> dict:
+    """Identité lue dans le .env EXISTANT (reprise d'init) — rien n'est réécrit.
+
+    Le résumé final doit refléter la configuration réellement en service :
+    login admin et hôte lus dans le fichier, pas les valeurs qu'aurait
+    produites une génération. Repli sur les défauts du générateur (« admin »,
+    IP détectée) si la clé est absente ou vide.
+    """
+    return {
+        "admin_username": _read_hub_env_value("ADMIN_USERNAME") or "admin",
+        "host_ip": _read_hub_env_value("HUB_HOST") or _detect_host_ip(),
+    }
+
+
+def _warn_force_regeneration(console=None, *, dry_run: bool = False) -> None:
+    """Avertissement explicite avant la régénération forcée du .env (`--force`).
+
+    Dit vrai, d'après ce que fait réellement le code — rien de plus :
+    - `_generate_dotenv` RÉÉCRIT le fichier de zéro : les personnalisations
+      du .env sont perdues, et ces valeurs reçoivent un nouveau tirage
+      aléatoire — mots de passe PostgreSQL/admin, clé Fernet
+      (SECRETS_ENCRYPTION_KEY), secret du Service Account interne ;
+    - la clé Fernet changée rend illisibles les secrets déjà chiffrés en base
+      sous l'ancienne clé ;
+    - l'init ne touche ni aux clés JWT (`_ensure_jwt_keys` ne fait rien si
+      les fichiers existent), ni au token atelier (jamais écrasé), ni aux
+      volumes Docker (le nettoyage ne supprime que des conteneurs).
+    """
+    con = console or _console
+    verbe = "serait régénéré" if dry_run else "va être régénéré"
+    con.print(
+        f"[bold red]⚠ --force : le .env existant {verbe} de zéro — "
+        "ses personnalisations sont perdues.[/bold red]"
+    )
+    con.print(
+        "   [red]Nouvelles valeurs aléatoires :[/red] mots de passe PostgreSQL "
+        "et admin, clé Fernet (SECRETS_ENCRYPTION_KEY — les secrets déjà "
+        "chiffrés avec l'ancienne clé deviennent illisibles), secret du "
+        "Service Account interne."
+    )
+    con.print(
+        "   [green]Conservés :[/green] clés JWT (HUB_base/secrets/*.pem), "
+        "token atelier, volumes Docker."
+    )
+    if dry_run:
+        con.print("   [dim](dry-run : rien n'est écrit)[/dim]")
+
+
 def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> int:
     """Bootstrap complet du Hub : .env → clés JWT → build+up → health → résumé.
 
-    Point d'entrée de `hubctl init`.
+    Point d'entrée de `hubctl init`. Trois chemins :
+
+    - **installation complète** : le `.env` n'existe pas. Génération (secrets
+      aléatoires), nettoyage des conteneurs, sync du mot de passe DB.
+    - **régénération** (`--force`) : le `.env` existant est réécrit, après un
+      avertissement explicite ; même suite que l'installation complète.
+    - **reprise** : le `.env` existe et pas de `--force`. Rien n'est régénéré
+      ni demandé (aucun prompt, même avec TTY) : le `.env` existant sert tel
+      quel (octets inchangés), les conteneurs ne sont pas nettoyés et le mot
+      de passe DB n'est pas re-synchronisé — on remonte la pile (`up-prod`),
+      on attend le health check et on rejoue les étapes idempotentes. C'est
+      ce chemin qui rend vraie la guidance « Relancez ./hubctl init » après
+      un timeout de build, et `install.sh` relançable Hub arrêté.
+
     Retourne 0 si succès, 1 si échec.
     """
     con = console or _console
@@ -700,20 +765,37 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
         con.print("[red]✗ Docker injoignable. Vérifiez que le daemon tourne.[/red]")
         return 1
 
-    # ── 2. Générer le .env ──
-    credentials = _generate_dotenv(con, force=force, dry_run=dry_run)
-    if credentials is None:
-        con.print("[red]✗ Impossible de générer le .env. Abandon.[/red]")
-        return 1
+    # ── 2. Le .env : reprise (existant, sans --force) ou génération ──
+    env_path = hub_state.HUB_DIR / ".env"
+    resume = env_path.exists() and not force
+    if resume:
+        credentials = _existing_dotenv_credentials()
+        con.print(
+            "[cyan]↻ .env existant (sans --force) → reprise de l'installation : "
+            "configuration conservée, aucun secret régénéré, aucun prompt.[/cyan]"
+        )
+    else:
+        if force and env_path.exists():
+            _warn_force_regeneration(con, dry_run=dry_run)
+        credentials = _generate_dotenv(con, force=force, dry_run=dry_run)
+        if credentials is None:
+            con.print("[red]✗ Impossible de générer le .env. Abandon.[/red]")
+            return 1
 
-    # ── 3. Générer les clés JWT ──
+    # ── 3. Générer les clés JWT (ensure : rien fait si elles existent) ──
     _ensure_jwt_keys(con, dry_run=dry_run)
 
-    # ── 4. Nettoyer les anciens conteneurs ──
-    _cleanup_existing_hub_containers(con, dry_run=dry_run)
+    # Nettoyage des conteneurs + sync du mot de passe DB : installation
+    # complète et régénération seulement. En reprise le .env est inchangé →
+    # son mot de passe correspond déjà au volume (pas de sync), et la pile en
+    # place n'a pas à être démontée pour être remontée à l'identique (pas de
+    # nettoyage) : `up-prod` la fait converger.
+    if not resume:
+        # ── 4. Nettoyer les anciens conteneurs ──
+        _cleanup_existing_hub_containers(con, dry_run=dry_run)
 
-    # ── 4b. Sync mot de passe DB si le volume existe (évite InvalidPasswordError) ──
-    _sync_db_password_if_needed(con, dry_run=dry_run)
+        # ── 4b. Sync mot de passe DB si le volume existe (évite InvalidPasswordError) ──
+        _sync_db_password_if_needed(con, dry_run=dry_run)
 
     # ── 5. Build & démarrage ──
     if dry_run:
@@ -732,9 +814,13 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
                     f"({_build_timeout()}s) — le travail continue en arrière-plan.[/yellow]"
                 )
                 con.print(
-                    "   [dim]Relancez [bold]./hubctl init[/bold] : il convergera "
-                    "(Hub déjà opérationnel → init reprise), ou suivez "
-                    "[bold]docker compose logs -f[/bold] dans HUB_base.[/dim]"
+                    "   [dim]Relancez [bold]./hubctl init[/bold] sans --force : "
+                    "il converge (le .env existant est conservé, l'init "
+                    "reprend).[/dim]"
+                )
+                con.print(
+                    "   [dim]Ou suivez [bold]docker compose logs -f[/bold] "
+                    "dans HUB_base.[/dim]"
                 )
             else:
                 con.print("[red]✗ Échec du build/démarrage du Hub.[/red]")
@@ -764,6 +850,11 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
 
     con.print("")
     con.print("[green bold]✅ Hub POULIDOR opérationnel ![/green bold]")
+    if resume:
+        con.print(
+            "[cyan]↻ Reprise : configuration existante conservée — "
+            "le .env n'a pas été régénéré.[/cyan]"
+        )
     con.print("")
     t = Table(title="Accès")
     t.add_column("Service", style="bold cyan")
