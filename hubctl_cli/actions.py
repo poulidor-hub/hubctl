@@ -587,6 +587,18 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     except OSError as e:
         con.print(f"[yellow]⚠ Token Hub ({hub_token}) : {e}[/yellow]")
 
+    # ── 2b. Dossier du coffre : il doit exister AVANT le service ──
+    # L'unit est en ProtectSystem=strict avec ReadWritePaths sur ce dossier
+    # (runtime, hors git, créé au premier lancement interactif de ./hubctl) :
+    # absent, systemd refusait le montage (226/NAMESPACE) et le service bouclait
+    # sur tout déploiement neuf (constat VM 26/11/2026).
+    coffre: Path | None = None
+    try:
+        coffre = hub_state.vault_dir()
+        coffre.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as e:
+        con.print(f"[yellow]⚠ Coffre ({coffre}) : {e}[/yellow]")
+
     # ── 3. Unit systemd : rendre (substitution), installer / activer / rien ──
     if _ATELIER_UNIT.exists():
         try:
@@ -1358,6 +1370,13 @@ def _sync_app_coffre(console, name, *, dry_run: bool = False) -> None:
     con = console or _console
     if dry_run:
         con.print(f"[dim](dry-run) Sync coffre : {name}[/dim]")
+        return
+    # Pas encore de coffre (installation fraîche : il se crée à la première
+    # ouverture interactive du menu Coffre) — information, pas avertissement.
+    # L'avertissement ne garde de sens que pour un coffre EXISTANT verrouillé.
+    if not hub_state.vault_path().exists():
+        con.print(f"[cyan]ℹ Pas de coffre encore — les secrets de {name} restent dans son "
+                  ".env ; créez-le dans ./hubctl → Coffre pour les y sauvegarder.[/cyan]")
         return
     try:
         from hubctl_cli.vault_manager import VaultManager
@@ -2495,6 +2514,20 @@ def _install_fail(con, res: _InstallResult, detail: str) -> None:
     con.print(f"[red]✗ {escape(detail)}.[/red]")
 
 
+def _depends_clean_empty(f: Path) -> bool:
+    """depends.yaml bien formé et sans dépendance déclarée (``depends_on: []``
+    ou clé absente). Faux dès que le YAML est cassé ou de forme inattendue."""
+    import yaml
+    try:
+        data = yaml.safe_load(f.read_text(errors="replace")) or {}
+    except (yaml.YAMLError, OSError, UnicodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    items = data.get("depends_on")
+    return items is None or items == []
+
+
 def _resolve_dependency_url(run: _InstallRun, dep_slug: str) -> str | None:
     """URL git d'une dépendance absente du parc : (a) seed-apps.yaml de la
     racine du parc, (b) registre du Hub (git_repo_url, jeton admin)."""
@@ -2521,9 +2554,13 @@ def _install_plan(run: _InstallRun, res: _InstallResult, dest: Path) -> list[tup
     slug = res.slug
     deps = _read_depends(dest)
     if not deps:
-        if (dest / "depends.yaml").exists():
-            con.print(f"[yellow]⚠ depends.yaml de « {slug} » illisible ou sans dépendance "
-                      "déclarée — app traitée comme autonome.[/yellow]")
+        f = dest / "depends.yaml"
+        # Le gabarit livre `depends_on: []` : vide et bien formé, c'est le cas
+        # normal d'une app autonome — pas d'avertissement (verdict VM 26/11).
+        # Seul un fichier ILLISIBLE (YAML cassé, forme inattendue) est signalé.
+        if f.exists() and not _depends_clean_empty(f):
+            con.print(f"[yellow]⚠ depends.yaml de « {slug} » illisible — app traitée "
+                      "comme autonome.[/yellow]")
         return []
     if run.no_deps:
         con.print(f"[yellow]⚠ --no-deps : {len(deps)} dépendance(s) ignorée(s) : "
@@ -3235,6 +3272,18 @@ def _stop_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = N
     return rc == 0
 
 
+def _restart_stamp() -> Path:
+    """Timbre posé par un `restart` réussi : la configuration en service est à jour.
+
+    Une modification du `.env` qui ne change rien pour compose (commentaire,
+    valeur identique) ne recrée aucun conteneur : sans ce repère, `doctor`
+    continuait d'afficher « configuration non appliquée » juste APRÈS un
+    restart (verdict VM 26/11/2026). Lu par `park_checks._last_restart_at`.
+    """
+    base = os.environ.get("HUBCTL_STATE_DIR") or str(Path.home() / ".config" / "hubctl")
+    return Path(base) / "last_restart"
+
+
 def action_restart(console=None, *, dry_run: bool = False) -> int:
     """Recharge la configuration et relance le Hub et les apps actives — par recreate.
 
@@ -3256,6 +3305,13 @@ def action_restart(console=None, *, dry_run: bool = False) -> int:
     elif not _health_check("hub", console=con, timeout=_health_timeout()):
         con.print("[red]✗ Le Hub ne répond pas après relance. Vérifiez `docker compose logs`.[/red]")
         return 1
+    else:
+        try:  # timbre pour doctor : jamais fatal
+            stamp = _restart_stamp()
+            stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            stamp.touch()
+        except OSError as e:
+            con.print(f"[dim](timbre de restart non posé : {e})[/dim]")
 
     apps = [a.name for a in hub_state.get_apps()]
     failed = 0

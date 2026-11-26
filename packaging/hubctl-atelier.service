@@ -52,8 +52,11 @@ RestartSec=5s
 NoNewPrivileges=true
 ProtectSystem=strict
 # POST /vault/backup est la SEULE écriture du serveur (parc.vault.enc + .bak
-# + artefact dump DB) : ouverture d'écriture restreinte au coffre.
-ReadWritePaths=@PARC_ROOT@/hubctl_src/hubctl_cli/vault
+# + artefact dump DB) : ouverture d'écriture restreinte au coffre. Le préfixe
+# « - » tolère un dossier encore absent : `hubctl init` le crée avant de poser
+# l'unit — sans lui, systemd refusait le montage (226/NAMESPACE) et le service
+# bouclait sur tout déploiement neuf (constat VM 26/11/2026).
+ReadWritePaths=-@PARC_ROOT@/hubctl_src/hubctl_cli/vault
 PrivateTmp=true
 
 # ── Durcissement complémentaire — validé en exécution réelle (serveur +

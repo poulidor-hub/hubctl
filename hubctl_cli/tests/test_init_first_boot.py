@@ -28,6 +28,7 @@ Fix attendu :
 - `--force` → régénération, inchangée, précédée d'un avertissement explicite.
 """
 import io
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -485,3 +486,30 @@ def test_services_do_not_ask_for_manual_steps_when_run_by_installer(monkeypatch,
     text = out.getvalue()
     assert "à lancer à la main" not in text
     assert text.count("installé par l'installeur") == 2
+
+
+# ── Service atelier : le dossier du coffre doit exister AVANT le service ──
+# Verdict VM du 26/11/2026 (déploiement neuf) : hubctl-atelier bouclait en
+# 226/NAMESPACE — « Failed to set up mount namespacing : …/hubctl_cli/vault: No
+# such file or directory ». Le coffre est un dossier runtime hors git, créé au
+# premier lancement interactif de ./hubctl ; l'unit est en ProtectSystem=strict
+# avec ReadWritePaths sur ce dossier, et systemd refuse un montage absent.
+
+def test_ensure_atelier_service_creates_vault_dir_first(monkeypatch, tmp_path):
+    from hubctl_cli import hub_state
+
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    coffre = tmp_path / "pkg" / "vault"
+    monkeypatch.setattr(hub_state, "vault_dir", lambda *a, **k: coffre)
+    actions._ensure_atelier_service(Console(file=out, width=120))
+    assert coffre.is_dir(), "le dossier du coffre doit exister avant l'installation du service"
+    assert (coffre.stat().st_mode & 0o777) == 0o700, "dossier du coffre : droits 700"
+
+
+def test_atelier_unit_tolerates_a_missing_vault_dir():
+    """ReadWritePaths=-<chemin> : l'unit ne doit pas échouer si le dossier manque."""
+    gabarit = Path(actions._ATELIER_UNIT_GABARIT)
+    lignes = [ln for ln in gabarit.read_text(encoding="utf-8").splitlines()
+              if ln.startswith("ReadWritePaths=")]
+    assert lignes == ["ReadWritePaths=-@PARC_ROOT@/hubctl_src/hubctl_cli/vault"], lignes

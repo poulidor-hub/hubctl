@@ -1585,3 +1585,73 @@ def test_hub_api_post_chemin_exact_sans_slash_307(reel):
     (`/api/apps/`, slash final) — sinon 307, jamais 201."""
     status, _ = actions._hub_api("POST", "/api/apps", token=TOKEN, body={})
     assert status == 307
+
+
+# ── depends.yaml vide et bien formé : pas d'avertissement (verdict VM 26/11) ──
+# Le gabarit livre `depends_on: []` : toute app issue du gabarit affichait
+# « ⚠ depends.yaml … illisible ou sans dépendance déclarée ».
+
+def _plan_output(tmp_path, depends_text):
+    import io
+    from hubctl_cli.actions import _InstallResult, _InstallRun, _install_plan
+    from rich.console import Console
+
+    (tmp_path / "depends.yaml").write_text(depends_text, encoding="utf-8")
+    out = io.StringIO()
+    run = _InstallRun(Console(file=out, width=120), no_deps=False, yes=True, dry_run=False)
+    res = _InstallResult(slug="app-a", url="git@x:app-a.git")
+    plan = _install_plan(run, res, tmp_path)
+    return plan, out.getvalue()
+
+
+def test_depends_yaml_empty_from_template_is_silent(tmp_path):
+    plan, output = _plan_output(tmp_path, "depends_on: []\n")
+    assert plan == []
+    assert "depends.yaml" not in output, "depends_on: [] (gabarit) ne doit produire aucun avertissement"
+
+
+def test_depends_yaml_without_depends_on_key_is_silent(tmp_path):
+    plan, output = _plan_output(tmp_path, "# dépendances inter-apps\n")
+    assert plan == []
+    assert "depends.yaml" not in output
+
+
+def test_depends_yaml_unreadable_warns(tmp_path):
+    plan, output = _plan_output(tmp_path, "depends_on: [42, {pas: une dependance\n  {{{\n")
+    assert plan == []
+    assert "depends.yaml" in output and "illisible" in output
+
+
+# ── Coffre pas encore créé (installation fraîche) : information, pas avertissement ──
+# Verdict VM du 26/11/2026 : le premier `app install` d'un déploiement neuf
+# affichait « ⚠ Coffre verrouillé — secrets non sauvegardés. Sync manuelle via le
+# menu Coffre. » — il n'y a simplement pas encore de coffre (créé à la première
+# ouverture interactive du menu Coffre).
+
+def _coffre_output(monkeypatch, tmp_path, *, coffre_existe):
+    import io
+    from types import SimpleNamespace
+    from hubctl_cli import actions, hub_state
+    from rich.console import Console
+
+    coffre = tmp_path / "vault" / "parc.vault.enc"
+    coffre.parent.mkdir(parents=True, exist_ok=True)
+    if coffre_existe:
+        coffre.write_bytes(b"coffre")
+    monkeypatch.setattr(hub_state, "vault_path", lambda *a, **k: coffre)
+    monkeypatch.setattr(actions, "_get_vault", lambda: SimpleNamespace(is_locked=True))
+    out = io.StringIO()
+    actions._sync_app_coffre(Console(file=out, width=120), "app-a")
+    return out.getvalue()
+
+
+def test_sync_coffre_without_any_vault_is_an_information(monkeypatch, tmp_path):
+    text = _coffre_output(monkeypatch, tmp_path, coffre_existe=False)
+    assert "⚠" not in text, "sans coffre, pas d'avertissement"
+    assert "Pas de coffre" in text and "app-a" in text and "Coffre" in text
+
+
+def test_sync_coffre_locked_existing_vault_keeps_its_warning(monkeypatch, tmp_path):
+    """Un coffre EXISTANT mais verrouillé : le rappel reste (il y a quelque chose à sync)."""
+    text = _coffre_output(monkeypatch, tmp_path, coffre_existe=True)
+    assert "⚠ Coffre verrouillé" in text

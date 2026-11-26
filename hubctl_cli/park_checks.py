@@ -499,6 +499,21 @@ def _hub_api_started_at() -> datetime | None:
         return None
 
 
+def _last_restart_at() -> datetime | None:
+    """Instant (UTC) du dernier ``hubctl restart`` réussi, ``None`` s'il n'y en a pas.
+
+    Même timbre que ``actions._restart_stamp`` (park_checks n'importe pas
+    actions — ce dernier l'importe) : ``HUBCTL_STATE_DIR`` ou
+    ``~/.config/hubctl``, fichier ``last_restart``.
+    """
+    base = os.environ.get("HUBCTL_STATE_DIR") or str(Path.home() / ".config" / "hubctl")
+    try:
+        return datetime.fromtimestamp((Path(base) / "last_restart").stat().st_mtime,
+                                      tz=timezone.utc)
+    except OSError:
+        return None
+
+
 def check_env_applied(parc_root: Path) -> list[Finding]:
     """``HUB_base/.env`` modifié après le dernier démarrage du Hub : information.
 
@@ -513,6 +528,11 @@ def check_env_applied(parc_root: Path) -> list[Finding]:
     if started is None or not env.is_file():
         return []
     modified = datetime.fromtimestamp(env.stat().st_mtime, tz=timezone.utc)
+    # Dernier `hubctl restart` réussi : la configuration en service est à jour
+    # depuis lors, même si compose n'a rien eu à recréer.
+    last_restart = _last_restart_at()
+    if last_restart is not None and last_restart > started:
+        started = last_restart
     if modified <= started:
         return []
     return [Finding(
