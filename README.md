@@ -92,6 +92,7 @@ lecture seule pour les clients (GitHub le garantit).
 | `vault <backup\|restore\|status\|export\|import\|app>` | Coffre de secrets |
 | `jwt <keys\|rotate\|revoke\|cleanup>` | Trousseau de clés JWT du Hub (v0.9.0, HUB_base ≥ 3.59.0) |
 | `seed <fichier>` / `seed export` | Déployer/converger des apps depuis YAML / exporter le parc |
+| `app install <url-git>… [--no-deps] [--yes]` | Installer une application du parc en une commande (et ses dépendances) : `.env`, socle, build, approbation au Hub, démarrage, certificat de la CA du Hub ; ou un fichier seed YAML en argument unique |
 | `socle <build\|status>` | Images HUBsocle + drift `APP_SOCLE_VERSION` |
 | `vpn <sync\|status\|on\|off>` | WireGuard |
 | `debug [app]` | Agent de debug IA (Granite/Ollama) |
