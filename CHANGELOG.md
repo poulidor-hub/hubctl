@@ -1,3 +1,21 @@
+## [0.22.1] - 26 novembre 2026
+### 🐛 Validation VM d'une installation neuve : service atelier, doctor, dépendances, coffre
+Tout vient de la validation bout-en-bout sur VM vierge du 26/11/2026 (installation puis
+`hubctl app install` d'une app issue du gabarit).
+- **`hubctl-atelier` démarrait en boucle (226/NAMESPACE) sur tout déploiement neuf** : le
+  dossier du coffre (runtime, hors git) n'existe pas encore et l'unit est en
+  `ProtectSystem=strict` avec `ReadWritePaths` sur ce dossier. `hubctl init` crée maintenant
+  le dossier (700) avant l'installation du service ; l'unit tolère son absence (`-`).
+- **`doctor` après `restart`** : un `restart` réussi pose un timbre ; une modification du
+  `.env` qui ne fait rien recréer par compose (commentaire, valeur identique) n'est plus
+  signalée « configuration non appliquée » en boucle. Toujours signalée si le `.env`
+  change APRÈS le dernier restart.
+- **`app install`** : `depends.yaml` vide et bien formé (celui du gabarit, `depends_on: []`)
+  ne déclenche plus d'avertissement — seulement un fichier réellement illisible. Sans coffre
+  encore créé (installation fraîche), une information remplace « ⚠ Coffre verrouillé… » ;
+  un coffre existant verrouillé garde son rappel (concerne aussi `seed`).
+- Suite complète : 993 tests verts.
+
 ## [0.22.0] - 26 novembre 2026
 ### ⚡ `hubctl app install <url-git>` — une commande, l'app tourne (plan « installation sans friction », phases 2-3)
 - **Nouvelle commande** `hubctl app install <url-git>… [--no-deps] [--yes]` (aussi un fichier YAML au
