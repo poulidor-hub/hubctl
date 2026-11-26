@@ -72,3 +72,33 @@ def test_restart_without_apps(monkeypatch):
 def test_parser_parses_restart_subcommand():
     args = build_parser().parse_args(["restart"])
     assert args.command == "restart"
+
+
+# ── Timbre de `restart` (verdict VM 26/11) ──
+# Une modification du .env qui ne change rien pour compose (commentaire,
+# valeur identique) ne recrée aucun conteneur : sans timbre, doctor continuait
+# d'afficher « configuration non appliquée — ./hubctl restart » juste APRÈS
+# un restart réussi.
+
+def test_restart_success_leaves_a_stamp(monkeypatch, tmp_path):
+    monkeypatch.setenv("HUBCTL_STATE_DIR", str(tmp_path / "state"))
+    calls = []
+    con, _ = _env(monkeypatch, calls)
+    assert actions.action_restart(con, dry_run=False) == 0
+    assert actions._restart_stamp().is_file(), "un restart réussi pose un timbre pour doctor"
+
+
+def test_restart_failure_leaves_no_stamp(monkeypatch, tmp_path):
+    monkeypatch.setenv("HUBCTL_STATE_DIR", str(tmp_path / "state"))
+    calls = []
+    con, _ = _env(monkeypatch, calls, healthy=False)
+    assert actions.action_restart(con, dry_run=False) == 1
+    assert not actions._restart_stamp().exists(), "un restart en échec ne doit pas marquer la config comme appliquée"
+
+
+def test_restart_dry_run_leaves_no_stamp(monkeypatch, tmp_path):
+    monkeypatch.setenv("HUBCTL_STATE_DIR", str(tmp_path / "state"))
+    calls = []
+    con, _ = _env(monkeypatch, calls)
+    assert actions.action_restart(con, dry_run=True) == 0
+    assert not actions._restart_stamp().exists()

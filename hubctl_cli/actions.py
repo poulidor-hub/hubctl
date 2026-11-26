@@ -3247,6 +3247,18 @@ def _stop_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = N
     return rc == 0
 
 
+def _restart_stamp() -> Path:
+    """Timbre posé par un `restart` réussi : la configuration en service est à jour.
+
+    Une modification du `.env` qui ne change rien pour compose (commentaire,
+    valeur identique) ne recrée aucun conteneur : sans ce repère, `doctor`
+    continuait d'afficher « configuration non appliquée » juste APRÈS un
+    restart (verdict VM 26/11/2026). Lu par `park_checks._last_restart_at`.
+    """
+    base = os.environ.get("HUBCTL_STATE_DIR") or str(Path.home() / ".config" / "hubctl")
+    return Path(base) / "last_restart"
+
+
 def action_restart(console=None, *, dry_run: bool = False) -> int:
     """Recharge la configuration et relance le Hub et les apps actives — par recreate.
 
@@ -3268,6 +3280,13 @@ def action_restart(console=None, *, dry_run: bool = False) -> int:
     elif not _health_check("hub", console=con, timeout=_health_timeout()):
         con.print("[red]✗ Le Hub ne répond pas après relance. Vérifiez `docker compose logs`.[/red]")
         return 1
+    else:
+        try:  # timbre pour doctor : jamais fatal
+            stamp = _restart_stamp()
+            stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            stamp.touch()
+        except OSError as e:
+            con.print(f"[dim](timbre de restart non posé : {e})[/dim]")
 
     apps = [a.name for a in hub_state.get_apps()]
     failed = 0

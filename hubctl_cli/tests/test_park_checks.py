@@ -821,3 +821,34 @@ def test_env_check_skipped_when_hub_not_running(tmp_path, monkeypatch):
     (hub / ".env").write_text("HUB_HOST=x\n")
     monkeypatch.setattr(park_checks, "_hub_api_started_at", lambda: None)  # Docker absent / Hub arrêté
     assert _env_findings(meta) == []
+
+
+def test_env_newer_than_container_but_older_than_last_restart_is_silent(tmp_path, monkeypatch):
+    """.env modifié après le démarrage du conteneur, mais AVANT le dernier
+    `hubctl restart` : la configuration est appliquée (rien à recréer) — silence."""
+    meta, hub, _origin = _make_deployment(tmp_path)
+    env = hub / ".env"
+    env.write_text("HUB_HOST=x\n")
+    now = time.time()
+    monkeypatch.setattr(park_checks, "_hub_api_started_at",
+                        lambda: datetime.fromtimestamp(now - 3600, tz=timezone.utc))
+    monkeypatch.setattr(park_checks, "_last_restart_at",
+                        lambda: datetime.fromtimestamp(now - 60, tz=timezone.utc))
+    before = now - 1800
+    os.utime(env, (before, before))
+    assert _env_findings(meta) == []
+
+
+def test_env_newer_than_last_restart_still_reported(tmp_path, monkeypatch):
+    """.env modifié APRÈS le dernier restart : toujours signalé."""
+    meta, hub, _origin = _make_deployment(tmp_path)
+    env = hub / ".env"
+    env.write_text("HUB_HOST=x\n")
+    now = time.time()
+    monkeypatch.setattr(park_checks, "_hub_api_started_at",
+                        lambda: datetime.fromtimestamp(now - 3600, tz=timezone.utc))
+    monkeypatch.setattr(park_checks, "_last_restart_at",
+                        lambda: datetime.fromtimestamp(now - 1800, tz=timezone.utc))
+    future = now + 300
+    os.utime(env, (future, future))
+    assert len(_env_findings(meta)) == 1
