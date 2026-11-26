@@ -8,9 +8,17 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-console = Console()
+from hubctl_cli import utils
+
+_console = Console()
 
 PACKAGES = {"api": "poulidor/socle-api", "web": "poulidor/socle-web"}
+
+# Budget par défaut du build d'UNE image de base (secondes). Le build passe
+# par utils.run_shell (sortie streamée dans la console de l'appelant, donc
+# aussi dans le TUI) dont la limite par défaut est 120 s : elle tuerait le
+# build en cours — même écart que le premier boot du Hub (cf. hub_make).
+SOCLE_BUILD_TIMEOUT = 1800
 
 
 def find_socle_dir() -> Path:
@@ -56,11 +64,21 @@ def _image_exists(tag: str) -> bool:
     return bool(out.stdout.strip())
 
 
-def socle_build(force: bool = False, dry_run: bool = False) -> int:
+def socle_build(force: bool = False, dry_run: bool = False, *,
+                console: Console | None = None, timeout: int | None = None) -> int:
+    """Construit localement les images manquantes ``poulidor/socle-{api,web}:<V>``.
+
+    ``console`` : console de l'appelant — obligatoire pour que la sortie parte
+    dans le flux du TUI au lieu de stdout. ``timeout`` : budget par image
+    (défaut ``SOCLE_BUILD_TIMEOUT`` ; ``None`` ne désactive PAS la limite).
+    Retourne 124 sur timeout (convention de ``utils.run_shell``).
+    """
+    con = console if console is not None else _console
+    budget = timeout if timeout is not None else SOCLE_BUILD_TIMEOUT
     socle = find_socle_dir()
     version = socle_version(socle)
     if not version:
-        console.print("[red]VERSION HUBsocle introuvable[/red]")
+        con.print("[red]VERSION HUBsocle introuvable[/red]")
         return 1
     ctx_api = socle
     ctx_web = socle / "images" / "web"
@@ -69,18 +87,18 @@ def socle_build(force: bool = False, dry_run: bool = False) -> int:
         ctx = ctx_api if kind == "api" else ctx_web
         dockerfile = "images/api/Dockerfile" if kind == "api" else "Dockerfile"
         if _image_exists(tag) and not force:
-            console.print(f"[green]✓ {tag} existe déjà (cache)[/green] — --force pour rebâtir")
+            con.print(f"[green]✓ {tag} existe déjà (cache)[/green] — --force pour rebâtir")
             continue
         cmd = ["docker", "build", "-f", str(ctx / dockerfile),
                "--build-arg", f"SOCLE_VERSION={version}", "-t", tag, str(ctx)]
-        console.print(f"[cyan]$ {' '.join(cmd)}[/cyan]")
-        if dry_run:
-            continue
-        r = subprocess.run(cmd)
-        if r.returncode != 0:
-            console.print(f"[red]❌ Build échoué pour {tag}. Vérifier le checkout HUBsocle.[/red]")
-            return r.returncode
-    console.print(f"[green]✅ Socle {version} prêt (local, offline-first)[/green]")
+        rc = utils.run_shell(cmd, dry_run=dry_run, console=con, timeout=budget)
+        if rc == 124:
+            con.print(f"[red]⏳ Timeout ({budget}s) sur le build de {tag} — relance `./hubctl socle build` (le cache Docker conserve l'avancement).[/red]")
+            return rc
+        if rc != 0:
+            con.print(f"[red]❌ Build échoué pour {tag}. Vérifier le checkout HUBsocle.[/red]")
+            return rc
+    con.print(f"[green]✅ Socle {version} prêt (local, offline-first)[/green]")
     return 0
 
 
@@ -97,5 +115,5 @@ def socle_status() -> int:
         state = "[green]à jour[/green]" if ver == current else (
             "[yellow]socle non déclaré (fork template)[/yellow]" if ver == "-" else "[red]en retard[/red]")
         table.add_row(app, ver, state)
-    console.print(table)
+    _console.print(table)
     return 0

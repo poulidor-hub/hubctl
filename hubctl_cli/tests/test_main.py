@@ -535,6 +535,124 @@ def test_restore_command_catches_exception(monkeypatch):
     assert rc == 1
 
 
+# ── app install : une commande, l'app tourne ──
+
+
+class TestAppInstallParser:
+    def test_urls_et_flags(self):
+        a = build_parser().parse_args(
+            ["app", "install", "git@x:a.git", "git@x:b.git", "--no-deps", "--yes"])
+        assert a.command == "app" and a.app_command == "install"
+        assert a.urls == ["git@x:a.git", "git@x:b.git"]
+        assert a.no_deps is True and a.install_yes is True
+
+    def test_defauts(self):
+        a = build_parser().parse_args(["app", "install", "git@x:a.git"])
+        assert a.no_deps is False and a.install_yes is False
+
+    def test_url_obligatoire(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["app", "install"])
+
+    def test_app_sans_sous_commande(self):
+        assert build_parser().parse_args(["app"]).app_command is None
+
+    def test_aide_en_francais(self, capsys):
+        with pytest.raises(SystemExit) as e:
+            build_parser().parse_args(["app", "install", "--help"])
+        assert e.value.code == 0
+        out = capsys.readouterr().out
+        assert "installation" in out.lower()
+        assert "dépendances" in out and "--no-deps" in out and "--yes" in out
+        assert "seed-apps.yaml" in out and "HUBCTL_ADMIN_PASSWORD" in out
+        assert "Code de sortie" in out and "show this help" not in out
+
+
+def test_app_help_en_francais(capsys):
+    with pytest.raises(SystemExit) as e:
+        build_parser().parse_args(["app", "--help"])
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "hubctl app install <url-git>" in out and "show this help" not in out
+
+
+def _install_kwargs(**kw):
+    base = {"no_deps": False, "yes": True, "dry_run": False,
+            "prompt_password": None, "confirm": None}
+    base.update(kw)
+    return base
+
+
+def test_dispatch_app_install_non_interactif_yes_sans_prompt(monkeypatch):
+    """Sans TTY : aucune confirmation ni prompt (défaut effectif de --yes)."""
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_install", return_value=0) as fn:
+        rc = m.main(["app", "install", "git@x:a.git", "git@x:b.git"])
+    assert rc == 0
+    fn.assert_called_once()
+    assert fn.call_args.args[1] == ["git@x:a.git", "git@x:b.git"]
+    assert fn.call_args.kwargs == _install_kwargs()
+
+
+def test_dispatch_app_install_interactif_prompt_et_confirmation(monkeypatch):
+    """Avec TTY : confirmation et prompt masqué deviennent possibles."""
+    monkeypatch.setattr(m, "_interactive", lambda: True)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_install", return_value=0) as fn:
+        rc = m.main(["app", "install", "--no-deps", "git@x:a.git"])
+    assert rc == 0
+    kwargs = fn.call_args.kwargs
+    assert kwargs["yes"] is False and kwargs["no_deps"] is True
+    assert callable(kwargs["prompt_password"]) and callable(kwargs["confirm"])
+
+
+def test_dispatch_app_install_yes_explicite_meme_avec_tty(monkeypatch):
+    monkeypatch.setattr(m, "_interactive", lambda: True)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_install", return_value=0) as fn:
+        m.main(["app", "install", "--yes", "git@x:a.git"])
+    assert fn.call_args.kwargs["yes"] is True
+
+
+def test_dispatch_app_install_retourne_rc_action(monkeypatch):
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_install", return_value=1):
+        assert m.main(["app", "install", "git@x:a.git"]) == 1
+
+
+def test_dispatch_app_install_dry_run_global(monkeypatch):
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_install", return_value=0) as fn:
+        assert m.main(["--dry-run", "app", "install", "git@x:a.git"]) == 0
+    assert fn.call_args.kwargs["dry_run"] is True
+
+
+def test_dispatch_app_sans_sous_commande_affiche_l_usage(monkeypatch, capsys):
+    with mock.patch.object(m, "action_app_install") as fn:
+        rc = m.main(["app"])
+    assert rc == 2
+    fn.assert_not_called()
+    assert "hubctl app install" in capsys.readouterr().out
+
+
+def test_dispatch_app_install_interrompu_retourne_130(monkeypatch):
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_install", side_effect=KeyboardInterrupt):
+        assert m.main(["app", "install", "git@x:a.git"]) == 130
+
+
+def test_dispatch_app_install_exception_retourne_1(monkeypatch, capsys):
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_install", side_effect=RuntimeError("boom")):
+        assert m.main(["app", "install", "git@x:a.git"]) == 1
+    assert "boom" in capsys.readouterr().out
+
+
 # ── `init --help` dit la reprise (verdict VM 26/11 : seule la liste des
 #    sous-commandes de `hubctl --help` la mentionnait) ──
 

@@ -34,7 +34,7 @@ Menu plat, touches différentes selon le mode courant :
 
 | Mode | Touches |
 |------|---------|
-| **PROD** | `1` Démarrer tout · `2` Arrêter tout · `3` Mettre à jour · `4` Coffre · `0`/`Échap` Quitter |
+| **PROD** | `1` Démarrer tout · `2` Arrêter tout · `3` Mettre à jour · `4` Coffre · `5` Installer une application · `0`/`Échap` Quitter |
 | **DEV** | `1` Démarrer prod · `2` Arrêter prod · `3` Démarrer dev · `4` Arrêter dev · `5` Mettre à jour · `6` Coffre · `0`/`Échap` Quitter |
 
 Le tableau de bord affiche en permanence les services, le disque, les apps
@@ -183,10 +183,71 @@ l'activation (créé par n'importe quel lancement de `./hubctl`).
 
 Toutes les confirmations sont des **choix** (Oui/Non), pas de la saisie libre.
 
-**Ajouter une app** : via un fichier seed — `./hubctl seed apps.yaml` (clone,
-détection de config, écriture du `.env`, build, démarrage, sync coffre) — ou en
-clonant manuellement dans `APPS/<nom-du-dépôt>` puis en lançant
-`INITIALISE.py`.
+**Ajouter une app** : `./hubctl app install <url-git>` (une commande, l'app
+tourne — cf. ci-dessous) ou, pour tout un parc, un fichier seed —
+`./hubctl seed apps.yaml` (clone, détection de config, écriture du `.env`,
+build, démarrage, sync coffre).
+
+## Installer une application (`app install`)
+
+```bash
+./hubctl app install git@github.com:exemple/app-exemple.git   # une commande, l'app tourne
+./hubctl app install a.git b.git --no-deps --yes              # plusieurs, sans les dépendances, scriptable
+./hubctl app install seed-apps.yaml                           # un fichier seed YAML, en argument unique
+```
+
+Pour chaque URL git, dans l'ordre et sans étape cachée :
+
+1. **Prérequis** : Hub sain, Docker joignable, `APPS/` inscriptible.
+2. **Clone** dans `APPS/<slug>` (slug = nom du dépôt, validé par la règle du
+   registre Hub `^[a-z0-9-]{2,50}$`). Si l'app y est déjà : « déjà installée —
+   `./hubctl update <slug>` », on passe.
+3. **Dépendances d'abord** (`depends.yaml` → `depends_on: [{slug, note}]`) :
+   chaque dépendance absente du parc est installée avant l'app, dans l'ordre
+   déclaré, une seule fois. Son URL est résolue dans `seed-apps.yaml` (racine
+   du parc), sinon au registre du Hub (`git_repo_url`, jeton admin).
+   Introuvable, cycle, ou dépendance en échec : l'app n'est pas installée
+   (clone retiré), les apps suivantes continuent. `--no-deps` les ignore avec
+   un avertissement.
+4. **`.env`** généré depuis `.env.example`, puis **secrets par défaut
+   neutralisés** : toute variable `${VAR:-défaut}` du `docker-compose.yml` dont
+   le nom désigne un secret et dont le défaut ressemble à un placeholder
+   (`changeme`, `admin123`, `password`…) reçoit une valeur aléatoire — jamais
+   une valeur déjà choisie, jamais un DSN, une URL ou un réglage.
+5. **Socle garanti** : si une image `poulidor/socle-{api,web}:<V>` manque
+   (`HUBsocle/VERSION`), `socle build` est lancé — `make sync-env` refuse sans
+   elle. Si le compose passe le contexte de build `socle` du frontend par un
+   lien `socle` local (lien de développement, gitignored, absent d'un clone
+   neuf), le lien est créé vers le `HUBsocle` du parc. Puis `make sync-env`,
+   `make build` (budget 1800 s).
+6. **Approbation** : une app auto-enregistrée naît « en attente » ; hubctl la
+   pré-crée **approuvée** au registre (`POST /api/apps/`, payload de l'UI : les
+   ports lus dans le `.env` après `sync-env`, le Hub en déduit `api_url`,
+   `frontend_url` et `callback_url`). Une entrée déjà présente n'est jamais
+   recréée ; un rejet d'administrateur n'est jamais modifié.
+7. **`make up`** (600 s) puis **health** (300 s), **certificat signé par la CA
+   du Hub** (relance de l'api, qui déclenche `cert_sync` au démarrage, puis du
+   frontend qui charge les certificats), sync du coffre.
+8. **Résumé** : app, état au Hub (approuvée / en attente), certificat (CA du
+   Hub / auto-signé), URL `https://<host>:<port_https>`, et le rappel du
+   certificat racine à installer sur les postes
+   (`http://<host>:<port_api_hub>/api/pki/ca.crt`).
+
+**Mot de passe admin du Hub** (approbation) — jamais mémorisé, écrit ni
+journalisé : `HUBCTL_ADMIN_PASSWORD`, sinon `ADMIN_PASSWORD` de `HUB_base/.env`
+(périmé dès que l'admin l'a changé, ce qui est forcé à la première connexion),
+sinon saisie masquée (terminal interactif). Sans mot de passe, l'installation
+n'est **pas** bloquée : l'app tourne et reste « en attente d'approbation »
+(badge **En attente** dans le Hub) — la relancer avec `HUBCTL_ADMIN_PASSWORD`
+l'approuve, même déjà installée.
+
+**Confirmations** : en terminal interactif, le plan (l'app et ses dépendances)
+est confirmé ; `--yes` les supprime (défaut effectif sans TTY). Un refus laisse
+l'app non installée (clone retiré, code 1). Le menu PROD (touche `5`) demande
+l'URL, un mot de passe admin facultatif, confirme, puis suit le même chemin.
+
+**Code de sortie** : 0 si toutes les apps demandées répondent, 1 si au moins un
+échec. `--dry-run` n'exécute rien, pas même une commande Docker en lecture.
 
 ## Raccourcis clavier
 

@@ -366,3 +366,94 @@ def test_menu_pause_not_polluted():
     Garde : après la suite, menu.pause doit être la fonction réelle."""
     assert getattr(menu.pause, "__name__", "") == "pause", \
         "menu.pause a été remplacé et jamais restauré (MonkeyPatch manuel sans undo)"
+
+
+# ── Installer une application (URL git) — touche 5 du menu PROD ──
+
+
+def test_build_key_hints_prod_mentionne_l_installation_d_app(monkeypatch):
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
+    assert "Installer une application" in menu._build_key_hints().plain
+
+
+def test_main_loop_prod_key_5_dispatches_install(monkeypatch):
+    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
+    monkeypatch.setattr(menu.hub_state, "get_mode", lambda: "prod")
+    c = _fake_canvas()
+    vault = mock.Mock()
+    it = iter([KeyChar("5"), KeyCtrlC()])
+    monkeypatch.setattr(menu.keys, "read_key", lambda fd, timeout=None: next(it, None))
+    called = []
+    monkeypatch.setattr(menu, "view_install_app", lambda canvas: called.append(canvas))
+    with pytest.raises(KeyboardInterrupt):
+        menu.main_loop(c, vault)
+    assert called == [c]
+
+
+def _menu_install(monkeypatch, *, url="  git@github.com:exemple/Mon-App.git ", mdp="admin-saisi",
+                  confirmation=True):
+    c = _fake_canvas()
+    monkeypatch.setattr(menu, "pause", lambda *a, **kw: None)
+    monkeypatch.setattr(menu.widgets, "text", lambda canvas, msg: url)
+    monkeypatch.setattr(menu.widgets, "password", lambda canvas, msg: mdp)
+    confirm = mock.Mock(return_value=confirmation)
+    monkeypatch.setattr(menu.widgets, "confirm", confirm)
+    return c, confirm
+
+
+def test_view_install_app_demande_url_mdp_confirmation_puis_meme_chemin(monkeypatch):
+    """URL → mot de passe admin (masqué, facultatif) → confirmation → le même
+    chemin que la CLI (`actions.action_app_install`), sans re-confirmation."""
+    c, confirm = _menu_install(monkeypatch)
+    with mock.patch.object(menu.actions, "action_app_install", return_value=0) as run:
+        assert menu.view_install_app(c) is True
+    run.assert_called_once()
+    args, kwargs = run.call_args.args, run.call_args.kwargs
+    assert args[1] == ["git@github.com:exemple/Mon-App.git"], "l'URL est nettoyée"
+    assert kwargs["yes"] is True, "le menu a déjà confirmé (widget)"
+    assert kwargs["prompt_password"]() == "admin-saisi"
+    assert "Mon-App" in confirm.call_args.args[1]
+
+
+def test_view_install_app_mdp_vide_laisse_en_attente(monkeypatch):
+    c, _confirm = _menu_install(monkeypatch, mdp="")
+    with mock.patch.object(menu.actions, "action_app_install", return_value=0) as run:
+        menu.view_install_app(c)
+    assert run.call_args.kwargs["prompt_password"] is None
+
+
+def test_view_install_app_esc_sur_url_n_installe_rien(monkeypatch):
+    c, _confirm = _menu_install(monkeypatch, url=menu.widgets.ESC)
+    with mock.patch.object(menu.actions, "action_app_install") as run:
+        menu.view_install_app(c)
+    run.assert_not_called()
+
+
+def test_view_install_app_url_vide_n_installe_rien(monkeypatch):
+    c, _confirm = _menu_install(monkeypatch, url="   ")
+    with mock.patch.object(menu.actions, "action_app_install") as run:
+        menu.view_install_app(c)
+    run.assert_not_called()
+
+
+def test_view_install_app_confirmation_refusee_n_installe_rien(monkeypatch):
+    c, _confirm = _menu_install(monkeypatch, confirmation=False)
+    with mock.patch.object(menu.actions, "action_app_install") as run:
+        menu.view_install_app(c)
+    run.assert_not_called()
+
+
+def test_view_install_app_rc_ko_signale_l_echec(monkeypatch):
+    c, _confirm = _menu_install(monkeypatch)
+    pauses = []
+    monkeypatch.setattr(menu, "pause", lambda canvas, msg=None: pauses.append(msg))
+    with mock.patch.object(menu.actions, "action_app_install", return_value=1):
+        assert menu.view_install_app(c) is False
+    assert pauses and "✗" in pauses[-1].plain
+
+
+def test_view_install_app_exception_signale_l_echec(monkeypatch, capsys):
+    c, _confirm = _menu_install(monkeypatch)
+    with mock.patch.object(menu.actions, "action_app_install", side_effect=RuntimeError("docker down")):
+        assert menu.view_install_app(c) is False
+    assert "docker down" in capsys.readouterr().err

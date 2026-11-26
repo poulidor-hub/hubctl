@@ -12,12 +12,17 @@ import socket
 import subprocess
 import tarfile
 import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
-from hubctl_cli import hub_state, utils, env_manager
+from hubctl_cli import hub_state, utils, env_manager, socle
 from hubctl_cli.docker_pools import docker0_gateway, network_prune
 from hubctl_cli import park_checks
 
@@ -1247,13 +1252,35 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout
     )
 
 
-def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> bool:
-    """Build + up + health check. Retourne True si l'app est saine.
+# ── Budgets de démarrage d'une app (secondes) ──
+# Deux situations, deux budgets — le même chemin (cf. _build_up_health) :
+#  - PREMIER DÉMARRAGE d'une app (seed CAS A/B, `app install`) : build des
+#    images api + frontend sans cache, migrations, auto-enregistrement. Même
+#    famille de budget que le premier boot du Hub (_build_timeout) : sur une
+#    petite VM, le seul build du Hub dépasse 120 s (E2E 26/11) — les anciens
+#    600/120/60 ne laissaient aucune marge à un premier build d'app.
+#  - CONVERGENCE d'une app déjà déployée (seed CAS C) : images en cache,
+#    mêmes valeurs que `hubctl update`.
+INSTALL_BUILD_TIMEOUT = 1800
+INSTALL_UP_TIMEOUT = 600
+INSTALL_HEALTH_TIMEOUT = 300
+_CONVERGE_BUILD_TIMEOUT = 600
+_CONVERGE_UP_TIMEOUT = 120
+_CONVERGE_HEALTH_TIMEOUT = 60
 
-    Étapes :
-    1. make build (docker compose build, avec cache) — timeout 600s
-    2. make up (docker compose up -d) — timeout 120s
-    3. Health check — timeout 60s
+
+def _build_up_health(console, dest, *, dry_run: bool = False,
+                     build_timeout: int = INSTALL_BUILD_TIMEOUT,
+                     up_timeout: int = INSTALL_UP_TIMEOUT,
+                     health_timeout: int = INSTALL_HEALTH_TIMEOUT,
+                     before_up=None) -> tuple[bool, str]:
+    """Le chemin unique build → up → health d'une app. Retourne (ok, étape).
+
+    `étape` nomme celle qui a échoué (« build », « up », « health check »,
+    préfixée « timeout » quand le budget est épuisé) — « » si l'app est saine.
+    `before_up` : crochet exécuté entre le build et le démarrage (`app install`
+    y pré-crée l'app approuvée au registre du Hub : lancée avant, elle naîtrait
+    « en attente d'approbation »).
 
     On ne peut pas faire seulement 'make up' car certains Makefiles n'ont
     pas --build dans la cible up (template canonique). On ne fait pas non
@@ -1265,22 +1292,33 @@ def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> boo
 
     if dry_run:
         con.print(f"[dim](dry-run) make -C {dest} build + up[/dim]")
-        return True
+        return True, ""
 
     con.print(f"[cyan]🔨 Build de {app_name}...[/cyan]")
-    rc = app_make(app_name, "build", dry_run=False, console=con, timeout=600)
+    rc = app_make(app_name, "build", dry_run=False, console=con, timeout=build_timeout)
     if rc != 0:
+        if rc == 124:
+            con.print(f"[red]✗ Build de {app_name} toujours en cours après {build_timeout}s (budget épuisé).[/red]")
+            con.print(f"[dim]Le travail continue côté Docker — suivez `docker compose logs -f` dans {dest}, "
+                      "puis relance `make up`.[/dim]")
+            return False, "timeout build"
         con.print("[red]✗ Échec du build.[/red]")
-        return False
+        return False, "build"
+
+    if before_up is not None:
+        before_up()
 
     con.print(f"[cyan]🚀 Démarrage de {app_name}...[/cyan]")
-    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=120)
+    rc = app_make(app_name, "up", dry_run=False, console=con, timeout=up_timeout)
     if rc != 0:
+        if rc == 124:
+            con.print(f"[red]✗ Démarrage de {app_name} toujours en cours après {up_timeout}s (budget épuisé).[/red]")
+            return False, "timeout up"
         con.print("[red]✗ Échec du démarrage.[/red]")
-        return False
+        return False, "up"
 
     con.print("[cyan]💚 Health check...[/cyan]")
-    ok = _health_check(app_name, console=con, timeout=60)
+    ok = _health_check(app_name, console=con, timeout=health_timeout)
     if not ok:
         con.print("[yellow]⚠ L'app n'a pas passé le health check.[/yellow]")
         con.print("[dim]Logs récents :[/dim]")
@@ -1293,9 +1331,19 @@ def _build_and_start_app(console, dest, config, *, dry_run: bool = False) -> boo
         except Exception:
             pass
         con.print(f"[yellow]L'app est clonée dans {dest} — corrige le .env et relance 'make up'.[/yellow]")
-        return False
+        return False, "health check"
 
-    return True
+    return True, ""
+
+
+def _build_and_start_app(console, dest, config, *, dry_run: bool = False, before_up=None) -> bool:
+    """Premier démarrage d'une app : build + up + health check (cf. _build_up_health).
+
+    Retourne True si l'app est saine. Chemin partagé par le seed (nouvelle app)
+    et `app install` — `config` est conservé par compatibilité de signature.
+    """
+    ok, _step = _build_up_health(console, dest, dry_run=dry_run, before_up=before_up)
+    return ok
 
 
 def _get_vault():
@@ -1379,12 +1427,13 @@ def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tup
         rc = utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
         if rc != 0:
             return (False, "git pull failed")
-        if app_make(slug, "build", dry_run=False, console=con, timeout=600) != 0:
-            return (False, "build failed")
-        if app_make(slug, "up", dry_run=False, console=con, timeout=120) != 0:
-            return (False, "up failed")
-        if not _health_check(slug, console=con, timeout=60):
-            return (False, "health check failed")
+        # Même chemin que le premier démarrage, budget de convergence.
+        ok, step = _build_up_health(
+            con, dest, dry_run=False,
+            build_timeout=_CONVERGE_BUILD_TIMEOUT, up_timeout=_CONVERGE_UP_TIMEOUT,
+            health_timeout=_CONVERGE_HEALTH_TIMEOUT)
+        if not ok:
+            return (False, f"{step} failed")
         return (True, "mise à jour")
 
     except Exception as e:
@@ -1483,6 +1532,16 @@ def _seed_report(console, results: list[tuple[str, bool, str]]) -> None:
     con.print(f"[bold]{ok_count}/{len(results)} app(s) réussies[/bold]")
 
 
+def _hub_precheck(con) -> bool:
+    """Le Hub doit être sain avant de déployer (précheck commun au seed et à
+    `app install` ; skippé en dry-run par les deux appelants)."""
+    con.print("[cyan]♢ Précheck : le hub doit être sain…[/cyan]")
+    if not _health_check("hub", console=con, timeout=30):
+        con.print("[red]✗ Hub non disponible. Lancez `hubctl start` d'abord.[/red]")
+        return False
+    return True
+
+
 def action_seed(console, seed_file: str, *, prune: bool = False, dry_run: bool = False) -> int:
     """Déploie/converge les apps listées dans un fichier seed YAML.
 
@@ -1491,11 +1550,8 @@ def action_seed(console, seed_file: str, *, prune: bool = False, dry_run: bool =
     con = console or _console
 
     # 1. Précheck hub (skippé en dry-run)
-    if not dry_run:
-        con.print("[cyan]♢ Précheck : le hub doit être sain…[/cyan]")
-        if not _health_check("hub", console=con, timeout=30):
-            con.print("[red]✗ Hub non disponible. Lancez `hubctl start` d'abord.[/red]")
-            return 1
+    if not dry_run and not _hub_precheck(con):
+        return 1
 
     # 2. Lecture du fichier seed
     from pathlib import Path
@@ -1528,6 +1584,1233 @@ def action_seed(console, seed_file: str, *, prune: bool = False, dry_run: bool =
     # 5. Rapport final + code de sortie
     _seed_report(con, results)
     return 0 if all(ok for _, ok, _ in results) else 1
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# `hubctl app install <url-git>` — une commande, l'app tourne
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Le seed et `app install` partagent les mêmes fonctions (clone, structure,
+# config, .env, _build_up_health, coffre). `app install` ajoute, autour de ce
+# socle commun, ce qui manquait pour qu'une app neuve soit VRAIMENT en service :
+# dépendances installées d'abord, secrets par défaut neutralisés, images du
+# socle garanties (`make sync-env` refuse sans elles), app pré-créée APPROUVÉE
+# au registre (l'auto-enregistrement la fait naître « en attente »), certificat
+# signé par la CA du Hub, budgets de premier démarrage.
+#
+# Contrat de sortie : 0 si toutes les apps demandées répondent, 1 sinon.
+
+INSTALL_SOCLE_TIMEOUT = 1800       # build des images de base (api + web)
+INSTALL_SYNC_ENV_TIMEOUT = 300
+INSTALL_RESTART_TIMEOUT = 120      # relance api / frontend (certificat)
+INSTALL_RESTART_HEALTH_TIMEOUT = 120
+INSTALL_CERT_WAIT_TIMEOUT = 60     # cert_sync au démarrage de l'api
+
+# Règle de slug du registre Hub (AppCreateSimplified.slug / admin-app-form.js).
+_INSTALL_SLUG_RE = re.compile(r"^[a-z0-9-]{2,50}$")
+
+
+def _install_url(arg: str) -> str:
+    """URL git validée (forme minimale du seed : un hôte et un chemin)."""
+    url = (arg or "").strip()
+    if not url or ("/" not in url and ":" not in url):
+        raise ValueError(f"URL git invalide : {arg}")
+    return url
+
+
+def _install_slug(url: str) -> str:
+    """Slug d'une app à installer : nom du dépôt (règle du seed), validé par la
+    règle du registre Hub. Lève ValueError avec un message-action."""
+    name = repo_name_from_url(url)
+    if not name:
+        raise ValueError(f"URL git invalide : {url}")
+    slug = name.lower().replace("_", "-")
+    if not _INSTALL_SLUG_RE.match(slug):
+        raise ValueError(
+            f"Slug invalide dérivé de {url} : « {slug} » — 2 à 50 caractères, "
+            "minuscules, chiffres ou tirets uniquement")
+    return slug
+
+
+def _install_targets(args: list[str]) -> list[tuple[str, str]]:
+    """Arguments de la commande → [(url, slug), ...].
+
+    Accepte des URL git, ou — en argument unique — un fichier YAML au format
+    seed (liste d'URL). Lève ValueError (message affichable) sur tout problème.
+    """
+    if not args:
+        raise ValueError("Aucune cible : hubctl app install <url-git> [url-git…]")
+    yaml_args = [a for a in args if _looks_like_seed_file(a)]
+    if yaml_args:
+        if len(args) != 1:
+            raise ValueError("Un fichier seed YAML doit être l'unique argument de `app install`.")
+        import yaml
+        try:
+            return _load_seed_file(Path(args[0]))
+        except FileNotFoundError as e:
+            raise ValueError(str(e)) from None
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            raise ValueError(f"Fichier seed illisible : {args[0]} — {e}") from None
+    return [(u, _install_slug(u)) for u in (_install_url(a) for a in args)]
+
+
+def _looks_like_seed_file(arg: str) -> bool:
+    """Argument qui désigne un fichier seed YAML (extension, ou fichier existant)."""
+    if (arg or "").lower().endswith((".yaml", ".yml")):
+        return True
+    try:
+        return Path(arg).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _apps_dir_writable() -> bool:
+    """APPS/ inscriptible — ou créable (parent inscriptible : sur un clone
+    frais, Git ne suit pas les dossiers vides). Contrôle pur : ne crée rien."""
+    apps = hub_state.APPS_DIR
+    try:
+        if apps.exists():
+            return os.access(apps, os.W_OK | os.X_OK)
+        return os.access(apps.parent, os.W_OK | os.X_OK)
+    except OSError:
+        return False
+
+
+def _install_precheck(con, *, dry_run: bool = False) -> bool:
+    """Prérequis d'un déploiement d'app : Hub sain (précheck du seed, skippé en
+    dry-run), Docker joignable, APPS/ inscriptible."""
+    if dry_run:
+        con.print("[dim](dry-run) Précheck : Hub sain, Docker joignable, APPS/ inscriptible[/dim]")
+        return True
+    if not _hub_precheck(con):
+        return False
+    if hub_state.check_docker() is False:
+        con.print("[red]✗ Docker injoignable. Vérifiez que le daemon tourne.[/red]")
+        return False
+    if not _apps_dir_writable():
+        con.print(f"[red]✗ {hub_state.APPS_DIR} n'est pas inscriptible — lancez hubctl avec "
+                  "l'utilisateur du parc (cf. install.sh).[/red]")
+        return False
+    try:
+        hub_state.APPS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        con.print(f"[red]✗ Impossible de créer {hub_state.APPS_DIR} : {escape(str(e))}[/red]")
+        return False
+    return True
+
+
+def _installed_app_dir(slug: str) -> Path | None:
+    """Dossier d'une app déjà installée : APPS/<slug>, sinon un dossier dont le
+    .env déclare APP_SLUG=<slug> — le nom du dossier diverge souvent du slug du
+    registre (même résolution que pra_restore.rebuild_app). None si absente."""
+    from hubctl_cli.pra_restore import _resolve_app_dir
+    return _resolve_app_dir(slug)
+
+
+def _read_depends(dest: Path) -> list[tuple[str, str]]:
+    """Dépendances déclarées par l'app : depends.yaml → depends_on: [{slug, note}].
+
+    Tolérance du gabarit (skill app-dependencies) : fichier absent, YAML cassé
+    ou forme inattendue → [] (app autonome), jamais un échec d'installation.
+    """
+    f = dest / "depends.yaml"
+    if not f.exists():
+        return []
+    import yaml
+    try:
+        data = yaml.safe_load(f.read_text(errors="replace")) or {}
+    except (yaml.YAMLError, OSError, UnicodeError):
+        return []
+    items = data.get("depends_on") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    deps: list[tuple[str, str]] = []
+    for item in items:
+        if isinstance(item, str):
+            deps.append((item.strip(), ""))
+        elif isinstance(item, dict) and isinstance(item.get("slug"), str):
+            note = item.get("note")
+            deps.append((item["slug"].strip(), note.strip() if isinstance(note, str) else ""))
+    return deps
+
+
+def _parc_seed_urls() -> tuple[dict[str, str], str | None]:
+    """seed-apps.yaml de la racine du parc → ({slug: url}, erreur).
+
+    Source (a) de résolution des dépendances. Fichier absent → ({}, None) ;
+    illisible → ({}, raison) : l'appelant prévient, sans bloquer."""
+    f = hub_state.PARC_ROOT / "seed-apps.yaml"
+    if not f.exists():
+        return {}, None
+    try:
+        return {slug: url for url, slug in _load_seed_file(f)}, None
+    except (OSError, ValueError) as e:
+        return {}, str(e)
+
+
+# ── API du Hub depuis l'hôte ─────────────────────────────────────────────────
+
+
+# L'API du Hub est joignable en local (localhost:<HUB_API_PORT>) : un HTTP_PROXY
+# configuré sur le serveur ne doit pas détourner un login admin vers un proxy.
+_HUB_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _hub_api(method: str, path: str, *, token: str | None = None,
+             body: dict | None = None, timeout: int = 30) -> tuple[int, Any]:
+    """Appel HTTP à l'API du Hub. Retourne (statut, corps JSON — ou texte brut —
+    ; 0 et None si le Hub est injoignable). Ne lève jamais : l'appelant décide.
+
+    Les chemins sont EXACTS (`/api/apps/`, slash final) : un POST ne suit pas
+    une redirection 307. Le corps n'est jamais journalisé (login = mot de passe).
+    """
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    base = f"http://localhost:{_read_hub_env_value('HUB_API_PORT', '8000') or '8000'}"
+    req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+    try:
+        with _HUB_OPENER.open(req, timeout=timeout) as resp:
+            status, raw = resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        status = e.code
+        try:
+            raw = e.read()
+        except Exception:          # corps déjà consommé ou connexion coupée
+            raw = b""
+    except (OSError, ValueError):  # URLError hérite d'OSError ; ValueError : URL
+        return 0, None
+    text = raw.decode("utf-8", "replace")
+    try:
+        return status, json.loads(text)
+    except ValueError:
+        return status, text
+
+
+def _hub_admin_login(username: str, password: str) -> tuple[int, str | None, float]:
+    """POST /api/auth/login → (statut, jeton d'accès, expiration en secondes epoch).
+
+    Statut 0 = Hub injoignable ; jeton None si refusé. Le mot de passe ne
+    transite que dans le corps de la requête — jamais en ligne de commande,
+    jamais journalisé.
+    """
+    status, data = _hub_api("POST", "/api/auth/login", timeout=15,
+                            body={"username": username, "password": password})
+    token = data.get("access_token") if status == 200 and isinstance(data, dict) else None
+    if not isinstance(token, str) or not token:
+        return status, None, 0.0
+    expires = time.time() + 3600
+    try:
+        expires = datetime.datetime.fromisoformat(
+            str(data.get("expires_at")).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        pass
+    return status, token, expires
+
+
+class _HubAdminSession:
+    """Jeton admin du Hub pour la durée d'une commande — en mémoire seulement.
+
+    Ordre de résolution du mot de passe (jamais mémorisé, écrit ni journalisé) :
+    HUBCTL_ADMIN_PASSWORD → ADMIN_PASSWORD de HUB_base/.env → prompt masqué
+    fourni par l'appelant (getpass en CLI, widget dans le TUI ; absent sans
+    terminal interactif). `ADMIN_PASSWORD` du .env est PÉRIMÉ dès que l'admin a
+    changé son mot de passe (forcé à la première connexion).
+
+    Sans jeton, rien n'est bloqué : l'app s'auto-enregistre « en attente ».
+    Une seule connexion réussie par commande (jeton réutilisé), et une seule
+    séquence de prompt. Au plus 2 mots de passe non interactifs + 3 saisies =
+    5 tentatives : la limite anti-bruteforce du Hub (5/min par IP).
+    """
+
+    PROMPT_ATTEMPTS = 3
+
+    def __init__(self, console, *, prompt_password=None):
+        self._con = console
+        self._prompt = prompt_password
+        self._token: str | None = None
+        self._expires = 0.0
+        self._tried_configured = False   # mots de passe non interactifs déjà essayés
+        self._denied = False             # on n'insiste plus (prompt échoué ou 429)
+
+    def token(self, *, allow_prompt: bool = True) -> str | None:
+        """Jeton admin, ou None si indisponible. `allow_prompt=False` : jamais de
+        saisie (apps déjà installées : un prompt y serait une surprise)."""
+        if self._token:
+            if time.time() < self._expires - 60:
+                return self._token
+            # Expiré en cours de commande (build très long) : on recommence,
+            # mots de passe non interactifs compris.
+            self._token = None
+            self._tried_configured = False
+            self._denied = False
+        if self._denied:
+            return None
+        if not self._tried_configured:
+            self._tried_configured = True
+            if self._login_configured():
+                return self._token
+            if self._denied:                # 403 / 429 : insister ne servirait à rien
+                return None
+        if not allow_prompt or self._prompt is None:
+            return None
+        self._denied = True              # quoi qu'il arrive ensuite : pas de re-prompt
+        return self._login_prompt()
+
+    @property
+    def username(self) -> str:
+        return _read_hub_env_value("ADMIN_USERNAME") or "admin"
+
+    def _accept(self, token: str, expires: float, source: str) -> bool:
+        self._token, self._expires = token, expires
+        self._con.print(f"[green]✓ Jeton admin du Hub obtenu ({escape(source)})[/green]")
+        return True
+
+    def _refused(self, status: int, source: str | None) -> None:
+        if status == 429:
+            self._con.print("[yellow]⚠ Trop de tentatives de connexion au Hub (HTTP 429) — "
+                            "réessayez dans une minute.[/yellow]")
+            self._denied = True
+        elif status == 0:
+            self._con.print("[yellow]⚠ Hub injoignable — login admin impossible.[/yellow]")
+        elif status == 403:
+            self._con.print("[yellow]⚠ Compte admin refusé par le Hub (HTTP 403 — désactivé ?) — "
+                            "approbation impossible.[/yellow]")
+            self._denied = True
+        elif source:
+            self._con.print(f"[dim]Mot de passe admin de {escape(source)} refusé (HTTP {status}) "
+                            "— il est changé à la première connexion.[/dim]")
+        else:
+            self._con.print(f"[yellow]Mot de passe admin incorrect (HTTP {status}).[/yellow]")
+
+    def _login_configured(self) -> bool:
+        """Mots de passe non interactifs, dans l'ordre : HUBCTL_ADMIN_PASSWORD,
+        puis ADMIN_PASSWORD du .env du Hub — tenté aussi quand le premier est
+        refusé (sur un Hub neuf, celui du .env est encore valide)."""
+        env_pw = os.environ.get("HUBCTL_ADMIN_PASSWORD")
+        file_pw = _read_hub_env_value("ADMIN_PASSWORD")
+        candidates = []
+        if env_pw:
+            candidates.append(("HUBCTL_ADMIN_PASSWORD", env_pw))
+        if file_pw and file_pw != env_pw:
+            candidates.append(("ADMIN_PASSWORD de HUB_base/.env", file_pw))
+        for source, pw in candidates:
+            if not pw:
+                continue
+            status, token, expires = _hub_admin_login(self.username, pw)
+            if token:
+                return self._accept(token, expires, source)
+            self._refused(status, source)
+        return False
+
+    def _login_prompt(self) -> str | None:
+        for _ in range(self.PROMPT_ATTEMPTS):
+            try:
+                pw = self._prompt()
+            except EOFError:
+                return None              # entrée fermée (Ctrl-D) : on renonce, sans bloquer
+            if not pw:
+                self._con.print("[dim]Pas de mot de passe admin saisi — l'app restera "
+                                "« en attente d'approbation ».[/dim]")
+                return None
+            status, token, expires = _hub_admin_login(self.username, pw)
+            if token:
+                return self._accept(token, expires, "saisie")
+            self._refused(status, None)
+            if status in (403, 429):        # compte refusé ou limite atteinte : on s'arrête
+                return None
+        return None
+
+
+def _hub_list_apps(token: str) -> list[dict] | None:
+    """Registre du Hub (GET /api/apps/) ; None si illisible."""
+    status, apps = _hub_api("GET", "/api/apps/", token=token)
+    if status != 200 or not isinstance(apps, list):
+        return None
+    return [a for a in apps if isinstance(a, dict)]
+
+
+def _hub_detail(data: Any) -> str:
+    """Motif d'erreur du Hub, raccourci et sans balisage (jamais un secret)."""
+    detail = data.get("detail") if isinstance(data, dict) else data
+    if isinstance(detail, (dict, list)):
+        detail = detail.get("message") if isinstance(detail, dict) else json.dumps(detail)
+    text = str(detail or "").strip().replace("\n", " ")
+    return escape(text[:200])
+
+
+def _hub_ensure_approved(con, session: _HubAdminSession, slug: str, *,
+                         payload: dict | None) -> tuple[str, bool]:
+    """Garantit au registre du Hub une entrée APPROUVÉE pour `slug`.
+
+    - absente   → `POST /api/apps/` (payload de l'UI) : une app pré-créée par un
+                  admin naît `approved` — l'auto-enregistrement la fait naître
+                  `pending`, avec approbation manuelle ;
+    - pending   → `POST /api/apps/{slug}/approve` ;
+    - approuvée → rien (jamais de mise à jour destructive) ;
+    - rejetée par un admin → rien : sa décision prime.
+
+    `payload=None` : jamais de création (app déjà installée, rattrapage seul).
+    Retourne (état affichable — « approuvée », « en attente », « rejetée » ou
+    « absente » —, approuvée_maintenant) : le second vaut True seulement si CET
+    appel a créé ou approuvé l'entrée — seule une approbation réelle justifie
+    de relancer l'app (certificat). Ne lève jamais : sans jeton, l'app restera
+    « en attente ».
+    """
+    token = session.token()
+    if not token:
+        con.print("[yellow]⚠ Pas de jeton admin du Hub — l'app s'auto-enregistrera "
+                  "« en attente d'approbation ».[/yellow]")
+        return "en attente", False
+    apps = _hub_list_apps(token)
+    if apps is None:
+        con.print("[yellow]⚠ Registre du Hub illisible — « " + escape(slug) + " » n'est ni "
+                  "pré-créée ni approuvée : elle restera « en attente d'approbation ».[/yellow]")
+        return "en attente", False
+    entry = next((a for a in apps if a.get("slug") == slug), None)
+    if entry is None and payload is None:
+        con.print(f"[dim]• « {escape(slug)} » absente du registre du Hub (jamais démarrée ?)[/dim]")
+        return "absente", False
+    if entry is None:
+        status, data = _hub_api("POST", "/api/apps/", token=token, body=payload)
+        if status == 201:
+            con.print(f"[green]✓ « {escape(slug)} » pré-créée approuvée au registre du Hub "
+                      "(POST /api/apps/)[/green]")
+            return "approuvée", True
+        if status == 400:
+            # « Ce slug existe déjà » : l'app vient de s'auto-enregistrer — on relit.
+            entry = next((a for a in _hub_list_apps(token) or [] if a.get("slug") == slug), None)
+        if entry is None:
+            detail = _hub_detail(data)
+            con.print(f"[yellow]⚠ Pré-création de « {escape(slug)} » refusée par le Hub "
+                      f"(HTTP {status}){' : ' + detail if detail else ''} — "
+                      "l'app s'auto-enregistrera « en attente d'approbation ».[/yellow]")
+            return "en attente", False
+    state = entry.get("approval_status")
+    if state == "approved":
+        con.print(f"[cyan]↻ « {escape(slug)} » déjà approuvée au registre du Hub — pas de création.[/cyan]")
+        return "approuvée", False
+    if state == "pending":
+        status, _data = _hub_api("POST", f"/api/apps/{slug}/approve", token=token,
+                                 body={"approve": True})
+        if status == 200:
+            con.print(f"[green]✓ « {escape(slug)} » approuvée au registre du Hub "
+                      "(elle était en attente d'approbation).[/green]")
+            return "approuvée", True
+        con.print(f"[yellow]⚠ Approbation de « {escape(slug)} » refusée par le Hub (HTTP {status}) "
+                  "— approuve-la dans le Hub (badge « En attente »).[/yellow]")
+        return "en attente", False
+    if state == "rejected":
+        con.print(f"[yellow]⚠ « {escape(slug)} » a été rejetée par un administrateur du Hub — "
+                  "hubctl ne modifie pas cette décision.[/yellow]")
+        return "rejetée", False
+    return "en attente", False
+
+
+def _int_or_none(value: str | None) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _env_flag(value: str | None, default: bool) -> bool:
+    if value is None or not str(value).strip():
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _app_display_name(slug: str, env: dict[str, str]) -> str:
+    """Nom affiché : APP_NAME du .env de l'app (celui qu'elle déclarera elle-même
+    en s'enregistrant), sinon le slug en titre. Bornes du schéma Hub : 2..100."""
+    name = (env.get("APP_NAME") or "").strip().strip("\"'")
+    if 2 <= len(name) <= 100:
+        return name
+    return slug.replace("-", " ").title()
+
+
+def _precreate_payload(slug: str, env: dict[str, str]) -> dict:
+    """Payload de création de l'UI (admin-app-form.js, mode création) pour
+    `POST /api/apps/` — schéma `AppCreateSimplified` : la route N'accepte pas
+    api_url / frontend_url / callback_url (champs supplémentaires ignorés) mais
+    des PORTS, à partir desquels le Hub construit lui-même
+    api_url = http://<host>:<api_port>, frontend_url = https://<host>:<https_port>
+    et callback_url = <frontend_url>/callback. Les ports sont lus dans le .env
+    de l'app APRÈS sync-env (allocation, HTTPS = FRONTEND_PORT + 1).
+    """
+    payload: dict[str, Any] = {
+        "name": _app_display_name(slug, env),
+        "slug": slug,
+        "requires_auth": True,
+        "create_service_account": False,   # l'app crée son compte M2M en s'auto-enregistrant
+        "is_shared_service": False,        # l'app déclare IS_SHARED à son auto-enregistrement
+    }
+    api_port = _int_or_none(env.get("API_PORT"))
+    frontend_port = _int_or_none(env.get("FRONTEND_PORT"))
+    https = _env_flag(env.get("HTTPS_ENABLED"), True)
+    https_port = _int_or_none(env.get("FRONTEND_HTTPS_PORT"))
+    if https and https_port is None and frontend_port is not None:
+        https_port = frontend_port + 1    # convention du template
+    if api_port is not None:
+        payload["api_port"] = api_port
+    if frontend_port is not None:
+        payload["frontend_port"] = frontend_port
+    if https and https_port is not None:
+        payload["frontend_https_port"] = https_port
+    return payload
+
+
+def _app_url(env: dict[str, str]) -> str:
+    """URL publique de l'app affichée dans le résumé (host du Hub)."""
+    host = _read_hub_env_value("HUB_HOST") or _detect_host_ip()
+    https = (env.get("FRONTEND_HTTPS_PORT") or "").strip()
+    front = (env.get("FRONTEND_PORT") or "").strip()
+    if _env_flag(env.get("HTTPS_ENABLED"), True) and https.isdigit():
+        return f"https://{host}:{https}"
+    return f"http://{host}:{front}" if front.isdigit() else ""
+
+
+# ── Secrets par défaut neutralisés ────────────────────────────────────────────
+
+
+# Le NOM de la variable désigne un secret…
+_SECRET_NAME_RE = re.compile(
+    r"(?:^|_)(?:SECRET|SECRETS|PASSWORD|PASSWD|PASS|PWD|PASSPHRASE|TOKEN|CREDENTIAL|CREDENTIALS|SALT)(?:$|_)"
+    r"|(?:^|_)(?:PRIVATE|SIGNING|ENCRYPTION|ENCRYPT|API|FERNET|MASTER|SESSION|ACCESS|REFRESH|JWT|HMAC)_KEY(?:$|_)")
+# … sauf quand un affixant de configuration l'en détourne (AUTH_MODE, *_NAME,
+# *_URL, PUBLIC_KEY, PASSWORD_HASH_ITERATIONS…).
+_NOT_SECRET_NAME_RE = re.compile(
+    r"(?:^|_)(?:PUBLIC|KEYBOARD|PRIMARY|FOREIGN)(?:$|_)"
+    r"|_(?:NAMES?|PATHS?|FILES?|URL|URI|DIRS?|ENABLED|ALGORITHMS?|ALGO|MODE|HEADERS?|PROMPT|HINT|"
+    r"FIELDS?|IDS?|TTL|TIMEOUT|EXPIR(?:Y|ES|ATION)|ITERATIONS|ROUNDS|LENGTH|SIZE|SOURCE|TYPE|"
+    r"FORMAT|ENCODING|PREFIX|SUFFIX|MESSAGE|QUESTION|POLICY|RULES?|MIN|MAX|STRENGTH)(?:$|_)")
+# `${VAR:-défaut}` du docker-compose.yml.
+_COMPOSE_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}")
+# Un défaut « jeton » : ni URL, ni DSN, ni liste, ni JSON — un simple mot de passe.
+_TOKEN_DEFAULT_RE = re.compile(r"^[A-Za-z0-9!@#$%^&*+\-_.~?]{1,48}$")
+# Défaut qui RESSEMBLE à un placeholder (insensible à la casse).
+_PLACEHOLDER_SUBSTRINGS = (
+    "changeme", "changeit", "change_me", "change-it", "admin123", "password", "passwd",
+    "passw0rd", "secret", "placeholder", "insecure", "qwerty", "letmein", "hunter2",
+    "example", "exemple", "tochange", "votre",
+)
+_PLACEHOLDER_WORDS = frozenset(
+    "change changer achanger replace remplace admin root toor test tests demo dummy "
+    "sample todo fixme please default x xx xxx xxxx".split())
+# Défaut purement numérique : placeholder seulement pour un nom qui FINIT par un
+# mot de secret (DB_PASS, *_KEY) — jamais PASSWORD_HASH_ITERATIONS.
+_TRAILING_SECRET_RE = re.compile(r"(?:^|_)(?:PASS|PASSWORD|PASSWD|PWD|SECRET|TOKEN|PASSPHRASE|KEY)$")
+
+
+def _is_placeholder_secret(name: str, default: str) -> bool:
+    """True s'il faut neutraliser `${name:-default}` : le nom désigne un secret ET
+    le défaut ressemble à un placeholder (changeme, admin123, password, secret,
+    changeit…). Conservateur par construction : un faux négatif laisse un défaut
+    faible (visible), un faux positif casserait l'app (DSN, mode d'auth…).
+    """
+    value = (default or "").strip().strip("\"'")
+    if not value or not _TOKEN_DEFAULT_RE.match(value):
+        return False
+    if not _SECRET_NAME_RE.search(name) or _NOT_SECRET_NAME_RE.search(name):
+        return False
+    lowered = value.lower()
+    if any(s in lowered for s in _PLACEHOLDER_SUBSTRINGS):
+        return True
+    if any(w in _PLACEHOLDER_WORDS for w in re.split(r"[^a-z0-9]+", lowered)):
+        return True
+    return value.isdigit() and _TRAILING_SECRET_RE.search(name) is not None
+
+
+def _random_secret(name: str) -> str:
+    """Valeur secrète aléatoire pour `name` : clé Fernet valide pour les clés de
+    chiffrement (format que l'app valide — cf. SECRETS_ENCRYPTION_KEY), sinon 32
+    caractères alphanumériques (aucun caractère spécial : sûr dans un .env, une
+    URL, un shell)."""
+    import secrets as _secrets
+    if "ENCRYPTION_KEY" in name or "FERNET_KEY" in name:
+        from cryptography.fernet import Fernet
+        return Fernet.generate_key().decode()
+    alphabet = _string_module.ascii_letters + _string_module.digits
+    return "".join(_secrets.choice(alphabet) for _ in range(32))
+
+
+def _neutralize_default_secrets(con, dest: Path) -> list[str]:
+    """Neutralise les secrets par défaut du docker-compose.yml de l'app.
+
+    Toute variable `${VAR:-défaut}` dont le nom désigne un secret et dont le
+    défaut ressemble à un placeholder reçoit une valeur aléatoire dans le .env —
+    avant `make build`, donc avant que le conteneur ne le voie. Une clé déjà
+    renseignée avec autre chose que ce défaut n'est JAMAIS écrasée ; si elle
+    porte encore le défaut (recopié de .env.example par _write_app_env), elle est
+    neutralisée aussi. Annonce les clés par leur nom, jamais leur valeur.
+    """
+    compose, env_path = dest / "docker-compose.yml", dest / ".env"
+    if not compose.exists() or not env_path.exists():
+        return []
+    try:
+        content = compose.read_text(errors="replace")
+    except OSError:
+        return []
+    env = env_manager.read_env(env_path)
+    updates: dict[str, str] = {}
+    for name, default in _COMPOSE_DEFAULT_RE.findall(content):
+        if name in updates or not _is_placeholder_secret(name, default):
+            continue
+        current = (env.get(name) or "").strip().strip("\"'")
+        if current and current.lower() != default.strip().strip("\"'").lower():
+            continue                  # valeur choisie : conservée
+        updates[name] = _random_secret(name)
+    if updates:
+        env_manager.write_env(env_path, updates)
+        con.print("[green]✓ Secrets par défaut neutralisés dans le .env : "
+                  + escape(", ".join(updates)) + "[/green]")
+    return list(updates)
+
+
+# ── Socle garanti ────────────────────────────────────────────────────────────
+
+
+def _docker_image_exists(tag: str) -> bool:
+    try:
+        r = subprocess.run(["docker", "image", "inspect", tag],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _ensure_socle_image(console=None, *, dry_run: bool = False) -> bool:
+    """Garantit les images LOCALES du socle (poulidor/socle-api et socle-web, à
+    la version de HUBsocle/VERSION) : `make sync-env` d'une app socle refuse de
+    s'exécuter sans elles. Présentes → no-op silencieux ; absentes →
+    `socle build` (budget INSTALL_SOCLE_TIMEOUT). Appelé avant `make sync-env`.
+
+    Retourne False si le build échoue — sans bloquer : hubctl ne sait pas si
+    l'app dépend du socle, et l'app qui en dépend le dira à son sync-env.
+    """
+    con = console or _console
+    try:
+        version = socle.socle_version(socle.find_socle_dir())
+    except (FileNotFoundError, OSError):
+        con.print("[yellow]⚠ HUBsocle introuvable (méta-repo/HUBsocle) — images du socle non "
+                  "vérifiées ; une app qui en dépend le signalera à son `make sync-env`.[/yellow]")
+        return True
+    if not version:
+        con.print("[yellow]⚠ HUBsocle/VERSION illisible — images du socle non vérifiées.[/yellow]")
+        return True
+    tags = [f"{image}:{version}" for image in socle.PACKAGES.values()]
+    if dry_run:
+        # Contrôle pur : pas même un `docker image inspect` en dry-run.
+        con.print(f"[dim](dry-run) images du socle {', '.join(tags)} — `./hubctl socle build` "
+                  "si l'une manque[/dim]")
+        return True
+    if all(_docker_image_exists(tag) for tag in tags):
+        return True
+    con.print(f"[cyan]🧱 Socle {version} : image(s) locale(s) absente(s) — construction "
+              f"(budget {INSTALL_SOCLE_TIMEOUT} s, sortie ci-dessous)…[/cyan]")
+    rc = socle.socle_build(console=con, timeout=INSTALL_SOCLE_TIMEOUT)
+    if rc != 0:
+        con.print(f"[yellow]⚠ Build du socle {version} échoué (rc {rc}) — voir ci-dessus, "
+                  "ou lance `./hubctl socle build` puis `./hubctl update <slug>`.[/yellow]")
+        return False
+    return True
+
+
+def _ensure_socle_context(con, dest: Path) -> bool:
+    """Garantit le contexte de build `socle` du frontend (compose : additional_contexts).
+
+    Le gabarit pointe ce contexte directement vers `../../HUBsocle`, le socle
+    du parc. Une app héritée peut passer par un lien `socle` LOCAL — lien de
+    développement, gitignored, donc ABSENT d'un clone neuf : `make build`
+    échoue alors (« unable to prepare context »). Si la cible déclarée manque
+    (ou est un lien pendataire) et s'appelle `socle`, hubctl crée le lien,
+    relatif et calculé — relocalisable — vers le HUBsocle du parc.
+
+    Retourne False si le contexte manque toujours (avertissement affiché) :
+    le build de l'app le confirmera.
+    """
+    import yaml
+    try:
+        compose = yaml.safe_load((dest / "docker-compose.yml").read_text(errors="replace")) or {}
+    except (yaml.YAMLError, OSError, UnicodeError):
+        return True                      # compose illisible : le build le dira
+    services = compose.get("services") if isinstance(compose, dict) else None
+    if not isinstance(services, dict):
+        return True
+    manquants: list[str] = []
+    for service in services.values():
+        build = service.get("build") if isinstance(service, dict) else None
+        contexts = build.get("additional_contexts") if isinstance(build, dict) else None
+        if isinstance(contexts, dict):
+            items = list(contexts.items())
+        elif isinstance(contexts, list):
+            items = [tuple(str(c).replace(":", "=", 1).split("=", 1))
+                     if "=" in str(c) else (str(c), str(c)) for c in contexts]
+        else:
+            items = []
+        for name, value in items:
+            # Valeur interpolée (${HUBSOCLE_DIR:-…}) ou URL : hors de portée.
+            if (name == "socle" and isinstance(value, str)
+                    and "${" not in value and "://" not in value
+                    and not (dest / value).exists()):
+                manquants.append(value)
+    if not manquants:
+        return True
+    try:
+        socle_dir: Path | None = socle.find_socle_dir()
+    except (FileNotFoundError, OSError):
+        socle_dir = None
+    ok = True
+    for value in dict.fromkeys(manquants):
+        target = dest / value
+        lien = target.name == "socle" and socle_dir is not None
+        if lien and target.is_symlink():
+            target.unlink()                  # lien pendataire : on le refait
+        if lien:
+            try:
+                target.symlink_to(os.path.relpath(socle_dir, target.parent),
+                                  target_is_directory=True)
+            except OSError as e:
+                lien = False
+                con.print(f"[yellow]⚠ Impossible de créer le lien `socle` ({escape(str(e))}) — "
+                          "le build du frontend échouera ; à la main : "
+                          f"ln -s ../../HUBsocle {escape(value)}[/yellow]")
+                ok = False
+                continue
+            con.print(f"[green]✓ Lien « {escape(value)} » créé vers HUBsocle du parc — contexte "
+                      "de build du frontend (lien de développement, gitignored)[/green]")
+        else:
+            con.print(f"[yellow]⚠ Contexte de build `socle` introuvable ({escape(value)}) — le "
+                      "build du frontend échouera ; vérifie la présence de HUBsocle à la racine "
+                      "du parc.[/yellow]")
+            ok = False
+    return ok
+
+
+# ── Makefile / compose de l'app ──────────────────────────────────────────────
+
+
+def _makefile_has_target(dest: Path, target: str) -> bool:
+    try:
+        makefile = (dest / "Makefile").read_text(errors="replace")
+    except OSError:
+        return False
+    return re.search(rf"^{re.escape(target)}\s*:", makefile, re.MULTILINE) is not None
+
+
+def _compose_services(dest: Path) -> set[str]:
+    """Services du docker-compose.yml de l'app (ensemble vide si illisible)."""
+    import yaml
+    try:
+        data = yaml.safe_load((dest / "docker-compose.yml").read_text(errors="replace")) or {}
+    except (yaml.YAMLError, OSError, UnicodeError):
+        return set()
+    services = data.get("services") if isinstance(data, dict) else None
+    return set(services) if isinstance(services, dict) else set()
+
+
+# ── Certificat signé par la CA du Hub ─────────────────────────────────────────
+
+
+_CERT_LABELS = {"hub": "CA du Hub", "self": "auto-signé", "other": "CA non vérifiée", "": "—"}
+
+
+def _cert_signed_by_hub(cert_pem: bytes, ca_pem: str | None) -> str:
+    """'hub' si le certificat est signé par la CA du Hub (signature vérifiée),
+    'self' s'il est auto-signé, 'other' signé par ailleurs, '' s'il est illisible.
+    Sans CA de référence : 'other' dès que l'émetteur diffère du sujet."""
+    from cryptography import x509
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem)
+    except (ValueError, TypeError):
+        return ""
+    issuer, subject = cert.issuer.rfc4514_string(), cert.subject.rfc4514_string()
+    if ca_pem:
+        try:
+            ca = x509.load_pem_x509_certificate(ca_pem.encode())
+        except (ValueError, TypeError):
+            ca = None
+        if ca is not None and issuer == ca.subject.rfc4514_string() and _verify_signed_by(cert, ca):
+            return "hub"
+    return "self" if issuer == subject else "other"
+
+
+def _verify_signed_by(cert, ca) -> bool:
+    from cryptography.hazmat.primitives.asymmetric import ed448, ed25519
+    pub = ca.public_key()
+    try:
+        if isinstance(pub, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
+            pub.verify(cert.signature, cert.tbs_certificate_bytes)
+        else:
+            pub.verify(cert.signature, cert.tbs_certificate_bytes,
+                       cert.signature_algorithm_parameters, cert.signature_hash_algorithm)
+        return True
+    except Exception:
+        return False
+
+
+def _cert_state(cert_path: Path, ca_pem: str | None) -> str:
+    try:
+        return _cert_signed_by_hub(cert_path.read_bytes(), ca_pem)
+    except OSError:
+        return ""
+
+
+def _wait_hub_signed_cert(cert_path: Path, ca_pem: str | None, *,
+                          timeout: int = INSTALL_CERT_WAIT_TIMEOUT) -> bool:
+    """Attend que cert_sync (au démarrage de l'api) ait réécrit ssl/server.crt
+    avec un certificat signé par la CA du Hub. Sans CA de référence, l'attente
+    est épuisée (on ne sait pas reconnaître le certificat du Hub)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if ca_pem and _cert_state(cert_path, ca_pem) == "hub":
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2)
+
+
+def _fetch_hub_ca_pem() -> str | None:
+    """CA racine du Hub (GET /api/pki/ca.crt, endpoint public) — None si
+    indisponible (PKI non initialisée, Hub injoignable)."""
+    status, pem = _hub_api("GET", "/api/pki/ca.crt", timeout=15)
+    if status != 200 or not isinstance(pem, str) or "-----BEGIN CERTIFICATE-----" not in pem:
+        return None
+    return pem
+
+
+def _restart_for_hub_cert(con, slug: str, dest: Path, *, dry_run: bool = False,
+                          ca_pem: str | None = None) -> tuple[str, bool]:
+    """Relance `api` PUIS `frontend` pour déclencher cert_sync au démarrage (le
+    socle réécrit ssl/ avec le certificat émis par la PKI du Hub ; nginx ne peut
+    pas être rechargé depuis l'api, il charge les certs à son démarrage).
+
+    Relance : targets `restart-api` / `restart-frontend` du Makefile de l'app si
+    elles existent, sinon `docker compose restart <service>` depuis APPS/<slug>,
+    sinon rien (certificat auto-signé en service, signalé).
+
+    Retourne (état du certificat, api répond après sa relance).
+    """
+    con = con or _console
+    cert = dest / "ssl" / "server.crt"
+    if dry_run:
+        con.print(f"[dim](dry-run) relance de `api` puis `frontend` (certificat de la CA du Hub)[/dim]")
+        return "", True
+
+    def restart(service: str, target: str) -> bool:
+        if _makefile_has_target(dest, target):
+            rc = utils.run_shell(["make", "-C", str(dest), target], dry_run=False, console=con,
+                                 timeout=INSTALL_RESTART_TIMEOUT)
+        elif service in _compose_services(dest):
+            rc = utils.run_shell(["docker", "compose", "restart", service], cwd=str(dest),
+                                 dry_run=False, console=con, timeout=INSTALL_RESTART_TIMEOUT)
+        else:
+            return False
+        return rc == 0
+
+    con.print("[cyan]🔐 Certificat du Hub : relance de l'api (cert_sync au démarrage) "
+              "puis du frontend (nginx charge les certs)…[/cyan]")
+    if not restart("api", "restart-api"):
+        con.print("[yellow]⚠ Impossible de relancer l'api (cible `restart-api` et service compose "
+                  "`api` absents, ou commande en échec) — certificat auto-signé en service ; "
+                  "cert_sync le remplacera au prochain démarrage de l'api.[/yellow]")
+        return _CERT_LABELS[_cert_state(cert, ca_pem)], True
+    api_ok = _health_check(
+        dest.name, console=con, timeout=INSTALL_RESTART_HEALTH_TIMEOUT,
+        port_override=env_manager.read_env(dest / ".env").get("API_PORT") or None)
+    if api_ok:
+        _wait_hub_signed_cert(cert, ca_pem)
+    if not restart("frontend", "restart-frontend"):
+        con.print("[yellow]⚠ Impossible de relancer le frontend — nginx chargera le certificat "
+                  "du Hub à son prochain redémarrage.[/yellow]")
+    state = _cert_state(cert, ca_pem)
+    if state == "hub":
+        con.print("[green]✓ Certificat signé par la CA du Hub en service (ssl/server.crt), "
+                  "nginx rechargé.[/green]")
+    else:
+        con.print(f"[yellow]⚠ Le certificat en service n'est pas (encore) celui du Hub "
+                  f"({_CERT_LABELS[state] if state else 'indéterminé'}) — cert_sync le renouvellera "
+                  "automatiquement (toutes les 6 h), ou `docker compose restart api frontend`.[/yellow]")
+    return _CERT_LABELS[state], api_ok
+
+
+# ── Déroulé de la commande ───────────────────────────────────────────────────
+
+
+@dataclass
+class _InstallResult:
+    slug: str
+    url: str
+    is_dependency: bool = False
+    ok: bool = False          # l'app répond (ou : déjà installée)
+    state: str = ""           # état au registre du Hub : approuvée / en attente / rejetée…
+    cert: str = ""            # CA du Hub / auto-signé / …
+    detail: str = ""          # installée / déjà installée / raison de l'échec
+    app_url: str = ""
+
+
+class _InstallRun:
+    """État d'une commande `app install`, partagé par toutes ses apps."""
+
+    def __init__(self, console, *, no_deps: bool, yes: bool, dry_run: bool,
+                 prompt_password=None, confirm=None):
+        self.con = console or _console
+        self.no_deps = no_deps
+        self.yes = yes
+        self.dry_run = dry_run
+        self.confirm = confirm
+        self.admin = _HubAdminSession(self.con, prompt_password=prompt_password)
+        self.stack: list[str] = []                  # slugs en cours d'installation (cycle)
+        self.failed: set[str] = set()               # slugs en échec plus tôt dans cette commande
+        self.done: dict[str, _InstallResult] = {}   # installées avec succès dans cette commande
+        self.results: list[_InstallResult] = []     # une ligne de résumé par app, dans l'ordre
+        self._seed: tuple[dict[str, str], str | None] | None = None
+        self._ca_pem: str | None = None
+
+    def seed_urls(self) -> dict[str, str]:
+        if self._seed is None:
+            self._seed = _parc_seed_urls()
+            if self._seed[1]:
+                self.con.print(f"[yellow]⚠ seed-apps.yaml illisible — dépendances non résolues "
+                               f"par ce fichier : {escape(self._seed[1])}[/yellow]")
+        return self._seed[0]
+
+    def ca_pem(self) -> str | None:
+        """CA racine du Hub, lue une fois par commande (jamais en dry-run)."""
+        if self._ca_pem is None and not self.dry_run:
+            self._ca_pem = _fetch_hub_ca_pem()
+        return self._ca_pem
+
+    def record(self, res: _InstallResult) -> None:
+        if all(r is not res for r in self.results):
+            self.results.append(res)
+
+
+def _install_fail(con, res: _InstallResult, detail: str) -> None:
+    res.detail = detail
+    con.print(f"[red]✗ {escape(detail)}.[/red]")
+
+
+def _resolve_dependency_url(run: _InstallRun, dep_slug: str) -> str | None:
+    """URL git d'une dépendance absente du parc : (a) seed-apps.yaml de la
+    racine du parc, (b) registre du Hub (git_repo_url, jeton admin)."""
+    url = run.seed_urls().get(dep_slug)
+    if url:
+        run.con.print(f"[dim]• dépendance « {dep_slug} » résolue par seed-apps.yaml[/dim]")
+        return url
+    token = run.admin.token()
+    if not token:
+        return None
+    for app in _hub_list_apps(token) or []:
+        repo = app.get("git_repo_url")
+        if app.get("slug") == dep_slug and isinstance(repo, str) and repo.strip():
+            run.con.print(f"[dim]• dépendance « {dep_slug} » résolue par le registre du Hub[/dim]")
+            return repo.strip()
+    return None
+
+
+def _install_plan(run: _InstallRun, res: _InstallResult, dest: Path) -> list[tuple[str, str, str]] | None:
+    """Dépendances à installer AVANT l'app : [(slug, url, note)]. None si la
+    résolution échoue (cycle, dépendance introuvable ou déjà en échec) :
+    `res.detail` est alors renseigné et l'erreur affichée."""
+    con = run.con
+    slug = res.slug
+    deps = _read_depends(dest)
+    if not deps:
+        if (dest / "depends.yaml").exists():
+            con.print(f"[yellow]⚠ depends.yaml de « {slug} » illisible ou sans dépendance "
+                      "déclarée — app traitée comme autonome.[/yellow]")
+        return []
+    if run.no_deps:
+        con.print(f"[yellow]⚠ --no-deps : {len(deps)} dépendance(s) ignorée(s) : "
+                  + escape(", ".join(d[0] for d in deps))
+                  + " — l'app peut ne pas fonctionner sans elles.[/yellow]")
+        return []
+    plan: list[tuple[str, str, str]] = []
+    for dep_slug, note in deps:
+        if dep_slug == slug or dep_slug in run.stack:
+            _install_fail(con, res, "cycle de dépendances : " + " → ".join(run.stack + [dep_slug]))
+            return None
+        if dep_slug in run.failed:
+            # Avant le test de présence : un dossier laissé par un build en échec
+            # n'est pas une dépendance installée.
+            _install_fail(con, res, f"Dépendance « {dep_slug} » en échec plus tôt dans cette "
+                          f"commande — installe-la d'abord (./hubctl update {dep_slug})")
+            return None
+        if dep_slug in run.done or _installed_app_dir(dep_slug) is not None:
+            con.print(f"[dim]• dépendance « {dep_slug} » déjà installée[/dim]")
+            continue
+        url = _resolve_dependency_url(run, dep_slug)
+        if not url:
+            _install_fail(con, res, f"Dépendance « {dep_slug} » introuvable — installe-la "
+                          "d'abord ou renseigne seed-apps.yaml")
+            return None
+        plan.append((dep_slug, url, note))
+    return plan
+
+
+def _install_confirm(run: _InstallRun, res: _InstallResult, plan) -> bool:
+    """Confirmation (terminal interactif, sans --yes) du plan d'installation :
+    l'app et les dépendances qu'elle va embarquer."""
+    if run.yes or run.confirm is None:
+        return True
+    con = run.con
+    con.print(f"Plan d'installation de « {escape(res.slug)} » :")
+    con.print(f"  • {escape(res.slug)}  ({escape(res.url)})")
+    for dep_slug, url, _note in plan:
+        con.print(f"  • {escape(dep_slug)}  ({escape(url)})  — dépendance")
+    if plan:
+        con.print("  (et leurs propres dépendances)")
+    prompt = f"Installer « {res.slug} »"
+    if plan:
+        prompt += f" et {len(plan)} dépendance(s) : {', '.join(d[0] for d in plan)}"
+    prompt += " ? [O/n]"
+    try:
+        accepted = bool(run.confirm(prompt))
+    except EOFError:
+        accepted = False
+    if not accepted:
+        con.print(f"[yellow]⏹ Installation de « {escape(res.slug)} » annulée.[/yellow]")
+    return accepted
+
+
+def _install_provision(run: _InstallRun, res: _InstallResult, dest: Path) -> None:
+    """Configure et démarre l'app clonée (ses dépendances sont en service) :
+    .env → secrets par défaut neutralisés → socle → sync-env → build →
+    pré-création approuvée → up → health → certificat de la CA du Hub → coffre."""
+    con = run.con
+    slug = res.slug
+    # Jeton admin résolu MAINTENANT que l'opérateur vient de confirmer : la
+    # pré-création a lieu après le build (plusieurs minutes) — une saisie de
+    # mot de passe à cet instant-là surprendrait un opérateur parti. Sans mot
+    # de passe disponible : rien n'est affiché ici, la pré-création préviendra.
+    run.admin.token()
+    config = _detect_app_config(slug)
+    _write_app_env(con, dest, config, dry_run=False)
+    _neutralize_default_secrets(con, dest)
+    _ensure_socle_image(con)
+    _ensure_socle_context(con, dest)
+    if _makefile_has_target(dest, "sync-env"):
+        con.print("[cyan]🔧 make sync-env (ports, host du Hub, version)…[/cyan]")
+        if app_make(slug, "sync-env", dry_run=False, console=con,
+                    timeout=INSTALL_SYNC_ENV_TIMEOUT) != 0:
+            raise RuntimeError("`make sync-env` a échoué — voir le message du gabarit ci-dessus")
+    else:
+        con.print("[dim]ℹ Pas de cible `sync-env` dans le Makefile — étape ignorée.[/dim]")
+    env = env_manager.read_env(dest / ".env")
+    res.app_url = _app_url(env)
+    payload = _precreate_payload(slug, env)
+
+    def precreate() -> None:
+        res.state, _approved_now = _hub_ensure_approved(con, run.admin, slug, payload=payload)
+
+    ok, step = _build_up_health(con, dest, dry_run=False, before_up=precreate)
+    if not ok:
+        res.detail = f"échec {step}"
+        if step != "build" and step != "timeout build" and res.state == "en attente":
+            res.detail += " — l'app s'auto-enregistrera « en attente d'approbation »"
+        return
+    res.cert, api_ok = _restart_for_hub_cert(con, slug, dest, ca_pem=run.ca_pem())
+    if not api_ok:
+        res.detail = "l'api ne répond plus après la relance pour le certificat du Hub"
+        return
+    res.ok, res.detail = True, "installée"
+    _sync_app_coffre(con, slug, dry_run=False)
+
+
+def _install_present(run: _InstallRun, res: _InstallResult, dest: Path) -> _InstallResult:
+    """L'app est déjà dans APPS/ : « déjà installée — ./hubctl update <slug> ».
+
+    Rattrapage best-effort, SANS jamais de prompt (une saisie pour une app déjà
+    installée serait une surprise) : une entrée encore « en attente » au registre
+    est approuvée — c'est ce que promet le message final « ou relance avec
+    HUBCTL_ADMIN_PASSWORD » — puis son certificat resynchronisé. Jamais de création.
+    """
+    con = run.con
+    res.ok, res.detail = True, "déjà installée"
+    con.print(f"[cyan]↻ « {escape(res.slug)} » déjà installée — ./hubctl update {escape(dest.name)}[/cyan]")
+    res.app_url = _app_url(env_manager.read_env(dest / ".env"))
+    if run.dry_run:
+        return res
+    cert = dest / "ssl" / "server.crt"
+    if run.admin.token(allow_prompt=False):
+        res.state, approved_now = _hub_ensure_approved(con, run.admin, res.slug, payload=None)
+        # Une relance n'a de sens que si l'approbation vient d'avoir lieu : une
+        # app approuvée et installée ne doit jamais être redémarrée pour rien.
+        if approved_now and cert.exists():
+            res.cert, api_ok = _restart_for_hub_cert(con, res.slug, dest, ca_pem=run.ca_pem())
+            if not api_ok:
+                res.ok, res.detail = False, ("l'api ne répond plus après la relance pour le "
+                                             "certificat du Hub")
+                return res
+    if not res.cert and cert.exists():
+        res.cert = _CERT_LABELS[_cert_state(cert, run.ca_pem())]
+    return res
+
+
+def _install_one(run: _InstallRun, url: str, slug: str, *, is_dependency: bool = False) -> _InstallResult:
+    """Installe UNE app (clone → dépendances → configuration → service). Ne lève jamais.
+
+    - déjà présente dans APPS/ → saut (rattrapage d'approbation seul), rc ok ;
+    - clonée puis non installable (dépendance introuvable, cycle, annulation,
+      dépendance en échec) → le clone est retiré, l'app n'est PAS installée ;
+    - en échec plus tard (build, démarrage, health) → le dossier est CONSERVÉ
+      pour diagnostic, comme le seed.
+    """
+    con = run.con
+    if slug in run.done:                      # déjà installée pendant cette commande
+        return run.done[slug]
+    res = _InstallResult(slug=slug, url=url, is_dependency=is_dependency)
+    present = _installed_app_dir(slug)
+    if present is not None:
+        return _install_present(run, res, present)
+    if run.dry_run:
+        con.print(f"[dim](dry-run) clone {url} → dépendances → .env → socle → sync-env → "
+                  "build → approbation → up → health → certificat[/dim]")
+        res.ok, res.detail = True, "(simulé) serait installée"
+        return res
+    if slug in run.failed:
+        _install_fail(con, res, f"« {slug} » déjà en échec plus tôt dans cette commande")
+        return res
+
+    dest = hub_state.APPS_DIR / slug
+    run.stack.append(slug)
+    try:
+        if not disk_guard(con):
+            res.detail = "espace disque insuffisant"
+            return res
+        if not _clone_app(con, url, dest):
+            res.detail = "échec du clone"
+            return res
+        if not _validate_app_structure(con, dest):
+            res.detail = "structure template invalide"   # dossier déjà retiré par la validation
+            return res
+        plan = _install_plan(run, res, dest)
+        # Une dépendance est couverte par le plan confirmé de l'app qui l'exige.
+        if plan is None or (not is_dependency and not _install_confirm(run, res, plan)):
+            if not res.detail:
+                res.detail = "installation annulée"
+            shutil.rmtree(dest, ignore_errors=True)
+            con.print(f"[dim]Dossier cloné « {slug} » retiré — l'app n'est pas installée.[/dim]")
+            return res
+        for dep_slug, dep_url, _note in plan:
+            con.print()
+            con.print(f"[bold cyan]▸ dépendance « {dep_slug} »[/bold cyan]")
+            dep = _install_one(run, dep_url, dep_slug, is_dependency=True)
+            run.record(dep)
+            if not dep.ok:
+                res.detail = f"dépendance « {dep_slug} » non installée ({dep.detail})"
+                shutil.rmtree(dest, ignore_errors=True)
+                con.print(f"[red]✗ « {slug} » n'est pas installée : {escape(res.detail)}.[/red]")
+                return res
+        con.print(f"[bold]→ Configuration et démarrage de « {slug} »…[/bold]")
+        _install_provision(run, res, dest)
+    except Exception as e:
+        res.ok, res.detail = False, f"erreur : {e}"
+        return res
+    finally:
+        run.stack.pop()
+        if not res.ok:
+            run.failed.add(slug)
+    if res.ok:
+        run.done[slug] = res
+    return res
+
+
+def _install_report(run: _InstallRun) -> None:
+    """Résumé final : app, résultat, état au Hub, certificat, URL — puis le rappel
+    de la CA racine du Hub et la conduite à tenir pour les apps en attente."""
+    con = run.con
+    con.print()
+    table = Table(title="Installation d'applications — "
+                  + ("simulation (dry-run)" if run.dry_run else "résultat"))
+    table.add_column("App", style="bold")
+    table.add_column("Résultat", style="bold")
+    table.add_column("État au Hub")
+    table.add_column("Certificat")
+    table.add_column("URL")
+    pending, echecs = [], []
+    for r in run.results:
+        if r.detail == "déjà installée":
+            resultat = "[cyan]↻ déjà installée[/cyan]"
+        elif run.dry_run:
+            resultat = "[dim](dry-run) serait installée[/dim]"
+        elif r.ok:
+            resultat = "[green]✓ installée[/green]"
+        elif r.detail == "installation annulée":
+            resultat = "[yellow]— annulée[/yellow]"
+        else:
+            resultat = "[red]✗ échec[/red]"
+            echecs.append(r)
+        if r.state == "en attente":
+            pending.append(r.slug)
+        label = r.slug + (" (dépendance)" if r.is_dependency else "")
+        table.add_row(escape(label), resultat, escape(r.state or "—"),
+                      escape(r.cert or "—"), escape(r.app_url or "—"))
+    con.print(table)
+    for r in echecs:
+        con.print(f"  [red]✗ {escape(r.slug)}[/red] — {escape(r.detail)}")
+    if any(r.ok and r.app_url for r in run.results):
+        host = _read_hub_env_value("HUB_HOST") or _detect_host_ip()
+        api_port = _read_hub_env_value("HUB_API_PORT", "8000") or "8000"
+        con.print(f"[bold]Certificat racine du Hub[/bold] (à installer sur les postes pour "
+                  f"supprimer les avertissements navigateur) : http://{host}:{api_port}/api/pki/ca.crt")
+    if pending:
+        con.print()
+        con.print(f"[yellow]⏳ En attente d'approbation : {escape(', '.join(pending))} — "
+                  "approuve-la dans le Hub (badge « En attente »), ou relance avec "
+                  "HUBCTL_ADMIN_PASSWORD.[/yellow]")
+    en_service = sum(1 for r in run.results if r.ok)
+    if run.dry_run:
+        con.print(f"[dim](dry-run) rien n'a été exécuté — {en_service}/{len(run.results)} "
+                  "app(s) seraient en service[/dim]")
+    else:
+        con.print(f"[bold]{en_service}/{len(run.results)} app(s) en service[/bold]")
+
+
+def action_app_install(console, targets, *, no_deps: bool = False, yes: bool = False,
+                       dry_run: bool = False, prompt_password=None, confirm=None) -> int:
+    """`hubctl app install <url-git>…` — installe des apps du parc, en service.
+
+    Pour chaque URL git (ou un fichier seed YAML en argument unique) :
+    clone dans APPS/, dépendances d'abord (depends.yaml), .env généré et secrets
+    par défaut neutralisés, images du socle garanties, `make sync-env`,
+    `make build`, app pré-créée APPROUVÉE au registre du Hub (jeton admin),
+    `make up`, health check, certificat signé par la CA du Hub, coffre.
+
+    `prompt_password` : callable de saisie masquée du mot de passe admin (TTY) ;
+    `confirm` : callable de confirmation du plan (TTY). Absents, ou `yes` :
+    aucune interaction — l'app reste alors « en attente d'approbation » si
+    aucun mot de passe admin n'est disponible (HUBCTL_ADMIN_PASSWORD, puis
+    ADMIN_PASSWORD de HUB_base/.env).
+
+    Retourne 0 si toutes les apps demandées répondent, 1 si au moins un échec.
+    """
+    con = console or _console
+    con.print("[bold cyan]📦 Installation d'application(s)[/bold cyan]")
+    try:
+        entries = _install_targets(list(targets or []))
+    except ValueError as e:
+        con.print(f"[red]✗ {escape(str(e))}[/red]")
+        return 1
+    if not entries:
+        con.print("[dim]Aucune app à installer.[/dim]")
+        return 0
+    if not _install_precheck(con, dry_run=dry_run):
+        return 1
+
+    run = _InstallRun(con, no_deps=no_deps, yes=yes, dry_run=dry_run,
+                      prompt_password=prompt_password, confirm=confirm)
+    for url, slug in entries:
+        con.print()
+        con.print(f"[bold cyan]▸ {slug}[/bold cyan]")
+        run.record(_install_one(run, url, slug))
+    _install_report(run)
+    return 0 if run.results and all(r.ok for r in run.results) else 1
 
 
 def _ensure_jwt_keys(console=None, *, dry_run: bool = False) -> None:
@@ -1628,8 +2911,13 @@ def _is_healthy_body(text: str | None) -> bool:
 
 
 def _health_check(target: str, console=None, timeout: int = 60, port_override: str | None = None) -> bool:
-    """Wait for hub API to be healthy. Returns True if healthy within timeout."""
+    """Wait for hub API to be healthy. Returns True if healthy within timeout.
+
+    `target` : « hub » ou le slug d'une app (port API lu dans son .env).
+    """
     con = console or _console
+    # « Hub » pour le précheck, le nom de l'app sinon (seed, update, app install).
+    label = "Hub" if target == "hub" else f"« {escape(target)} »"
     # Port API : HUB_API_PORT du .env Hub (défaut 8000) pour target "hub",
     # sinon API_PORT de l'app cible.
     if port_override is not None:
@@ -1657,14 +2945,14 @@ def _health_check(target: str, console=None, timeout: int = 60, port_override: s
                 capture_output=True, text=True, timeout=5,
             )
             if _is_healthy_body(result.stdout):
-                con.print(f"[green]✓ Hub healthy après {int(time.monotonic() - start)}s[/green]")
+                con.print(f"[green]✓ {label} healthy après {int(time.monotonic() - start)}s[/green]")
                 return True
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
             # FileNotFoundError = curl absent ; on continue à réessayer jusqu'au timeout.
             pass
         time.sleep(3)
         con.print(f"  ... attente {int(time.monotonic() - start)}s/{timeout}s")
-    con.print(f"[yellow]⚠ Hub pas healthy après {timeout}s[/yellow]")
+    con.print(f"[yellow]⚠ {label} pas healthy après {timeout}s[/yellow]")
     return False
 
 
