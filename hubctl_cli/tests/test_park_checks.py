@@ -166,6 +166,103 @@ def test_check_hub_base_https_sans_credentials_remedy(monkeypatch, tmp_path):
     assert "set-url" in f[0].remedy or "credential helper" in f[0].remedy
 
 
+# stderr réel d'un fetch SSH sans clé utilisable : la cause est la PREMIÈRE
+# ligne, git la fait suivre d'un conseil générique (les deux dernières).
+_SSH_KEY_STDERR = (
+    "git@github.com: Permission denied (publickey).\n"
+    "fatal: Could not read from remote repository.\n"
+    "\n"
+    "Please make sure you have the correct access rights\n"
+    "and the repository exists.\n"
+)
+
+
+def _fetch_fails_with(monkeypatch, stderr: str) -> None:
+    """Seul ``git fetch`` échoue (rc 128 + stderr) ; tout autre git est réel."""
+    real_run = park_checks.subprocess.run
+
+    def denied(args, **kwargs):
+        if tuple(str(a) for a in args[:2]) == ("git", "fetch"):
+            return subprocess.CompletedProcess(args, 128, "", stderr)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(park_checks.subprocess, "run", denied)
+
+
+def test_significant_line_is_first_line_that_says_something():
+    """La cause d'un échec git est la 1ʳᵉ ligne parlante : on saute les
+    lignes vides et les avertissements de bruit, jamais le conseil final."""
+    stderr = ("\nWarning: Permanently added 'github.com' (ED25519) to the list "
+              "of known hosts.\n"
+              + _SSH_KEY_STDERR)
+    assert park_checks._significant_line(stderr) == \
+        "git@github.com: Permission denied (publickey)."
+    assert park_checks._significant_line("") == ""
+
+
+def test_significant_line_skips_transfer_progress():
+    """Lien lent : le transfert commence (progression « remote: ») puis
+    casse — la cause est l'erreur, pas la 1ʳᵉ ligne de progression."""
+    stderr = ("remote: Enumerating objects: 12, done.\n"
+              "remote: Counting objects: 100% (12/12), done.\n"
+              "remote: Compressing objects: 100% (6/6), done.\n"
+              "error: RPC failed; curl 18 transfer closed with outstanding "
+              "read data remaining\n"
+              "fatal: expected flush after ref listing\n")
+    assert park_checks._significant_line(stderr) == \
+        "error: RPC failed; curl 18 transfer closed with outstanding read data remaining"
+    # une ligne « remote: » qui n'est pas de la progression reste la cause
+    assert park_checks._significant_line(
+        "remote: HTTP Basic: Access denied.\nfatal: Authentication failed"
+    ) == "remote: HTTP Basic: Access denied."
+
+
+def test_check_hub_base_fetch_ssh_without_key_remedy(monkeypatch, tmp_path):
+    """SSH « Permission denied (publickey) » : message = la cause (pas le
+    conseil final « correct access rights ») + remède clé privée."""
+    meta, _hub_sub, _hub_origin = _make_meta_with_submodule(tmp_path)
+    _fetch_fails_with(monkeypatch, _SSH_KEY_STDERR)
+    findings = park_checks.check_hub_base(meta)
+    f = [x for x in findings if x.check == "hub_base.fetch"]
+    assert f and f[0].ok is False
+    assert "Permission denied (publickey)" in f[0].detail
+    assert "correct access rights" not in f[0].detail
+    assert f[0].remedy, "un remède doit être proposé"
+    assert "clé du dépôt privé absente de ce poste" in f[0].remedy
+    assert "ssh -T git@github.com" in f[0].remedy
+
+
+def test_check_hub_base_fetch_failure_shows_real_cause(tmp_path):
+    """Vrai fetch en échec (origin inexistant) : la cause métier, pas la
+    dernière ligne générique du stderr."""
+    meta, hub, _ = _make_meta_with_submodule(tmp_path)
+    _git("remote", "set-url", "origin", "/tmp/origin-inexistante-cause-xyz",
+         cwd=hub)
+    findings = park_checks.check_hub_base(meta)
+    f = [x for x in findings if x.check == "hub_base.fetch"]
+    assert f and f[0].ok is False
+    assert "does not appear to be a git repository" in f[0].detail
+    assert "and the repository exists" not in f[0].detail
+
+
+def test_check_app_repo_fetch_ssh_without_key_remedy(monkeypatch, tmp_path):
+    """Même remède SSH et même 1ʳᵉ ligne significative pour une app."""
+    meta, _, _ = _make_meta_with_submodule(tmp_path)
+    app = _init_repo(meta / "APPS" / "app-exemple")
+    app_origin = _init_repo(tmp_path / "origin_inv")
+    _commit(app_origin, "README.md", "app")
+    _git("remote", "add", "origin", str(app_origin), cwd=app)
+    _git("fetch", "origin", cwd=app)
+    _git("checkout", "-b", "main", "origin/main", cwd=app)
+    _fetch_fails_with(monkeypatch, _SSH_KEY_STDERR)
+    finding = park_checks.check_app_repo(app)
+    assert finding.ok is False
+    assert "Permission denied (publickey)" in finding.detail
+    assert "correct access rights" not in finding.detail
+    assert finding.remedy
+    assert "clé du dépôt privé absente de ce poste" in finding.remedy
+
+
 def _make_meta_with_submodule(tmp_path: Path) -> tuple[Path, Path, Path]:
     """origin_hub + origin_meta + clone méta avec HUB_base en submodule aligné.
 

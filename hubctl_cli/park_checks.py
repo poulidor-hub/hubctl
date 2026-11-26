@@ -20,6 +20,7 @@ Conventions :
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,12 +86,42 @@ def _git_out(*args: str, cwd: Path) -> str | None:
     return out if rc == 0 else None
 
 
-def _fetch_failure_remedy(repo: Path, ferr: str) -> str | None:
-    """Remède ciblé quand le fetch échoue sur une authentification HTTPS.
+_SSH_DENIED = re.compile(r"^(?:[\w.-]+@)?([\w.-]+): permission denied",
+                         re.IGNORECASE | re.MULTILINE)
+_REMOTE_PROGRESS = re.compile(
+    r"^remote: (?:enumerating|counting|compressing|receiving|resolving|total"
+    r"|writing|found)\b", re.IGNORECASE)
 
-    Cas réel (serveur client) : remote ``origin`` en ``https://`` sans
-    credential helper — git attend une saisie au clavier qu'un serveur
-    headless ne peut pas fournir. On oriente vers SSH ou un helper.
+
+def _significant_line(stderr: str) -> str:
+    """Première ligne significative d'un stderr git, ou ``""``.
+
+    La cause d'un échec git est sa PREMIÈRE ligne parlante ; la dernière est
+    un conseil générique (« Please make sure you have the correct access
+    rights / and the repository exists. ») qui, seul, ne dit rien. Sont
+    sautés : lignes vides, avertissements de bruit (``Warning: Permanently
+    added …``, ``hint:``) et progression d'un transfert (``remote:
+    Enumerating objects…``) — sur un lien lent le transfert démarre avant
+    de casser, l'erreur vient après.
+    """
+    for line in (stderr or "").splitlines():
+        line = line.strip()
+        if (not line or line.lower().startswith(("warning:", "hint:"))
+                or _REMOTE_PROGRESS.match(line)):
+            continue
+        return line
+    return ""
+
+
+def _fetch_failure_remedy(repo: Path, ferr: str) -> str | None:
+    """Remède ciblé quand le fetch échoue sur une authentification.
+
+    - HTTPS sans identifiants (cas réel, serveur client) : remote ``origin``
+      en ``https://`` sans credential helper — git attend une saisie au
+      clavier qu'un serveur headless ne peut pas fournir. On oriente vers
+      SSH ou un helper.
+    - SSH sans clé utilisable (``Permission denied (publickey)``) : la clé
+      privée autorisée manque sur ce poste, ou n'est pas chargée.
     """
     low = ferr.lower()
     if ("terminal prompts" in low or "could not read username" in low
@@ -99,6 +130,14 @@ def _fetch_failure_remedy(repo: Path, ferr: str) -> str | None:
                 f"(git -C {repo} remote set-url origin "
                 f"git@github.com:<org>/<repo>.git) ou configurez un "
                 f"credential helper HTTPS")
+    if "permission denied" in low and "publickey" in low:
+        denied = _SSH_DENIED.search(ferr)
+        probe = (f"vérifiez avec `ssh -T git@{denied.group(1)}`" if denied
+                 else "vérifiez votre accès au dépôt")
+        return (f"clé du dépôt privé absente de ce poste : déposez la clé "
+                f"privée autorisée dans ~/.ssh (ou chargez-la avec `ssh-add`), "
+                f"{probe} ; à défaut passez 'origin' en HTTPS avec un "
+                f"credential helper")
     return None
 
 
@@ -209,7 +248,7 @@ def check_hub_base(parc_root: Path) -> list[Finding]:
             check="hub_base.fetch",
             ok=False,
             detail="fetch origin impossible : "
-                   + (ferr.splitlines()[-1] if ferr else "erreur réseau"),
+                   + (_significant_line(ferr) or "erreur réseau"),
             remedy=_fetch_failure_remedy(hub, ferr),
         ))
         return findings
@@ -277,7 +316,7 @@ def check_app_repo(app_path: Path) -> Finding:
         # I2 : pas de diagnostic destructeur sur des refs périmées
         return Finding(check=f"app.{name}", ok=False,
                        detail="fetch origin impossible : "
-                              + (ferr.splitlines()[-1] if ferr else "erreur réseau"),
+                              + (_significant_line(ferr) or "erreur réseau"),
                        remedy=_fetch_failure_remedy(app_path, ferr))
 
     dirty = _dirty_tracked(app_path)
