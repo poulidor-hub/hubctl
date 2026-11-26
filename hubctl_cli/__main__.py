@@ -11,7 +11,7 @@ from rich.text import Text
 
 from hubctl_cli import actions, animation, atelier_serve, menu, update_serve
 from hubctl_cli.actions import (
-    action_start_all, action_stop_all, action_update_all, action_update,
+    action_start_all, action_stop_all, action_restart, action_update_all, action_update,
     action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
     action_seed_export, action_doctor,
 )
@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser = sub.add_parser("start", help="Demarrer le Hub et/ou les apps")
     start_parser.add_argument("target", nargs="?", default="all",
                               choices=["all", "prod", "dev"])
+
+    # restart — recharger la configuration (recreate) et relancer
+    sub.add_parser("restart",
+                   help="Recharger la configuration (.env) et relancer le Hub et les apps actives "
+                        "(recreate : un simple restart ne relit pas le .env)")
 
     # stop — arreter tout
     stop_parser = sub.add_parser("stop", help="Arreter toutes les apps et le Hub")
@@ -395,6 +400,17 @@ def _run(args) -> int:
             return 0
         except Exception as e:
             print(f"❌ stop a echoue : {e}")
+            return 1
+
+    if args.command == "restart":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        _resolve_mode(args)
+        try:
+            rc = action_restart(console=console, dry_run=global_dry_run)
+            return 0 if rc == 0 else 1
+        except Exception as e:
+            print(f"❌ restart a echoue : {e}")
             return 1
 
     if args.command == "update":

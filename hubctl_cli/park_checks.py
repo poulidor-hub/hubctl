@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Défaut du timeout des commandes git réseau (fetch). Le défaut historique de
@@ -456,12 +457,70 @@ def run_update_prechecks(parc_root: Path) -> list[Finding]:
 
 
 def run_checks(parc_root: Path, apps: list[str]) -> list[Finding]:
-    """Pré-checks complets : méta + HUB_base + chaque app demandée."""
+    """Pré-checks complets : méta + HUB_base + configuration en service + chaque app demandée."""
     parc_root = Path(parc_root)
     findings = run_update_prechecks(parc_root)
+    findings += check_env_applied(parc_root)
     for slug in apps:
         findings.append(check_app_repo(parc_root / "APPS" / slug))
     return findings
+
+
+# ── Configuration non appliquée : .env plus récent que hub-api ───────────────
+
+def _hub_api_started_at() -> datetime | None:
+    """Instant de démarrage du conteneur ``hub-api`` (UTC), ``None`` s'il ne tourne pas.
+
+    Docker absent, daemon arrêté ou conteneur absent : rien à comparer.
+    """
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.StartedAt}}", "hub-api"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    # Format Docker : 2026-11-26T17:34:56.123456789Z (nanosecondes, fuseau Z ou +HH:MM)
+    m = re.match(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})?$",
+        r.stdout.strip(),
+    )
+    if not m:
+        return None
+    frac = (m.group(2) or "")[:6].ljust(6, "0")
+    tz = m.group(3) or "Z"
+    if tz == "Z":
+        tz = "+00:00"
+    try:
+        return datetime.fromisoformat(f"{m.group(1)}.{frac}{tz}")
+    except ValueError:
+        return None
+
+
+def check_env_applied(parc_root: Path) -> list[Finding]:
+    """``HUB_base/.env`` modifié après le dernier démarrage du Hub : information.
+
+    ``compose restart`` (``hub.sh restart``) relance les processus sans relire
+    le ``.env`` : une modification (whitelist, ports, OIDC…) n'est appliquée
+    que par un recreate — ``./hubctl restart``. Rien n'est cassé, la
+    configuration en service est simplement en retard : jamais un problème.
+    Silencieux si le Hub ne tourne pas ou si le ``.env`` n'existe pas.
+    """
+    env = Path(parc_root) / "HUB_base" / ".env"
+    started = _hub_api_started_at()
+    if started is None or not env.is_file():
+        return []
+    modified = datetime.fromtimestamp(env.stat().st_mtime, tz=timezone.utc)
+    if modified <= started:
+        return []
+    return [Finding(
+        check="hub_base.env_applied", ok=True, info=True,
+        detail=(f"configuration non appliquée : HUB_base/.env a été modifié après le "
+                f"dernier démarrage du Hub ({started.astimezone().strftime('%d/%m/%Y %H:%M')}) — "
+                "`./hubctl restart` pour la recharger (un simple restart ne relit pas le .env)"),
+    )]
 
 
 def list_merged_local_branches(repo: Path) -> list[str]:

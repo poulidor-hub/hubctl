@@ -1935,6 +1935,45 @@ def _stop_app(console, app_name: str, *, dry_run: bool, apps_dir: str | None = N
     return rc == 0
 
 
+def action_restart(console=None, *, dry_run: bool = False) -> int:
+    """Recharge la configuration et relance le Hub et les apps actives — par recreate.
+
+    ``compose restart`` (``hub.sh restart``) relance les processus SANS relire
+    le ``.env`` ; ``start prod`` est un no-op quand le Hub tourne déjà (et sans
+    app dans ``APPS/``). Ici ``compose up -d`` recrée chaque service dont la
+    configuration a changé — le Hub, puis les apps actives — les autres restent
+    en place. Retourne 0 si le Hub est sain et toutes les apps relancées.
+    """
+    con = console or _console
+    con.print("[bold]🔄 Rechargement de la configuration (recreate)…[/bold]")
+
+    con.print("[bold]→ Hub[/bold]")
+    if hub_make("up-prod", dry_run=dry_run, console=con) != 0:
+        con.print("[red]✗ Le Hub n'a pas pu être relancé.[/red]")
+        return 1
+    if dry_run:
+        con.print("[dim](dry-run) health check non exécuté[/dim]")
+    elif not _health_check("hub", console=con, timeout=_health_timeout()):
+        con.print("[red]✗ Le Hub ne répond pas après relance. Vérifiez `docker compose logs`.[/red]")
+        return 1
+
+    apps = [a.name for a in hub_state.get_apps()]
+    failed = 0
+    for app_name in apps:
+        con.print(f"[bold]→ {app_name}[/bold]")
+        if app_make(app_name, "up", dry_run=dry_run, console=con) == 0:
+            con.print(f"[green]✓ {app_name} relancée[/green]")
+        else:
+            con.print(f"[red]✗ {app_name} : relance échouée[/red]")
+            failed += 1
+
+    if failed:
+        con.print(f"[red]✗ {failed} app(s) en échec.[/red]")
+        return 1
+    con.print(f"[green]✓ Configuration rechargée : Hub + {len(apps)} app(s).[/green]")
+    return 0
+
+
 def action_stop_all(console=None, *, target: str = "all", dry_run: bool = False) -> None:
     """Arrête toutes les apps actives puis le Hub en parallèle.
 

@@ -6,7 +6,10 @@
 Chaque scénario monte de vrais dépôts git jetables dans tmp_path : un « méta »
 POULIDOR factice contenant HUB_base en submodule, plus des dépôts origin locaux.
 """
+import os
 import subprocess
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -772,3 +775,49 @@ class TestReviewFixes:
         meta, _, _ = _make_meta_with_submodule(tmp_path)
         (meta / "README.md").write_text("modifié\n")
         assert park_checks.meta_unrelated_dirty_files(meta) == ["README.md"]
+
+
+# ── Configuration non appliquée : HUB_base/.env plus récent que hub-api ─────
+# `compose restart` (hub.sh restart) relance les processus SANS relire le
+# .env (VM 26/11) : un .env modifié après le dernier démarrage du Hub n'est
+# jamais appliqué, et rien ne le signalait.
+
+def _env_findings(meta: Path) -> list[Finding]:
+    # Par run_checks (chemin de `doctor`) : le contrôle lit le Docker de la
+    # machine, il n'entre pas dans les préchecks d'`update hub`.
+    return [f for f in park_checks.run_checks(meta, [])
+            if f.check == "hub_base.env_applied"]
+
+
+def test_env_newer_than_hub_start_is_an_information(tmp_path, monkeypatch):
+    meta, hub, _origin = _make_deployment(tmp_path)
+    env = hub / ".env"
+    env.write_text("HUB_HOST=x\n")
+    monkeypatch.setattr(park_checks, "_hub_api_started_at",
+                        lambda: datetime.now(timezone.utc) - timedelta(hours=1))
+    future = time.time() + 300
+    os.utime(env, (future, future))
+
+    findings = _env_findings(meta)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.ok and f.info, "une configuration non appliquée est une information, pas un problème"
+    assert "./hubctl restart" in f.detail
+    assert f.remedy is None
+
+
+def test_env_older_than_hub_start_is_silent(tmp_path, monkeypatch):
+    meta, hub, _origin = _make_deployment(tmp_path)
+    env = hub / ".env"
+    env.write_text("HUB_HOST=x\n")
+    monkeypatch.setattr(park_checks, "_hub_api_started_at", lambda: datetime.now(timezone.utc))
+    old = time.time() - 7200
+    os.utime(env, (old, old))
+    assert _env_findings(meta) == []
+
+
+def test_env_check_skipped_when_hub_not_running(tmp_path, monkeypatch):
+    meta, hub, _origin = _make_deployment(tmp_path)
+    (hub / ".env").write_text("HUB_HOST=x\n")
+    monkeypatch.setattr(park_checks, "_hub_api_started_at", lambda: None)  # Docker absent / Hub arrêté
+    assert _env_findings(meta) == []
