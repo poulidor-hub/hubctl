@@ -13,7 +13,7 @@ from hubctl_cli import actions, animation, atelier_serve, menu, update_serve
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_update_all, action_update,
     action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
-    action_seed_export, action_doctor,
+    action_seed_export, action_doctor, action_app_install,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -206,6 +206,48 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Écraser le fichier s'il existe déjà")
     seed_parser.set_defaults(seed_action=None)
 
+    # app — installation d'une application du parc (une commande, l'app tourne).
+    # Aide entièrement en français : -h/--help est redéfini (texte argparse par
+    # défaut en anglais).
+    def _aide_fr(parser):
+        parser.add_argument("-h", "--help", action="help", default=argparse.SUPPRESS,
+                            help="afficher ce message d'aide et quitter")
+
+    app_parser = sub.add_parser(
+        "app", add_help=False, help="Installer une application du parc depuis son dépôt git",
+        description="Commandes relatives aux applications du parc :\n  hubctl app install <url-git>…")
+    _aide_fr(app_parser)
+    app_sub = app_parser.add_subparsers(dest="app_command", metavar="COMMANDE")
+    install_parser = app_sub.add_parser(
+        "install", add_help=False,
+        help="Installer une application et ses dépendances : clone, .env, build, "
+             "approbation, démarrage",
+        description=(
+            "Installation d'une application du parc en une commande.\n\n"
+            "Pour chaque URL git : clone dans APPS/, .env généré (secrets par défaut "
+            "neutralisés), images du socle garanties, make sync-env, make build, app "
+            "pré-créée APPROUVÉE au registre du Hub, make up, health check, certificat "
+            "signé par la CA du Hub. Les dépendances déclarées dans depends.yaml sont "
+            "installées d'abord : leur URL est résolue dans seed-apps.yaml (racine du "
+            "parc), sinon au registre du Hub (jeton admin).\n\n"
+            "Mot de passe admin du Hub (approbation) : HUBCTL_ADMIN_PASSWORD, sinon "
+            "ADMIN_PASSWORD de HUB_base/.env, sinon saisie masquée (terminal interactif). "
+            "Sans mot de passe l'installation continue : l'app reste « en attente "
+            "d'approbation » dans le Hub.\n\n"
+            "Code de sortie : 0 si toutes les apps demandées répondent, 1 sinon."),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    _aide_fr(install_parser)
+    install_parser.add_argument(
+        "urls", nargs="+", metavar="URL_GIT",
+        help="URL git de l'app à installer (plusieurs possibles), ou un fichier seed YAML "
+             "(liste d'URL) en argument unique")
+    install_parser.add_argument(
+        "--no-deps", dest="no_deps", action="store_true",
+        help="Ne pas installer les dépendances déclarées dans depends.yaml (avertissement)")
+    install_parser.add_argument(
+        "--yes", dest="install_yes", action="store_true",
+        help="Aucune confirmation (défaut effectif sans terminal interactif)")
+
     # socle — build local des images de base, statut flotte
     socle_parser = sub.add_parser("socle", help="Socle HUBsocle : build des images de base, statut flotte")
     socle_sub = socle_parser.add_subparsers(dest="socle_cmd")
@@ -227,6 +269,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _tty_password_prompt():
+    """Saisie masquée du mot de passe admin du Hub (terminal interactif uniquement).
+
+    Retourne le callable attendu par `action_app_install(prompt_password=…)`. Le
+    mot de passe n'est ni mémorisé, ni écrit, ni journalisé — il ne sert qu'au
+    login, et une saisie vide laisse l'app « en attente d'approbation ».
+    """
+    import getpass
+    return lambda: getpass.getpass(
+        "🔑 Mot de passe admin du Hub — approuve l'app (vide : laisser en attente) : ")
+
+
+def _tty_confirm(message: str) -> bool:
+    """Confirmation en terminal interactif (Entrée = oui). Entrée fermée → non."""
+    try:
+        answer = input(f"{message} : ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("", "o", "oui", "y", "yes")
 
 
 def _update_mode(args) -> str:
@@ -601,6 +664,33 @@ def _run(args) -> int:
                                dry_run=global_dry_run or args.dry_run)
         except Exception as e:
             print(f"❌ seed a échoué : {e}")
+            return 1
+
+    if args.command == "app":
+        from rich.console import Console as RichConsole
+        console = RichConsole()
+        if args.app_command != "install":
+            console.print("[yellow]hubctl app requiert une sous-commande — rien n'a été exécuté.[/yellow]")
+            console.print("[bold]Usage :[/bold]")
+            console.print("  hubctl app install <url-git> [url-git…] [--no-deps] [--yes]")
+            console.print("  hubctl app install <fichier-seed.yaml>")
+            return 2
+        _resolve_mode(args)
+        # Terminal interactif : confirmation du plan et saisie masquée du mot de
+        # passe admin sont possibles (jamais sans TTY : cron, pipe, script).
+        interactive = _interactive()
+        try:
+            return action_app_install(
+                console, args.urls,
+                no_deps=args.no_deps, yes=args.install_yes or not interactive,
+                dry_run=global_dry_run,
+                prompt_password=_tty_password_prompt() if interactive else None,
+                confirm=_tty_confirm if interactive else None)
+        except KeyboardInterrupt:
+            print("\n❌ Interrompu.")
+            return 130
+        except Exception as e:
+            print(f"❌ app install a échoué : {e}")
             return 1
 
     if args.command == "socle":

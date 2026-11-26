@@ -455,6 +455,8 @@ def _build_key_hints() -> Text:
         text.append("Mettre à jour\n", style="white")
         text.append(" 4  ", style="bold magenta")
         text.append("Coffre\n", style="white")
+        text.append(" 5  ", style="bold cyan")
+        text.append("Installer une application\n", style="white")
 
     text.append("\n")
     text.append(" 0  ", style="dim")
@@ -887,6 +889,63 @@ def _coffre_submenu(canvas: Canvas, vault_mgr: VaultManager) -> None:
         pause(canvas)
 
 
+# ── Installer une application (URL git) ──
+
+
+def _run_install(canvas: Canvas, targets: list[str], admin_pw: str = "") -> bool:
+    """`hubctl app install` dans la vue de flux du canvas.
+
+    Contrairement aux autres actions du menu (elles retournent None et lèvent),
+    celle-ci retourne un code de sortie : c'est lui qui fait foi. Le mot de
+    passe admin saisi au widget n'est transmis qu'en callback — l'action ne le
+    demande qu'après HUBCTL_ADMIN_PASSWORD et le .env du Hub.
+    """
+    prompt_password = (lambda: admin_pw) if admin_pw else None
+
+    def runner() -> int:
+        return actions.action_app_install(_ACTION_CONSOLE, targets, yes=True,
+                                          prompt_password=prompt_password)
+
+    try:
+        retcode, cancelled = canvas.stream_command(runner, label="Installation de l'application")
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        retcode, cancelled = 1, False
+    success = not cancelled and retcode == 0
+    pause(canvas, Text("✓ Application(s) installée(s)" if success else "✗ Installation",
+                       style="green" if success else "red"))
+    return success
+
+
+def view_install_app(canvas: Canvas) -> bool:
+    """« Installer une application (URL git) » : URL → mot de passe admin
+    (masqué, facultatif) → confirmation → le même chemin que la CLI.
+
+    Les widgets sont posés AVANT le flux : une fois l'action lancée, le canvas
+    appartient à la vue de flux (plus de saisie possible).
+    """
+    with _modal(canvas):
+        raw = widgets.text(canvas, "URL git de l'application à installer :")
+    if raw is widgets.ESC or raw is None:
+        return False
+    url = raw.strip()
+    if not url:
+        return False
+    name = actions.repo_name_from_url(url) or url
+    with _modal(canvas):
+        pw = widgets.password(
+            canvas, "Mot de passe admin du Hub — approuve l'app (vide : laisser en attente) :")
+    if pw is widgets.ESC:
+        pw = ""
+    with _modal(canvas):
+        confirmed = widgets.confirm(
+            canvas, f"Installer « {name} » et ses dépendances ?", default=True)
+    if confirmed is not True:
+        return False
+    return _run_install(canvas, [url], pw or "")
+
+
 # ── Main loop ──
 
 def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = None) -> None:
@@ -950,6 +1009,8 @@ def main_loop(canvas: Canvas, vault: VaultManager, initial_state: dict | None = 
                 _run_action(canvas, "Mise à jour complète", actions.action_update_all)
             elif c == '4':
                 view_coffre(canvas, vault)
+            elif c == '5':
+                view_install_app(canvas)
             elif c == '0':
                 confirm = widgets.confirm(canvas, "Quitter hubctl ?")
                 if confirm is True:
