@@ -2120,9 +2120,16 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
     meta_root = hub_state.PARC_ROOT
     hub_path = hub_state.HUB_DIR
 
-    # Pré-checks : jamais de pull dans une divergence (échec propre)
-    problems = [f for f in park_checks.run_update_prechecks(meta_root)
-                if not f.ok]
+    # Pré-checks : jamais de pull dans une divergence (échec propre). Les
+    # constats d'information (Finding.info, ok=True — ex. « mise à jour
+    # disponible » sur un déploiement en HEAD détaché) sont montrés et ne
+    # bloquent pas : seuls les problèmes refusent l'update.
+    prechecks = park_checks.run_update_prechecks(meta_root)
+    for f in prechecks:
+        if f.info:
+            # markup=False : le message peut citer du stderr git, entre crochets
+            con.print(f"ℹ {f.check} — {f.detail}", style="dim", markup=False)
+    problems = [f for f in prechecks if not f.ok]
     if problems:
         for f in problems:
             con.print(f"[red]✗ {f.check} — {f.detail}[/red]")
