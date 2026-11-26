@@ -722,7 +722,22 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
         con.print("[bold]🔨 Build & démarrage du Hub...[/bold]")
         rc = hub_make("up-prod", dry_run=False, console=con)
         if rc != 0:
-            con.print("[red]✗ Échec du build/démarrage du Hub.[/red]")
+            if rc == 124:
+                # Timeout du budget build : le travail (build d'images du
+                # premier boot) continue orphelin côté Docker — pile saine
+                # observée en E2E derrière. Guidance actionable, pas une
+                # simple ligne d'échec.
+                con.print(
+                    "[yellow]⏳ Build/démarrage toujours en cours après le budget imparti "
+                    f"({_build_timeout()}s) — le travail continue en arrière-plan.[/yellow]"
+                )
+                con.print(
+                    "   [dim]Relancez [bold]./hubctl init[/bold] : il convergera "
+                    "(Hub déjà opérationnel → init reprise), ou suivez "
+                    "[bold]docker compose logs -f[/bold] dans HUB_base.[/dim]"
+                )
+            else:
+                con.print("[red]✗ Échec du build/démarrage du Hub.[/red]")
             return 1
 
     # ── 6. Health check ──
@@ -730,7 +745,7 @@ def action_bootstrap(console, *, force: bool = False, dry_run: bool = False) -> 
         con.print("[dim](dry-run) Attente health check...[/dim]")
     else:
         con.print("[bold]💚 Attente du health check...[/bold]")
-        ok = _health_check("hub", console=con, timeout=120)
+        ok = _health_check("hub", console=con, timeout=_health_timeout())
         if not ok:
             con.print("[red]✗ Le Hub ne répond pas après démarrage. Vérifiez `docker compose logs`.[/red]")
             return 1
@@ -1085,10 +1100,39 @@ def _write_app_env(console, dest, config, *, dry_run: bool = False) -> None:
     con.print("[green]✓ .env généré[/green]")
 
 
-def hub_make(target: str, *, dry_run: bool, console=None) -> int:
+# ── Budgets du premier démarrage (E2E VM 26/11) ──
+# Cibles make du Hub qui incluent un build d'images (compose up -d construit
+# ce qui manque au premier boot) : budget généreux au lieu du défaut 120 s.
+# Surcharge : HUBCTL_BUILD_TIMEOUT (secondes).
+_BUILD_TARGETS = {"up-prod", "up", "build", "rebuild"}
+
+
+def _build_timeout() -> int:
+    try:
+        return int(os.environ.get("HUBCTL_BUILD_TIMEOUT", "1800"))
+    except ValueError:
+        return 1800
+
+
+def _health_timeout() -> int:
+    try:
+        return int(os.environ.get("HUBCTL_HEALTH_TIMEOUT", "600"))
+    except ValueError:
+        return 600
+
+
+def hub_make(target: str, *, dry_run: bool, console=None, timeout: int | None = None) -> int:
+    # Budgets du premier démarrage (E2E VM 26/11) : le 1ᵉʳ `make up-prod`
+    # inclut le BUILD des images (compose up -d sur machine vierge), largement
+    # > 120 s sur VM 2 vCPU — l'ancien défaut tuait le build à 120 s et
+    # affichait une erreur fantôme (pile saine derrière). Précédent interne :
+    # le flux update s'autorise ~1 h. Surcharge : HUBCTL_BUILD_TIMEOUT.
+    if timeout is None and target in _BUILD_TARGETS:
+        timeout = _build_timeout()
+    kwargs = {"timeout": timeout} if timeout is not None else {}
     return utils.run_shell(
         ["make", "-C", str(hub_state.HUB_DIR), target],
-        dry_run=dry_run, console=console,
+        dry_run=dry_run, console=console, **kwargs,
     )
 
 
