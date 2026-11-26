@@ -533,3 +533,16 @@ def test_restore_command_catches_exception(monkeypatch):
     args = build_parser().parse_args(["restore", "/tmp/inexistent.tar.gz"])
     rc = m._run(args)
     assert rc == 1
+
+
+# ── `init --help` dit la reprise (verdict VM 26/11 : seule la liste des
+#    sous-commandes de `hubctl --help` la mentionnait) ──
+
+def test_init_help_itself_explains_resume(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["init", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "reprend" in out, "`hubctl init --help` doit dire qu'un .env existant est repris sans --force"
+    assert "--force" in out and "régénère" in out, "`--force` doit dire qu'il régénère le .env"

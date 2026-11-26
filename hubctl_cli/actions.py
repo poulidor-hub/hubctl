@@ -499,6 +499,22 @@ def _render_unit(con, gabarit: Path, rendered: Path) -> Path | None:
         return None
 
 
+def _system_step_fallback(con, label: str, cmds: list[list[str]]) -> None:
+    """Pas de TTY (ou échec sudo) : rappel des commandes — sauf dans le flux de l'installeur.
+
+    ``install.sh`` lance ``hubctl init`` sans TTY puis installe lui-même, en
+    root, les deux unités (phase 3c) ; il signale sa présence par
+    ``HUBCTL_INSTALLER=1``. Sans cela, l'init réclamait une action manuelle
+    pour une étape faite juste après (constat VM 26/11/2026).
+    """
+    if os.environ.get("HUBCTL_INSTALLER") == "1":
+        con.print(f"[dim]Service {label} : installé par l'installeur (install.sh) juste après.[/dim]")
+        return
+    con.print(f"[yellow]⚠ Service {label} : commandes à lancer à la main :[/yellow]")
+    for cmd in cmds:
+        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+
+
 def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     """Étape `hubctl init` : service hôte hubctl-atelier (« ensure » idempotent).
 
@@ -610,10 +626,8 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
         con.print(f"[yellow]⚠ Service atelier (étape système) : {e}[/yellow]")
 
     # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
-    # rappeler les commandes à lancer à la main.
-    con.print("[yellow]⚠ Service atelier : commandes à lancer à la main :[/yellow]")
-    for cmd in cmds:
-        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+    # rappeler les commandes à lancer à la main (sauf flux de l'installeur).
+    _system_step_fallback(con, "atelier", cmds)
 
 
 def _ensure_update_service(console, dry_run: bool = False) -> None:
@@ -676,9 +690,7 @@ def _ensure_update_service(console, dry_run: bool = False) -> None:
 
     # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
     # rappeler les commandes à lancer à la main.
-    con.print("[yellow]⚠ Service update : commandes à lancer à la main :[/yellow]")
-    for cmd in cmds:
-        con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
+    _system_step_fallback(con, "update", cmds)
 
 
 def _summary_urls(host_ip: str) -> list[tuple[str, str]]:

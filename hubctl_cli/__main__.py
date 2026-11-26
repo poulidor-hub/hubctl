@@ -118,9 +118,17 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Branche ou tag a tester avec --maj (defaut: main)")
 
     # init — bootstrap
-    init_parser = sub.add_parser("init", help="Bootstrap automatique du Hub (genere .env, demarre, verifie la sante) ; relancable : reprend une install existante (sans --force, le .env est conserve)")
+    init_parser = sub.add_parser(
+        "init",
+        help="Bootstrap automatique du Hub (genere .env, demarre, verifie la sante) ; relancable : reprend une install existante (sans --force, le .env est conserve)",
+        description=(
+            "Bootstrap du Hub, relançable sans risque. Si le .env est absent : installation "
+            "complète (secrets générés, démarrage, santé). S'il existe déjà : reprise — init "
+            "reprend l'installation en conservant le .env tel quel (aucun prompt, aucun secret "
+            "régénéré) et remonte la pile. Avec --force : régénère le .env (mots de passe, "
+            "clé Fernet) après un avertissement explicite."))
     init_parser.add_argument("--force", action="store_true",
-                             help="Ecraser le .env existant sans confirmation")
+                             help="Régénère le .env existant de zéro (avertissement explicite : les personnalisations et les secrets qu'il porte sont perdus)")
 
     # export — export parc
     export_parser = sub.add_parser("export", help="Exporter tout le parc dans une archive tar.gz")
