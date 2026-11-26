@@ -1,3 +1,12 @@
+## [0.20.6] - 26 novembre 2026
+### ⚡ README public mis à jour — URLs voisines vers poulidor-hub, section Mise à jour d'un déploiement
+- Badge de version du README corrigé (0.9.0 -> 0.20.5) ; URLs des dépôts voisins pointées
+  vers les dépôts publics poulidor-hub (POULIDOR x2, HUB_base -> HUB, HUBsocle).
+- Section « Mise à jour d'un déploiement » ajoutée : la mise à jour d'un déploiement passe
+  par la racine du méta-repo (fetch upstream + merge --ff-only + sous-modules) ; le dépôt
+  public est en lecture seule pour les clients (garanti par GitHub).
+- Aucune modification de la CLI.
+
 ## [0.20.5] - 25 novembre 2026
 ### ⚡ Neutralisation open source : valeurs d'exemple dans le code, les tests et la documentation
 - Valeurs réelles (adresses IP, noms d'hôtes, identifiants de clients, slugs d'applications
