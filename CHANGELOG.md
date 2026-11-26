@@ -1,3 +1,28 @@
+## [0.22.0] - 26 novembre 2026
+### ⚡ `hubctl app install <url-git>` — une commande, l'app tourne (plan « installation sans friction », phases 2-3)
+- **Nouvelle commande** `hubctl app install <url-git>… [--no-deps] [--yes]` (aussi un fichier YAML au
+  format seed) : clone dans `APPS/<slug>`, dépendances d'abord (`depends.yaml`), `.env`, images et
+  contexte de build du socle garantis, `sync-env`, build, app **pré-créée approuvée** au Hub,
+  démarrage, certificat de la CA du Hub, résumé avec l'URL d'accès. Menu PROD : touche 5.
+- **Dépendances** : résolues par `seed-apps.yaml` puis le registre Hub ; introuvables → message
+  clair, l'app n'est pas installée, les suivantes continuent ; cycle détecté ; `--no-deps`.
+- **Secrets par défaut neutralisés** : toute variable `${VAR:-défaut}` du compose dont le défaut
+  ressemble à un placeholder (`changeme`, `admin123`…) reçoit une valeur aléatoire dans le `.env`.
+- **Socle garanti** : `_ensure_socle_image` construit `poulidor/socle-api:<V>` et `socle-web:<V>`
+  (V = `HUBsocle/VERSION`) s'ils manquent — budget 1800 s par image — avant `sync-env` ; le lien
+  de contexte `socle` est créé quand le compose de l'app passe par un lien `socle` local.
+- **Approbation** : hubctl agit comme l'admin — `POST /api/auth/login` puis `POST /api/apps/`
+  (ports lus dans le `.env` après `sync-env`) ; l'app naît `approved`. Mot de passe admin :
+  `HUBCTL_ADMIN_PASSWORD`, puis `ADMIN_PASSWORD` de `HUB_base/.env` (valide tant qu'il n'a pas
+  été changé), puis saisie masquée. Sans TTY ni mot de passe valide : l'app est installée et reste
+  « en attente d'approbation », message explicite, rc 0. Rien n'est mémorisé ni journalisé. Une app
+  déjà installée encore `pending` est approuvée au passage (rattrapage).
+- **Budgets de premier démarrage** 1800 / 600 / 300 s (build, up, santé) — aussi pour une nouvelle
+  app du `seed`, qui passe désormais par le même chemin (`_build_up_health`).
+- `socle build` accepte une console et un budget ; `_health_check` nomme sa cible.
+- Tests : `test_app_install.py` (133), suite complète 981 verts. **Non vérifié sur une vraie
+  pile** (VM neuve) à la date de cette entrée : validation E2E à venir.
+
 ## [0.21.0] - 26 novembre 2026
 ### ⚡ doctor honnête sur un déploiement, `hubctl restart`, init clair — plan « installation sans friction » (phase 4)
 - **`hubctl doctor` sur un clone public frais ne sort plus en rouge** (verdict VM 26/11 : deux ✗

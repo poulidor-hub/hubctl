@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hubctl-cli"
-version = "0.21.0"  # garder synchronisé avec ../VERSION (procédure de release)
+version = "0.22.0"  # garder synchronisé avec ../VERSION (procédure de release)
 description = "Hubctl — pilotage du parc POULIDOR (TUI + CLI : update, ateliers, coffre, PRA)"
 readme = "README.md"
 requires-python = ">=3.11"
