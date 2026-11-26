@@ -8,6 +8,13 @@ Consommé par les pré-checks de ``hubctl update`` et par ``hubctl doctor``.
 Conventions :
 - Chaque vérification retourne des :class:`Finding` (check, ok, detail,
   remedy) ; ``remedy`` = commande exacte prête à copier, ou ``None``.
+- ``ok=False`` = un problème (sortie 1, ``update hub`` refusé). Un constat
+  d'INFORMATION (``info=True``, toujours ``ok=True``) est rapporté mais ne
+  compte jamais comme un problème et n'est jamais corrigé.
+- Deux lectures de HUB_base, décidées par son ÉTAT et rien d'autre : HEAD
+  détaché sur le gitlink du méta (ce que pose ``git clone`` + ``submodule
+  update``) = un déploiement qui suit les releases du méta ; HEAD attaché =
+  un checkout de développement (cf. :func:`check_hub_base`).
 - Aucune fonction ne corrige quoi que ce soit d'elle-même : seule
   :func:`apply_safe_fixes` agit, et uniquement sur les catégories sûres
   (HUB_base : réalignement, pointeur submodule, branches mergées).
@@ -44,12 +51,32 @@ def _git_timeout() -> int:
 
 @dataclass
 class Finding:
-    """Résultat d'une vérification : problème éventuel + remède exact."""
+    """Résultat d'une vérification : problème éventuel + remède exact.
+
+    ``ok=False`` = un problème (sortie 1, ``update hub`` refusé).
+    ``info=True`` = un constat d'information — toujours ``ok=True`` : il est
+    rapporté (« mise à jour disponible », « impossible de vérifier les mises
+    à jour ») mais ne compte jamais comme un problème et n'est jamais
+    corrigé. Son message se suffit à lui-même : ``doctor`` n'affiche le
+    champ ``remedy`` que d'un problème.
+    """
 
     check: str
     ok: bool
     detail: str
     remedy: str | None = None
+    info: bool = False
+
+    def __post_init__(self) -> None:
+        if self.info and not self.ok:
+            raise ValueError(
+                "un constat d'information est toujours ok=True — il ne compte "
+                "jamais comme un problème")
+
+
+def _info(check: str, detail: str) -> Finding:
+    """Constat d'information : vrai constat, jamais un problème."""
+    return Finding(check=check, ok=True, detail=detail, info=True)
 
 
 def _run(*args: str, cwd: Path | None = None, timeout: int | None = None) -> tuple[int, str, str]:
@@ -147,6 +174,33 @@ def _current_branch(repo: Path) -> str | None:
     return None if out in (None, "HEAD") else out
 
 
+def _detached_head(repo: Path) -> bool | None:
+    """HEAD détaché ? ``None`` quand git ne sait pas répondre (dépôt illisible).
+
+    ``True`` : l'état que pose ``git clone`` + ``submodule update`` sur tout
+    déploiement ; ``False`` : checkout de développement (branche courante).
+    L'indétermination n'est JAMAIS lue comme un déploiement — on retombe sur
+    la lecture stricte du checkout de développement.
+    """
+    rc, out, _ = _run("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=repo)
+    if rc != 0:
+        return None
+    return out.strip() in ("", "HEAD")
+
+
+def _short(sha: str | None) -> str:
+    return (sha or "?")[:7]
+
+
+# Chemin réel de la mise à jour d'un déploiement — README, « Mise à jour d'un
+# déploiement » : le MÉTA d'abord (le Hub suit le gitlink du méta), puis
+# hubctl. Proposer `./hubctl update hub` seul reviendrait à proposer une
+# commande qui ne fait rien tant que le méta n'a pas proposé le nouveau gitlink.
+_META_UPDATE_PATH = ("`git fetch upstream && git merge --ff-only upstream/main "
+                     "&& git submodule update --init --recursive`, puis "
+                     "`./hubctl update hub`")
+
+
 def _dirty_tracked(repo: Path, path: str | None = None) -> list[str]:
     """Fichiers SUIVIS modifiés (ignore le non-suivi ``??``)."""
     args = ["git", "status", "--porcelain"]
@@ -228,7 +282,22 @@ def check_meta_ready(parc_root: Path) -> list[Finding]:
 
 
 def check_hub_base(parc_root: Path) -> list[Finding]:
-    """HUB_base : alignement origin/main + HEAD == gitlink du méta."""
+    """HUB_base : alignement origin/main + HEAD == gitlink du méta.
+
+    La lecture dépend de l'ÉTAT du sous-module, jamais d'une configuration :
+
+    - **HEAD détaché** — l'état que pose ``git clone`` + ``submodule update``
+      sur tout déploiement : un déploiement qui suit les releases du méta.
+      Le gitlink du méta est la source de vérité ; le rapport à
+      ``origin/main`` est une *information* (« mise à jour disponible »,
+      « impossible de vérifier les mises à jour »), jamais un problème : le
+      composant avance entre deux releases, c'est normal.
+    - **HEAD attaché** — un checkout de développement : sémantique
+      historique, retard sur ``origin/main`` = problème.
+
+    Dans les deux cas, l'alignement sur le gitlink (``hub_base.pointer``)
+    et les branches de fonctionnalité mergées restent de vrais problèmes.
+    """
     parc_root = Path(parc_root)
     hub = parc_root / "HUB_base"
     if not (hub / ".git").exists() and not (hub / ".git").is_file():
@@ -240,43 +309,33 @@ def check_hub_base(parc_root: Path) -> list[Finding]:
         )]
 
     findings: list[Finding] = []
+    deployment = _detached_head(hub) is True
+    local = _git_out("git", "rev-parse", "HEAD", cwd=hub)
+
     frc, _, ferr = _run("git", "fetch", "--prune", "origin", cwd=hub)
     if frc != 0:
-        # I2 : refs potentiellement périmées → JAMAIS de diagnostic
-        # « divergent » (remède destructeur) sur un fetch en échec.
-        findings.append(Finding(
-            check="hub_base.fetch",
-            ok=False,
-            detail="fetch origin impossible : "
-                   + (_significant_line(ferr) or "erreur réseau"),
-            remedy=_fetch_failure_remedy(hub, ferr),
-        ))
-        return findings
-
-    local = _git_out("git", "rev-parse", "HEAD", cwd=hub)
-    remote = _git_out("git", "rev-parse", "origin/main", cwd=hub)
-
-    if local is not None and remote is not None and local == remote:
-        findings.append(Finding(check="hub_base.aligned_origin", ok=True,
-                                detail="HUB_base == origin/main"))
+        remedy = _fetch_failure_remedy(hub, ferr)
+        reason = _significant_line(ferr) or "erreur réseau"
+        if not deployment:
+            # I2 : refs potentiellement périmées → JAMAIS de diagnostic
+            # « divergent » (remède destructeur) sur un fetch en échec.
+            findings.append(Finding(
+                check="hub_base.fetch",
+                ok=False,
+                detail=f"fetch origin impossible : {reason}",
+                remedy=remedy,
+            ))
+            return findings
+        # Déploiement : le parc est cohérent avec le méta, on ignore juste
+        # s'il existe plus récent. Information ; le remède, quand il est
+        # connu, va dans le message (`doctor` ne montre que celui d'un
+        # problème).
+        detail = f"impossible de vérifier les mises à jour : {reason}"
+        if remedy:
+            detail += f" — {remedy}"
+        findings.append(_info("hub_base.fetch", detail))
     else:
-        rc, _, _ = _run("git", "merge-base", "--is-ancestor", "HEAD",
-                        "origin/main", cwd=hub)
-        if rc == 0:
-            findings.append(Finding(
-                check="hub_base.aligned_origin", ok=False,
-                detail="HUB_base en retard sur origin/main",
-                remedy=f"git -C {hub} pull --ff-only",
-            ))
-        else:
-            findings.append(Finding(
-                check="hub_base.aligned_origin", ok=False,
-                detail="historique HUB_base divergent d'origin/main "
-                       "(historique réécrit ?)",
-                remedy=(f"git -C {hub} fetch origin --prune && "
-                        f"git -C {hub} checkout main && "
-                        f"git -C {hub} reset --hard origin/main"),
-            ))
+        findings.append(_aligned_origin(hub, local, deployment))
 
     recorded = _git_out("git", "ls-tree", "HEAD", "HUB_base", cwd=parc_root)
     recorded_sha = recorded.split()[2] if recorded else None
@@ -289,17 +348,66 @@ def check_hub_base(parc_root: Path) -> list[Finding]:
         else f"git -C {parc_root} submodule update --init HUB_base",
     ))
 
-    # I1 : branches locales mergées restantes (le --fix sait les supprimer)
-    merged = list_merged_local_branches(hub)
-    if merged:
-        findings.append(Finding(
-            check="hub_base.branches",
-            ok=False,
-            detail="branches locales mergées restantes : "
-                   + ", ".join(merged[:5]),
-            remedy=f"hubctl doctor --fix (supprime {', '.join(merged[:5])})",
-        ))
+    # I1 : branches locales mergées restantes (le --fix sait les supprimer).
+    # Sur des refs fraîches seulement : un origin/main périmé ne propose
+    # aucune suppression (même prudence que I2).
+    if frc == 0:
+        merged = list_merged_local_branches(hub)
+        if merged:
+            findings.append(Finding(
+                check="hub_base.branches",
+                ok=False,
+                detail="branches locales mergées restantes : "
+                       + ", ".join(merged[:5]),
+                remedy=f"hubctl doctor --fix (supprime {', '.join(merged[:5])})",
+            ))
     return findings
+
+
+def _aligned_origin(hub: Path, local: str | None, deployment: bool) -> Finding:
+    """Rapport de HUB_base à ``origin/main`` — fetch fait, refs fraîches."""
+    remote = _git_out("git", "rev-parse", "origin/main", cwd=hub)
+
+    if local is not None and remote is not None and local == remote:
+        return Finding(check="hub_base.aligned_origin", ok=True,
+                       detail="HUB_base == origin/main")
+
+    rc, _, _ = _run("git", "merge-base", "--is-ancestor", "HEAD",
+                    "origin/main", cwd=hub)
+
+    if not deployment:
+        # Checkout de développement : sémantique historique, inchangée.
+        if rc == 0:
+            return Finding(
+                check="hub_base.aligned_origin", ok=False,
+                detail="HUB_base en retard sur origin/main",
+                remedy=f"git -C {hub} pull --ff-only",
+            )
+        return Finding(
+            check="hub_base.aligned_origin", ok=False,
+            detail="historique HUB_base divergent d'origin/main "
+                   "(historique réécrit ?)",
+            remedy=(f"git -C {hub} fetch origin --prune && "
+                    f"git -C {hub} checkout main && "
+                    f"git -C {hub} reset --hard origin/main"),
+        )
+
+    # Déploiement : le gitlink du méta est la vérité, origin/main n'est
+    # qu'un renseignement — jamais un remède qui déplacerait le composant.
+    here, there = _short(local), _short(remote)
+    if remote is None:
+        return _info("hub_base.aligned_origin",
+                     "impossible de vérifier les mises à jour : origin/main "
+                     "introuvable dans HUB_base")
+    if rc == 0:
+        return _info("hub_base.aligned_origin",
+                     f"mise à jour disponible : HUB_base {here} → {there} "
+                     f"(origin/main) — mettre le méta à jour d'abord, à sa "
+                     f"racine : {_META_UPDATE_PATH}")
+    return _info("hub_base.aligned_origin",
+                 f"HUB_base {here} est absent d'origin/main {there} "
+                 "(historique du composant réécrit ?) — rien à corriger, le "
+                 f"déploiement suit le méta ; pour avancer : {_META_UPDATE_PATH}")
 
 
 def check_app_repo(app_path: Path) -> Finding:
@@ -357,18 +465,25 @@ def run_checks(parc_root: Path, apps: list[str]) -> list[Finding]:
 
 
 def list_merged_local_branches(repo: Path) -> list[str]:
-    """Branches locales (hors courante) dont tous les commits sont dans
-    ``origin/main`` — les seules que ``apply_safe_fixes`` accepte de supprimer."""
+    """Branches locales (hors branche de référence) dont tous les commits
+    sont dans ``origin/main`` — les seules que ``apply_safe_fixes`` accepte
+    de supprimer.
+
+    Branche de référence, jamais une « restante » : la courante quand HEAD
+    est attaché (checkout de développement) ; ``main`` quand HEAD est
+    détaché — un déploiement garde le miroir local d'origin/main posé par le
+    clone, ce n'est pas une branche de fonctionnalité à nettoyer.
+    """
     repo = Path(repo)
     remote_main = _git_out("git", "rev-parse", "origin/main", cwd=repo)
     if remote_main is None:
         return []
-    current = _current_branch(repo)
+    reference = _current_branch(repo) or "main"
     refs = _git_out("git", "for-each-ref", "refs/heads",
                     "--format", "%(refname:short)", cwd=repo) or ""
     merged: list[str] = []
     for name in [line.strip() for line in refs.splitlines() if line.strip()]:
-        if name == current:
+        if name == reference:
             continue
         rc, _, _ = _run("git", "merge-base", "--is-ancestor", name,
                         "origin/main", cwd=repo)
@@ -398,6 +513,10 @@ def apply_safe_fixes(findings: list[Finding], parc_root: Path, *,
     mergées de HUB_base (hub_base.branches). Les findings ``app.*`` ne sont
     jamais auto-corrigés (rapport seul). Retourne le nombre d'actions
     appliquées. Une branche non mergée est structurellement refusée.
+
+    Sur un déploiement (HUB_base en HEAD détaché), ni ``checkout main`` ni
+    ``reset --hard`` : ils avanceraient le composant au-delà du gitlink du
+    méta. Seul le réalignement sur le gitlink s'applique.
     """
     parc_root = Path(parc_root)
     hub = parc_root / "HUB_base"
@@ -411,7 +530,12 @@ def apply_safe_fixes(findings: list[Finding], parc_root: Path, *,
             if rc == 0:
                 applied += 1
 
-    if "hub_base.aligned_origin" in failed and hub.exists():
+    # Checkout de développement (HEAD attaché, établi) SEULEMENT : sur un
+    # déploiement (HEAD détaché, ou illisible) un checkout main + reset
+    # --hard avancerait le composant au-delà du gitlink du méta — le
+    # réalignement passe par le pointeur ci-dessous.
+    if ("hub_base.aligned_origin" in failed and hub.exists()
+            and _detached_head(hub) is False):
         if _confirm(console, "Réaligner HUB_base sur origin/main (reset --hard) ?",
                     assume_yes):
             rc, _, _ = _run("git", "checkout", "main", cwd=hub)

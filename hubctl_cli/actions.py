@@ -2383,7 +2383,12 @@ def action_doctor(console=None, *, fix: bool = False, assume_yes: bool = False,
     problems = [f for f in findings if not f.ok]
 
     for f in findings:
-        mark = "[green]✓[/green]" if f.ok else "[red]✗[/red]"
+        if f.info:
+            # constat d'information (park_checks.Finding.info) : ℹ neutre —
+            # un vrai constat (« mise à jour disponible »), ni sain ni problème
+            mark = "[cyan]ℹ[/cyan]"
+        else:
+            mark = "[green]✓[/green]" if f.ok else "[red]✗[/red]"
         line = f"{mark} {f.check} — {f.detail}"
         if not f.ok and f.remedy:
             line += f"\n    [yellow]remède : {f.remedy}[/yellow]"
