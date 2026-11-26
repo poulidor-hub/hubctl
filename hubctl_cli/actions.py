@@ -587,6 +587,18 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     except OSError as e:
         con.print(f"[yellow]⚠ Token Hub ({hub_token}) : {e}[/yellow]")
 
+    # ── 2b. Dossier du coffre : il doit exister AVANT le service ──
+    # L'unit est en ProtectSystem=strict avec ReadWritePaths sur ce dossier
+    # (runtime, hors git, créé au premier lancement interactif de ./hubctl) :
+    # absent, systemd refusait le montage (226/NAMESPACE) et le service bouclait
+    # sur tout déploiement neuf (constat VM 26/11/2026).
+    coffre: Path | None = None
+    try:
+        coffre = hub_state.vault_dir()
+        coffre.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as e:
+        con.print(f"[yellow]⚠ Coffre ({coffre}) : {e}[/yellow]")
+
     # ── 3. Unit systemd : rendre (substitution), installer / activer / rien ──
     if _ATELIER_UNIT.exists():
         try:
