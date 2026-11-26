@@ -1,6 +1,6 @@
 # Hubctl — Pilotage du parc POULIDOR
 
-![version](https://img.shields.io/badge/version-0.20.5-blue)
+![version](https://img.shields.io/badge/version-0.20.6-blue)
 
 Outil unique d'administration du parc : **TUI interactive** (dashboard, menus, coffre)
 et **CLI non-interactive** pour le déploiement, la mise à jour, les ateliers de
