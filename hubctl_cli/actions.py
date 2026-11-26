@@ -2507,6 +2507,20 @@ def _install_fail(con, res: _InstallResult, detail: str) -> None:
     con.print(f"[red]✗ {escape(detail)}.[/red]")
 
 
+def _depends_clean_empty(f: Path) -> bool:
+    """depends.yaml bien formé et sans dépendance déclarée (``depends_on: []``
+    ou clé absente). Faux dès que le YAML est cassé ou de forme inattendue."""
+    import yaml
+    try:
+        data = yaml.safe_load(f.read_text(errors="replace")) or {}
+    except (yaml.YAMLError, OSError, UnicodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    items = data.get("depends_on")
+    return items is None or items == []
+
+
 def _resolve_dependency_url(run: _InstallRun, dep_slug: str) -> str | None:
     """URL git d'une dépendance absente du parc : (a) seed-apps.yaml de la
     racine du parc, (b) registre du Hub (git_repo_url, jeton admin)."""
@@ -2533,9 +2547,13 @@ def _install_plan(run: _InstallRun, res: _InstallResult, dest: Path) -> list[tup
     slug = res.slug
     deps = _read_depends(dest)
     if not deps:
-        if (dest / "depends.yaml").exists():
-            con.print(f"[yellow]⚠ depends.yaml de « {slug} » illisible ou sans dépendance "
-                      "déclarée — app traitée comme autonome.[/yellow]")
+        f = dest / "depends.yaml"
+        # Le gabarit livre `depends_on: []` : vide et bien formé, c'est le cas
+        # normal d'une app autonome — pas d'avertissement (verdict VM 26/11).
+        # Seul un fichier ILLISIBLE (YAML cassé, forme inattendue) est signalé.
+        if f.exists() and not _depends_clean_empty(f):
+            con.print(f"[yellow]⚠ depends.yaml de « {slug} » illisible — app traitée "
+                      "comme autonome.[/yellow]")
         return []
     if run.no_deps:
         con.print(f"[yellow]⚠ --no-deps : {len(deps)} dépendance(s) ignorée(s) : "

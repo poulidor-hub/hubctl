@@ -1585,3 +1585,38 @@ def test_hub_api_post_chemin_exact_sans_slash_307(reel):
     (`/api/apps/`, slash final) — sinon 307, jamais 201."""
     status, _ = actions._hub_api("POST", "/api/apps", token=TOKEN, body={})
     assert status == 307
+
+
+# ── depends.yaml vide et bien formé : pas d'avertissement (verdict VM 26/11) ──
+# Le gabarit livre `depends_on: []` : toute app issue du gabarit affichait
+# « ⚠ depends.yaml … illisible ou sans dépendance déclarée ».
+
+def _plan_output(tmp_path, depends_text):
+    import io
+    from hubctl_cli.actions import _InstallResult, _InstallRun, _install_plan
+    from rich.console import Console
+
+    (tmp_path / "depends.yaml").write_text(depends_text, encoding="utf-8")
+    out = io.StringIO()
+    run = _InstallRun(Console(file=out, width=120), no_deps=False, yes=True, dry_run=False)
+    res = _InstallResult(slug="app-a", url="git@x:app-a.git")
+    plan = _install_plan(run, res, tmp_path)
+    return plan, out.getvalue()
+
+
+def test_depends_yaml_empty_from_template_is_silent(tmp_path):
+    plan, output = _plan_output(tmp_path, "depends_on: []\n")
+    assert plan == []
+    assert "depends.yaml" not in output, "depends_on: [] (gabarit) ne doit produire aucun avertissement"
+
+
+def test_depends_yaml_without_depends_on_key_is_silent(tmp_path):
+    plan, output = _plan_output(tmp_path, "# dépendances inter-apps\n")
+    assert plan == []
+    assert "depends.yaml" not in output
+
+
+def test_depends_yaml_unreadable_warns(tmp_path):
+    plan, output = _plan_output(tmp_path, "depends_on: [42, {pas: une dependance\n  {{{\n")
+    assert plan == []
+    assert "depends.yaml" in output and "illisible" in output
