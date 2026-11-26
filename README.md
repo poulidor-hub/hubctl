@@ -1,6 +1,6 @@
 # Hubctl — Pilotage du parc POULIDOR
 
-![version](https://img.shields.io/badge/version-0.9.0-blue)
+![version](https://img.shields.io/badge/version-0.20.5-blue)
 
 Outil unique d'administration du parc : **TUI interactive** (dashboard, menus, coffre)
 et **CLI non-interactive** pour le déploiement, la mise à jour, les ateliers de
@@ -37,10 +37,10 @@ flowchart LR
     hubctl -->|"coffre · PRA"| VAULT[("Coffre chiffré")]
 ```
 
-Dépôts voisins : [POULIDOR](https://github.com/POULIDOR-Audit-Developpement/POULIDOR)
+Dépôts voisins : [POULIDOR](https://github.com/poulidor-hub/POULIDOR)
 (méta-repo, héberge le symlink `./hubctl`) ·
-[HUB_base](https://github.com/POULIDOR-Audit-Developpement/HUB_base) ·
-[HUBsocle](https://github.com/POULIDOR-Audit-Developpement/HUBsocle)
+[HUB_base](https://github.com/poulidor-hub/HUB) ·
+[HUBsocle](https://github.com/poulidor-hub/HUBsocle)
 
 ## Installation autonome
 
@@ -59,7 +59,15 @@ parc : `HUB_base/` (Hub central) et `APPS/` (applications) voisins du dépôt
 ```
 
 L'arborescence complète (méta-repo, socle, ateliers) est décrite dans le README
-du méta-repo [POULIDOR](https://github.com/POULIDOR-Audit-Developpement/POULIDOR).
+du méta-repo [POULIDOR](https://github.com/poulidor-hub/POULIDOR).
+
+## Mise à jour d'un déploiement
+
+hubctl est consommé par les déploiements via le méta-repo
+[POULIDOR](https://github.com/poulidor-hub/POULIDOR) (sous-module) : la mise à jour
+d'un déploiement passe par sa racine — `git fetch upstream && git merge --ff-only
+upstream/main && git submodule update --init --recursive` — ce dépôt public étant en
+lecture seule pour les clients (GitHub le garantit).
 
 ## Démarrage
 
