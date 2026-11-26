@@ -11,6 +11,21 @@ Fix attendu :
   (HUBCTL_HEALTH_TIMEOUT, défaut 600 s) ;
 - sur timeout (rc 124), la guidance est actionable (relancer ./hubctl init
   converge), pas une simple ligne d'échec.
+
+Suite (même E2E) : cette guidance était fausse. `.env` existant + pas de
+`--force` → `_generate_dotenv` refusait (non-TTY : « .env existe déjà …
+utilisez --force » ; TTY : prompt « Écraser le .env existant ? ») → rc 1.
+Même symptôme pour `install.sh` relancé Hub arrêté : « ✗ L'initialisation du
+Hub a échoué », alors que le script se dit « Idempotent : relançable ».
+
+Fix attendu :
+- `.env` présent + pas de `--force` → REPRISE : `.env` inchangé (octets),
+  aucun prompt même avec TTY, ni nettoyage des conteneurs ni re-sync du mot
+  de passe DB ; `up-prod` (budget build de `hub_make`) + health (600 s) ;
+  étapes idempotentes conservées ; résumé construit depuis le `.env` EXISTANT
+  + ligne « reprise » ;
+- `.env` absent → installation complète, inchangée ;
+- `--force` → régénération, inchangée, précédée d'un avertissement explicite.
 """
 import io
 
@@ -116,3 +131,310 @@ def test_bootstrap_build_timeout_gives_guidance(monkeypatch, tmp_path):
         "sur timeout de build, la guidance doit indiquer que relancer "
         "./hubctl init converge (build orphelin continué)"
     )
+
+
+# ── Reprise sans --force quand le .env existe déjà (E2E VM 26/11, suite) ──
+
+# .env d'une installation EXISTANTE : valeurs volontairement non par défaut
+# (admin, hôte, ports) — prouve que le résumé de reprise est construit depuis
+# le fichier et non depuis le générateur. Tous les secrets sont fictifs.
+_EXISTING_ENV = (
+    "# Hub POULIDOR — généré automatiquement par hubctl init\n"
+    "# 2026-11-26T10:00:00\n"
+    "\n"
+    "POSTGRES_USER=hubadmin\n"
+    "POSTGRES_PASSWORD=KeepMePgPass1\n"
+    "POSTGRES_DB=hub_auth\n"
+    "DATABASE_URL=postgresql+asyncpg://hubadmin:KeepMePgPass1@db:5432/hub_auth\n"
+    "\n"
+    "ADMIN_USERNAME=patrice\n"
+    "ADMIN_PASSWORD=KeepMeAdmin1\n"
+    "ADMIN_EMAIL=patrice@local.lan\n"
+    "\n"
+    "HUB_API_PORT=8000\n"
+    "HUB_HOST=10.0.2.15\n"
+    "HUB_FRONTEND_PORT=8080\n"
+    "HUB_HTTPS_PORT=8443\n"
+    "\n"
+    "SECRETS_ENCRYPTION_KEY=cle-fernet-existante\n"
+    "HUB_INTERNAL_SA_CLIENT_SECRET=KeepMeSaSecret\n"
+    "APPS_HOST_PATH=/srv/poulidor/APPS\n"
+)
+
+# Étapes de l'init traçées par `_bootstrap_steps`.
+_STEPS = (
+    "_ensure_jwt_keys",
+    "_cleanup_existing_hub_containers",
+    "_sync_db_password_if_needed",
+    "_install_shell_marker",
+    "_ensure_atelier_service",
+    "_ensure_update_service",
+)
+
+
+def _bootstrap_steps(monkeypatch, tmp_path, *, env_text=None):
+    """`_bootstrap_env` + traçage de chaque étape de l'init.
+
+    `env_text` écrit un `.env` EXISTANT avant l'init (None = installation
+    fraîche). Retourne `state` : compteurs par étape (`state["calls"]`), et
+    des pilotes modifiables ENTRE deux runs (`state["make_rc"]`,
+    `state["healthy"]`) ; `state["make"]` / `state["health"]` tracent les
+    appels à `hub_make` (cible, timeout) et `_health_check` (timeout).
+
+    Toute étape à effet de bord réel est stubbée — dont
+    `_cleanup_existing_hub_containers`, dont le `docker rm -f` par nom
+    toucherait les VRAIS conteneurs hub-*.
+    """
+    _bootstrap_env(monkeypatch, tmp_path)
+    hub = hub_state.HUB_DIR
+    if env_text is not None:
+        (hub / ".env").write_text(env_text)
+    state = {
+        "calls": {name: 0 for name in _STEPS},
+        "make_rc": 0,
+        "healthy": True,
+        "make": [],    # (cible, timeout) reçus par hub_make
+        "health": [],  # timeout reçu par _health_check
+    }
+
+    def _step(name):
+        def _stub(*a, **kw):
+            state["calls"][name] += 1
+        return _stub
+
+    for name in _STEPS:
+        monkeypatch.setattr(actions, name, _step(name))
+    monkeypatch.setattr(hub_state, "check_docker", lambda: True)
+    # IP détectée VOLONTAIREMENT différente du HUB_HOST du .env existant :
+    # si elle apparaît dans le résumé, celui-ci n'a pas lu le fichier.
+    monkeypatch.setattr(actions, "_detect_host_ip", lambda: "192.0.2.99")
+
+    def fake_hub_make(target, *, dry_run, console=None, timeout=None):
+        state["make"].append((target, timeout))
+        return state["make_rc"]
+
+    def fake_health(target, console=None, timeout=60, port_override=None):
+        state["health"].append(timeout)
+        return state["healthy"]
+
+    monkeypatch.setattr(actions, "hub_make", fake_hub_make)
+    monkeypatch.setattr(actions, "_health_check", fake_health)
+    return state
+
+
+def _run_bootstrap(**kwargs):
+    out = io.StringIO()
+    rc = actions.action_bootstrap(Console(file=out, width=120), **kwargs)
+    return rc, out.getvalue()
+
+
+def test_relaunch_after_build_timeout_converges_without_force(monkeypatch, tmp_path):
+    """Le bug E2E bout en bout : 1ᵉʳ boot en timeout, puis la relance telle
+    que la guidance l'indique (sans --force) doit converger, pas échouer."""
+    state = _bootstrap_steps(monkeypatch, tmp_path)
+    env_file = hub_state.HUB_DIR / ".env"
+
+    state["make_rc"] = 124
+    rc, output = _run_bootstrap(force=False, dry_run=False)
+    assert rc == 1
+    assert "Relancez" in output and "hubctl init" in output
+    assert env_file.exists()
+    fingerprint = env_file.read_bytes()
+
+    state["make_rc"] = 0
+    rc, output = _run_bootstrap(force=False, dry_run=False)
+    assert rc == 0, f"la relance doit converger, pas refuser : {output}"
+    assert env_file.read_bytes() == fingerprint
+
+
+def test_init_resumes_existing_dotenv_without_force(monkeypatch, tmp_path):
+    """.env existant + pas de --force → reprise : .env intact, ni nettoyage
+    ni re-sync DB, up-prod + health, étapes idempotentes, résumé « reprise »."""
+    state = _bootstrap_steps(monkeypatch, tmp_path, env_text=_EXISTING_ENV)
+    env_file = hub_state.HUB_DIR / ".env"
+    before = env_file.read_bytes()
+    mtime_before = env_file.stat().st_mtime_ns
+
+    rc, output = _run_bootstrap(force=False, dry_run=False)
+
+    assert rc == 0
+    # Empreinte strictement inchangée (octets + mtime : le fichier n'a pas
+    # été réécrit, même à contenu identique).
+    assert env_file.read_bytes() == before
+    assert env_file.stat().st_mtime_ns == mtime_before
+    # Build & health : mêmes budgets qu'une installation fraîche.
+    assert state["make"] == [("up-prod", None)]  # budget build dans hub_make
+    assert state["health"] == [600]
+    # Pas de nettoyage des conteneurs, pas de re-sync du mot de passe DB.
+    assert state["calls"]["_cleanup_existing_hub_containers"] == 0
+    assert state["calls"]["_sync_db_password_if_needed"] == 0
+    # Les étapes idempotentes restent exécutées.
+    assert state["calls"]["_ensure_jwt_keys"] == 1
+    assert state["calls"]["_install_shell_marker"] == 1
+    assert state["calls"]["_ensure_atelier_service"] == 1
+    assert state["calls"]["_ensure_update_service"] == 1
+    # Résumé construit depuis le .env EXISTANT.
+    assert "reprise" in output.lower()
+    assert "conserv" in output.lower()
+    assert "Login : patrice" in output
+    assert "https://10.0.2.15:8443" in output
+    assert "http://10.0.2.15:8080" in output
+    assert "http://10.0.2.15:8000" in output
+    assert "192.0.2.99" not in output  # IP détectée ≠ .env
+    # Aucun secret du .env ne fuite, pas de refus ni d'avertissement --force.
+    assert "KeepMe" not in output
+    assert "Abandon" not in output
+    assert "utilisez --force" not in output
+
+
+def test_init_resume_never_prompts_even_with_tty(monkeypatch, tmp_path):
+    """Même avec un TTY : aucun prompt « Écraser le .env existant ? »."""
+    import builtins
+    import sys
+    _bootstrap_steps(monkeypatch, tmp_path, env_text=_EXISTING_ENV)
+    env_file = hub_state.HUB_DIR / ".env"
+    before = env_file.read_bytes()
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    prompts = []
+    # Si un prompt survenait, répondre « oui » : l'ancien code écraserait le
+    # .env → le test échoue sur l'empreinte, pas sur un EOF.
+    monkeypatch.setattr(builtins, "input",
+                        lambda *a, **kw: prompts.append(a) or "o")
+
+    rc, output = _run_bootstrap(force=False, dry_run=False)
+
+    assert prompts == []
+    assert rc == 0
+    assert env_file.read_bytes() == before
+    assert "Écraser" not in output
+
+
+def test_init_force_regenerates_dotenv_with_explicit_warning(monkeypatch, tmp_path):
+    """--force → sémantique actuelle (régénération complète, nettoyage,
+    re-sync DB), précédée d'un avertissement explicite et vrai."""
+    state = _bootstrap_steps(monkeypatch, tmp_path, env_text=_EXISTING_ENV)
+    env_file = hub_state.HUB_DIR / ".env"
+    # Espionne le générateur pour vérifier que l'avertissement est affiché
+    # AVANT la régénération (sortie déjà produite au moment de l'appel).
+    seen = {}
+    real_generate = actions._generate_dotenv
+
+    def spying_generate(console, **kwargs):
+        seen["output_before"] = console.file.getvalue()
+        seen["old_content"] = env_file.read_text()
+        return real_generate(console, **kwargs)
+
+    monkeypatch.setattr(actions, "_generate_dotenv", spying_generate)
+
+    rc, output = _run_bootstrap(force=True, dry_run=False)
+
+    assert rc == 0
+    assert "Fernet" in seen["output_before"]
+    assert "KeepMe" in seen["old_content"]  # l'ancien .env était encore en place
+    content = env_file.read_text()
+    # Régénération : anciens secrets partis (dont la clé Fernet), valeurs du
+    # générateur en place.
+    assert "KeepMe" not in content
+    assert "cle-fernet-existante" not in content
+    assert "ADMIN_USERNAME=admin\n" in content
+    assert "HUB_HOST=192.0.2.99\n" in content
+    assert state["calls"]["_cleanup_existing_hub_containers"] == 1
+    assert state["calls"]["_sync_db_password_if_needed"] == 1
+    assert state["calls"]["_ensure_jwt_keys"] == 1
+    assert state["make"] == [("up-prod", None)]
+    # Avertissement AVANT la régénération, disant vrai sur ce qui change.
+    assert "Fernet" in output
+    assert "régénéré" in output.lower()
+    assert "JWT" in output and "conserv" in output.lower()
+    assert "reprise" not in output.lower()
+
+
+def test_init_without_dotenv_keeps_full_install(monkeypatch, tmp_path):
+    """.env absent → installation complète, inchangée (pas de « reprise »)."""
+    state = _bootstrap_steps(monkeypatch, tmp_path)
+    env_file = hub_state.HUB_DIR / ".env"
+    assert not env_file.exists()
+
+    rc, output = _run_bootstrap(force=False, dry_run=False)
+
+    assert rc == 0
+    content = env_file.read_text()
+    assert "ADMIN_USERNAME=admin\n" in content
+    assert "POSTGRES_PASSWORD=" in content and "SECRETS_ENCRYPTION_KEY=" in content
+    assert state["calls"]["_ensure_jwt_keys"] == 1
+    assert state["calls"]["_cleanup_existing_hub_containers"] == 1
+    assert state["calls"]["_sync_db_password_if_needed"] == 1
+    assert state["calls"]["_install_shell_marker"] == 1
+    assert state["calls"]["_ensure_atelier_service"] == 1
+    assert state["calls"]["_ensure_update_service"] == 1
+    assert state["make"] == [("up-prod", None)]
+    assert state["health"] == [600]
+    assert "reprise" not in output.lower()
+    assert "--force :" not in output  # rien à régénérer → pas d'avertissement
+
+
+def test_init_resume_fails_when_health_check_fails(monkeypatch, tmp_path):
+    """Chemin reprise + health faux → rc 1 (sans retoucher le .env)."""
+    state = _bootstrap_steps(monkeypatch, tmp_path, env_text=_EXISTING_ENV)
+    state["healthy"] = False
+    env_file = hub_state.HUB_DIR / ".env"
+    before = env_file.read_bytes()
+
+    rc, _ = _run_bootstrap(force=False, dry_run=False)
+
+    assert rc == 1
+    assert state["make"] == [("up-prod", None)]
+    assert state["health"] == [600]
+    assert env_file.read_bytes() == before
+    # Étapes d'après le health check non jouées.
+    assert state["calls"]["_install_shell_marker"] == 0
+    assert state["calls"]["_ensure_atelier_service"] == 0
+    assert state["calls"]["_ensure_update_service"] == 0
+
+
+def test_init_docker_unreachable_exits_immediately(monkeypatch, tmp_path):
+    """Docker injoignable → sortie 1 avant toute étape, .env existant ou non."""
+    state = _bootstrap_steps(monkeypatch, tmp_path, env_text=_EXISTING_ENV)
+    env_file = hub_state.HUB_DIR / ".env"
+    before = env_file.read_bytes()
+    monkeypatch.setattr(hub_state, "check_docker", lambda: False)
+
+    rc, output = _run_bootstrap(force=False, dry_run=False)
+
+    assert rc == 1
+    assert "Docker injoignable" in output
+    assert state["make"] == [] and state["health"] == []
+    assert all(count == 0 for count in state["calls"].values())
+    assert env_file.read_bytes() == before
+
+
+def test_init_resume_dry_run_writes_nothing(monkeypatch, tmp_path):
+    """Dry-run sur le chemin reprise : aperçu seul — rien d'écrit, pas de make."""
+    state = _bootstrap_steps(monkeypatch, tmp_path, env_text=_EXISTING_ENV)
+    env_file = hub_state.HUB_DIR / ".env"
+    before = env_file.read_bytes()
+
+    rc, output = _run_bootstrap(force=False, dry_run=True)
+
+    assert rc == 0
+    assert env_file.read_bytes() == before
+    assert state["make"] == [] and state["health"] == []
+    assert state["calls"]["_cleanup_existing_hub_containers"] == 0
+    assert state["calls"]["_sync_db_password_if_needed"] == 0
+    assert state["calls"]["_install_shell_marker"] == 0
+    assert "reprise" in output.lower()
+
+
+def test_existing_dotenv_credentials_reads_file_with_fallbacks(monkeypatch, tmp_path):
+    """Le résumé de reprise lit le .env ; défauts du générateur si clé absente/vide."""
+    _bootstrap_steps(monkeypatch, tmp_path, env_text=_EXISTING_ENV)
+    assert actions._existing_dotenv_credentials() == {
+        "admin_username": "patrice", "host_ip": "10.0.2.15",
+    }
+
+    (hub_state.HUB_DIR / ".env").write_text(
+        "POSTGRES_PASSWORD=x\nADMIN_USERNAME=\n# HUB_HOST absent\n")
+    assert actions._existing_dotenv_credentials() == {
+        "admin_username": "admin", "host_ip": "192.0.2.99",
+    }
