@@ -43,13 +43,6 @@ def _u(slug):
     return f"git@github.com:exemple/{slug}.git"
 
 
-def tmp_seed(b, urls_by_slug):
-    """seed-apps.yaml à la racine du parc (liste d'URL, slug = nom du dépôt)."""
-    p = hub_state.PARC_ROOT / "seed-apps.yaml"
-    p.write_text(yaml.dump({"apps": list(urls_by_slug.values())}))
-    return p
-
-
 # ── Mini-PKI réelle (Ed25519 : instantané) ───────────────────────────────────
 
 
@@ -513,7 +506,7 @@ def test_dependance_introuvable_sans_jeton_admin_n_interroge_pas_le_registre(b):
 
 
 def test_dependance_resolue_via_le_registre_hub(b, admin_pw):
-    """(b) absente de seed-apps.yaml → GET /api/apps/ (champ git_repo_url), jeton admin."""
+    """(b) absente du parc → GET /api/apps/ (champ git_repo_url), jeton admin."""
     b.hub.apps["dep-reg"] = {"slug": "dep-reg", "approval_status": "approved", "is_active": True,
                              "git_repo_url": _u("dep-reg")}
     b.shell.add("dep-reg")
@@ -572,7 +565,7 @@ def test_depends_yaml_illisible_avertit_et_poursuit(b, admin_pw):
 
 def test_budgets_build_up_health(b):
     """Premier démarrage d'une app : build 1800 s, up 600 s, health 300 s
-    (le seed utilisait 600/120/60 — sans marge pour un premier build sans
+    (les anciens 600/120/60 laissaient sans marge un premier build sans
     cache sur une petite VM)."""
     b.shell.add("app-exemple")
     assert b.install(_u("app-exemple")) == 0
@@ -1012,7 +1005,6 @@ def test_mdp_admin_prompt_interrompu_reste_en_attente(b):
 
 
 def test_une_seule_connexion_admin_pour_toute_la_commande(b, admin_pw):
-    tmp_seed(b, {"dep-a": _u("dep-a")})
     b.shell.add("dep-a")
     b.shell.add("app-exemple", depends=[("dep-a", "")])
     b.shell.add("app-b")
@@ -1127,39 +1119,7 @@ def test_deja_installee_sans_jeton_n_interroge_pas_le_hub_ni_ne_prompte(b):
     assert "déjà installée" in b.out()
 
 
-# ══ (i) seed = boucle sur le même chemin ═════════════════════════════════════
-
-
-def test_seed_et_install_passent_par_le_meme_chemin(b, monkeypatch):
-    """(i) Nouvelle app : le seed (CAS A) et `app install` traversent le même
-    `_build_up_health` avec les mêmes budgets — pas de logique dupliquée."""
-    spy = mock.Mock(wraps=actions._build_up_health)
-    monkeypatch.setattr(actions, "_build_up_health", spy)
-    b.shell.add("mon-app")
-    ok, detail = actions._seed_one_app(b.con, _u("mon-app"), "mon-app")
-    assert ok is True, detail
-    b.shell.add("app-exemple")
-    assert b.install(_u("app-exemple")) == 0
-
-    assert spy.call_count == 2
-    for slug in ("mon-app", "app-exemple"):
-        assert (slug, "build", 1800) in b.shell.make
-        assert (slug, "up", 600) in b.shell.make
-        assert (slug, 300) in b.health_calls
-    assert b.coffre == ["mon-app", "app-exemple"]
-
-
-def test_seed_convergence_garde_les_budgets_d_update(b):
-    """CAS C (app déjà déployée : pull + build + up + health) reste une
-    convergence, au budget de `hubctl update` — pas celui du premier démarrage."""
-    d = b.app_dir("mon-app")
-    d.mkdir()
-    (d / ".env").write_text("API_PORT=9000\n")
-    b.shell.installed["mon-app"] = b.shell.add("mon-app")
-    ok, detail = actions._seed_one_app(b.con, _u("mon-app"), "mon-app")
-    assert ok is True, detail
-    assert b.shell.targets("mon-app") == [("build", 600), ("up", 120)]
-    assert ("mon-app", 60) in b.health_calls
+# ══ _build_up_health, budgets ════════════════════════════════════════════════
 
 
 def test_build_up_health_appelle_before_up_entre_build_et_up(b):
@@ -1393,33 +1353,6 @@ def test_yes_et_sans_tty_pas_de_confirmation(b):
 # ══ Cibles, slugs, échecs ════════════════════════════════════════════════════
 
 
-def test_fichier_seed_yaml_en_argument_unique(b):
-    seed = tmp_seed(b, {"app-a": _u("app-a"), "app-b": _u("app-b")})
-    b.shell.add("app-a")
-    b.shell.add("app-b")
-    assert b.install([str(seed)]) == 0
-    assert "make:app-a:up" in b.events and "make:app-b:up" in b.events
-
-
-def test_fichier_yaml_avec_autres_arguments_refuse(b):
-    seed = tmp_seed(b, {"app-a": _u("app-a")})
-    assert b.install([str(seed), _u("app-b")]) == 1
-    assert "unique" in b.out().lower() and b.shell.make == []
-
-
-def test_fichier_yaml_introuvable_erreur_claire(b):
-    assert b.install([str(hub_state.PARC_ROOT / "absent.yaml")]) == 1
-    assert "introuvable" in b.out()
-
-
-def test_fichier_yaml_illisible_erreur_claire(b):
-    p = hub_state.PARC_ROOT / "cassee.yaml"
-    p.write_text("apps: [unclosed\n")
-    assert b.install([str(p)]) == 1
-    assert f"Fichier seed illisible : {p}" in b.out()
-    assert b.shell.make == []
-
-
 def test_url_et_slug_invalides_erreurs_claires(b):
     assert b.install(["pas-une-url"]) == 1
     assert "URL git invalide" in b.out()
@@ -1431,7 +1364,7 @@ def test_url_et_slug_invalides_erreurs_claires(b):
 
 
 def test_echec_build_rc1_dossier_conserve(b):
-    """Comme le seed : le dossier reste pour diagnostic (logs, .env), rc 1."""
+    """En échec de build : le dossier reste pour diagnostic (logs, .env), rc 1."""
     b.shell.add("app-exemple", build_fails=True)
     assert b.install(_u("app-exemple")) == 1
     assert b.app_dir("app-exemple").exists()

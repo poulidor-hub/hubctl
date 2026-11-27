@@ -564,7 +564,7 @@ class TestAppInstallParser:
         out = capsys.readouterr().out
         assert "installation" in out.lower()
         assert "dépendances" in out and "--no-deps" in out and "--yes" in out
-        assert "seed-apps.yaml" in out and "HUBCTL_ADMIN_PASSWORD" in out
+        assert "registre du Hub" in out and "HUBCTL_ADMIN_PASSWORD" in out
         assert "Code de sortie" in out and "show this help" not in out
 
 
@@ -635,7 +635,9 @@ def test_dispatch_app_sans_sous_commande_affiche_l_usage(monkeypatch, capsys):
         rc = m.main(["app"])
     assert rc == 2
     fn.assert_not_called()
-    assert "hubctl app install" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "hubctl app install" in out
+    assert "hubctl app remove" in out
 
 
 def test_dispatch_app_install_interrompu_retourne_130(monkeypatch):
@@ -651,6 +653,63 @@ def test_dispatch_app_install_exception_retourne_1(monkeypatch, capsys):
     with mock.patch.object(m, "action_app_install", side_effect=RuntimeError("boom")):
         assert m.main(["app", "install", "git@x:a.git"]) == 1
     assert "boom" in capsys.readouterr().out
+
+
+class TestAppRemoveParser:
+    def test_slug_et_flags(self):
+        a = build_parser().parse_args(["app", "remove", "mon-app", "--yes"])
+        assert a.command == "app" and a.app_command == "remove"
+        assert a.slug == "mon-app" and a.remove_yes is True
+        assert a.remove_dry_run is False
+
+    def test_defauts(self):
+        a = build_parser().parse_args(["app", "remove", "mon-app"])
+        assert a.slug == "mon-app" and a.remove_yes is False
+
+    def test_slug_obligatoire(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["app", "remove"])
+
+    def test_aide_en_francais(self, capsys):
+        with pytest.raises(SystemExit) as e:
+            build_parser().parse_args(["app", "remove", "--help"])
+        assert e.value.code == 0
+        out = capsys.readouterr().out
+        assert "Supprimer" in out and "--yes" in out and "--dry-run" in out
+        assert "show this help" not in out
+
+
+def test_dispatch_app_remove(monkeypatch):
+    """`app remove <slug> --yes` → action_app_remove(slug, yes=True)."""
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_remove", return_value=0) as fn:
+        assert m.main(["app", "remove", "mon-app", "--yes"]) == 0
+    fn.assert_called_once()
+    assert fn.call_args.args[1] == "mon-app"
+    assert fn.call_args.kwargs["yes"] is True
+
+
+def test_dispatch_app_remove_dry_run(monkeypatch):
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_remove", return_value=0) as fn:
+        assert m.main(["--dry-run", "app", "remove", "mon-app"]) == 0
+    assert fn.call_args.kwargs["dry_run"] is True
+
+
+def test_dispatch_app_remove_retourne_rc_action(monkeypatch):
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_remove", return_value=1):
+        assert m.main(["app", "remove", "mon-app"]) == 1
+
+
+def test_dispatch_app_remove_interrompu_retourne_130(monkeypatch):
+    monkeypatch.setattr(m, "_interactive", lambda: False)
+    monkeypatch.setattr(m, "_resolve_mode", lambda args: "prod")
+    with mock.patch.object(m, "action_app_remove", side_effect=KeyboardInterrupt):
+        assert m.main(["app", "remove", "mon-app"]) == 130
 
 
 # ── `init --help` dit la reprise (verdict VM 26/11 : seule la liste des

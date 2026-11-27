@@ -1252,446 +1252,6 @@ def test_write_app_env_https_choice_app_respecte(tmp_path):
     # Ne doit pas lever d'exception
 
 
-# ── _load_seed_file ──
-import yaml as _yaml
-
-
-def test_load_seed_file_valid_apps(tmp_path):
-    from pathlib import Path
-    p = tmp_path / "seed.yaml"
-    p.write_text(_yaml.dump({"apps": [
-        "git@github.com:exemple/APP_EXEMPLE.git",
-        "git@github.com:POULIDOR-Audit-Developpement/Mon-App.git",
-    ]}))
-    result = actions._load_seed_file(Path(p))
-    assert result == [
-        ("git@github.com:exemple/APP_EXEMPLE.git", "app-exemple"),
-        ("git@github.com:POULIDOR-Audit-Developpement/Mon-App.git", "mon-app"),
-    ]
-
-
-def test_load_seed_file_slug_normalization(tmp_path):
-    from pathlib import Path
-    p = tmp_path / "seed.yaml"
-    p.write_text(_yaml.dump({"apps": ["git@github.com:exemple/APP_EXEMPLE.git"]}))
-    result = actions._load_seed_file(Path(p))
-    assert result[0][1] == "app-exemple"  # underscore → tiret, minuscules
-
-
-def test_load_seed_file_missing_file(tmp_path):
-    import pytest
-    with pytest.raises(FileNotFoundError):
-        actions._load_seed_file(tmp_path / "nexiste.yaml")
-
-
-def test_load_seed_file_no_apps_key(tmp_path):
-    from pathlib import Path
-    import pytest
-    p = tmp_path / "seed.yaml"
-    p.write_text(_yaml.dump({"autre": []}))
-    with pytest.raises(ValueError, match="apps"):
-        actions._load_seed_file(Path(p))
-
-
-def test_load_seed_file_empty_apps(tmp_path):
-    from pathlib import Path
-    p = tmp_path / "seed.yaml"
-    p.write_text(_yaml.dump({"apps": []}))
-    result = actions._load_seed_file(Path(p))
-    assert result == []
-
-
-def test_load_seed_file_duplicate_slug(tmp_path):
-    from pathlib import Path
-    import pytest
-    p = tmp_path / "seed.yaml"
-    p.write_text(_yaml.dump({"apps": [
-        "git@github.com:exemple/APP_EXEMPLE.git",
-        "git@github.com:Someone/app-exemple.git",
-    ]}))
-    with pytest.raises(ValueError, match="dupliqué"):
-        actions._load_seed_file(Path(p))
-
-
-def test_load_seed_file_invalid_url(tmp_path):
-    from pathlib import Path
-    import pytest
-    p = tmp_path / "seed.yaml"
-    p.write_text(_yaml.dump({"apps": ["pas-une-url"]}))
-    with pytest.raises(ValueError, match="invalide"):
-        actions._load_seed_file(Path(p))
-
-
-# ── _seed_one_app ──
-def test_seed_one_app_case_a_new(tmp_path, monkeypatch):
-    """CAS A : dossier absent → clone + init + build + sync."""
-    apps_dir = tmp_path / "APPS"
-    apps_dir.mkdir()
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
-    console = mock.Mock()
-    fake_config = {"api_port": 9100, "frontend_port": 4300}
-    with mock.patch.object(actions, "_clone_app", return_value=True) as cl, \
-         mock.patch.object(actions, "_validate_app_structure", return_value=True), \
-         mock.patch.object(actions, "_detect_app_config", return_value=fake_config), \
-         mock.patch.object(actions, "_write_app_env") as we, \
-         mock.patch.object(actions, "_build_and_start_app", return_value=True) as bs, \
-         mock.patch.object(actions, "_sync_app_coffre") as sc, \
-         mock.patch.object(actions, "disk_guard", return_value=True):
-        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
-    assert ok is True
-    cl.assert_called_once()
-    we.assert_called_once()    # .env généré
-    bs.assert_called_once()
-    sc.assert_called_once()    # coffre syncé
-
-
-def test_seed_one_app_case_b_cloned_no_env(tmp_path, monkeypatch):
-    """CAS B : dossier présent SANS .env → pull + init + build + sync."""
-    apps_dir = tmp_path / "APPS"
-    app = apps_dir / "bar"
-    app.mkdir(parents=True)
-    # pas de .env
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
-    console = mock.Mock()
-    fake_config = {"api_port": 9101, "frontend_port": 4301}
-    with mock.patch.object(actions.utils, "run_shell", return_value=0), \
-         mock.patch.object(actions, "_detect_app_config", return_value=fake_config), \
-         mock.patch.object(actions, "_write_app_env") as we, \
-         mock.patch.object(actions, "_build_and_start_app", return_value=True), \
-         mock.patch.object(actions, "_sync_app_coffre"):
-        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
-    assert ok is True
-    we.assert_called_once()    # .env généré (cas B)
-
-
-def test_seed_one_app_case_c_preserves_env(tmp_path, monkeypatch):
-    """CAS C : dossier présent AVEC .env → pull + build + up, .env NON régégénéré."""
-    apps_dir = tmp_path / "APPS"
-    app = apps_dir / "bar"
-    app.mkdir(parents=True)
-    (app / ".env").write_text("API_PORT=9999\n")  # .env présent
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
-    console = mock.Mock()
-    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs, \
-         mock.patch.object(actions, "_write_app_env") as we, \
-         mock.patch.object(actions, "app_make", return_value=0) as am, \
-         mock.patch.object(actions, "_health_check", return_value=True):
-        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
-    assert ok is True
-    we.assert_not_called()     # .env PRÉSERVÉ (point clé du CAS C)
-    assert am.call_count == 2  # build + up
-
-
-def test_seed_one_app_clone_failure(tmp_path, monkeypatch):
-    """Échec clone → (False, raison), pas d'exception."""
-    apps_dir = tmp_path / "APPS"
-    apps_dir.mkdir()
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
-    console = mock.Mock()
-    with mock.patch.object(actions, "_clone_app", return_value=False), \
-         mock.patch.object(actions, "disk_guard", return_value=True):
-        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
-    assert ok is False
-    assert "clone" in detail.lower()
-
-
-def test_seed_one_app_dry_run(tmp_path, monkeypatch):
-    """Dry-run : aucune sous-fonction exécutée, retour (True, simulé)."""
-    apps_dir = tmp_path / "APPS"
-    apps_dir.mkdir()
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
-    console = mock.Mock()
-    with mock.patch.object(actions, "_clone_app") as cl, \
-         mock.patch.object(actions, "_detect_app_config") as dc:
-        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar", dry_run=True)
-    assert ok is True
-    cl.assert_not_called()
-    dc.assert_not_called()
-
-
-def test_seed_one_app_git_pull_fails(tmp_path, monkeypatch):
-    """CAS C : git pull en échec (rc=1) → (False, 'git pull failed'), app_make NON appelé."""
-    apps_dir = tmp_path / "APPS"
-    app = apps_dir / "bar"
-    app.mkdir(parents=True)
-    (app / ".env").write_text("API_PORT=9999\n")  # CAS C (.env présent)
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
-    console = mock.Mock()
-    with mock.patch.object(actions.utils, "run_shell", return_value=1), \
-         mock.patch.object(actions, "app_make") as am, \
-         mock.patch.object(actions, "_health_check"):
-        ok, detail = actions._seed_one_app(console, "git@github.com:Foo/bar.git", "bar")
-    assert ok is False
-    assert detail == "git pull failed"
-    am.assert_not_called()
-
-
-# ── _seed_prune ──
-def _make_app_info(name):
-    info = mock.Mock()
-    info.name = name
-    return info
-
-
-def test_seed_prune_nothing_to_remove(monkeypatch):
-    """Aucune app non-listée → 0 suppression, pas de prompt."""
-    monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: [_make_app_info("app-exemple"), _make_app_info("canari")])
-    console = mock.Mock()
-    n = actions._seed_prune(console, {"app-exemple", "canari"}, vault=None, dry_run=True)
-    assert n == 0
-
-
-def test_seed_prune_confirmed(monkeypatch):
-    """Apps non-listées + confirmation Oui → suppression via action_remove_app."""
-    monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: [_make_app_info("app-exemple"), _make_app_info("service-exemple"), _make_app_info("old")])
-    monkeypatch.setattr("builtins.input", lambda *a: "o")
-    console = mock.Mock()
-    with mock.patch.object(actions, "action_remove_app") as rm:
-        n = actions._seed_prune(console, {"app-exemple"}, vault=None, dry_run=True)
-    assert n == 2
-    removed = {c.args[1] for c in rm.call_args_list}
-    assert removed == {"service-exemple", "old"}
-
-
-def test_seed_prune_refused(monkeypatch):
-    """Confirmation Non → 0 suppression."""
-    monkeypatch.setattr(actions.hub_state, "get_active_apps",
-                        lambda: [_make_app_info("app-exemple"), _make_app_info("service-exemple")])
-    monkeypatch.setattr("builtins.input", lambda *a: "n")
-    console = mock.Mock()
-    with mock.patch.object(actions, "action_remove_app") as rm:
-        n = actions._seed_prune(console, {"app-exemple"}, vault=None, dry_run=True)
-    assert n == 0
-    rm.assert_not_called()
-
-
-# ── action_seed ──
-def _seed_yaml(tmp_path, apps_list):
-    from pathlib import Path
-    import yaml
-    p = tmp_path / "seed.yaml"
-    p.write_text(yaml.dump({"apps": apps_list}))
-    return p
-
-
-def test_action_seed_hub_down_aborts(tmp_path, monkeypatch):
-    """Précheck hub KO → abort immédiat, code 1, aucune app déployée."""
-    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/bar.git"])
-    console = mock.Mock()
-    with mock.patch.object(actions, "_health_check", return_value=False) as hc, \
-         mock.patch.object(actions, "_seed_one_app") as soa:
-        rc = actions.action_seed(console, str(seed), dry_run=False)
-    assert rc == 1
-    soa.assert_not_called()
-
-
-def test_action_seed_best_effort_continues(tmp_path, monkeypatch):
-    """Une app en échec ne stoppe pas les autres. Code de sortie = 1."""
-    seed = _seed_yaml(tmp_path, [
-        "git@github.com:Foo/ok.git",
-        "git@github.com:Foo/bad.git",
-        "git@github.com:Foo/ok2.git",
-    ])
-    console = mock.Mock()
-
-    def fake_one(c, url, slug, *, dry_run=False):
-        return (True, "ok") if "bad" not in slug else (False, "build failed")
-
-    with mock.patch.object(actions, "_health_check", return_value=True), \
-         mock.patch.object(actions, "_seed_one_app", side_effect=fake_one):
-        rc = actions.action_seed(console, str(seed), dry_run=False)
-    assert rc == 1  # au moins un échec
-
-
-def test_action_seed_all_ok_returns_zero(tmp_path, monkeypatch):
-    """Toutes les apps réussissent → code 0."""
-    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/a.git", "git@github.com:Foo/b.git"])
-    console = mock.Mock()
-    with mock.patch.object(actions, "_health_check", return_value=True), \
-         mock.patch.object(actions, "_seed_one_app", return_value=(True, "ok")):
-        rc = actions.action_seed(console, str(seed), dry_run=False)
-    assert rc == 0
-
-
-def test_action_seed_dry_run_skips_health(tmp_path, monkeypatch):
-    """Dry-run : pas de précheck hub réel."""
-    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/a.git"])
-    console = mock.Mock()
-    with mock.patch.object(actions, "_health_check") as hc, \
-         mock.patch.object(actions, "_seed_one_app", return_value=(True, "simulé")):
-        rc = actions.action_seed(console, str(seed), dry_run=True)
-    assert rc == 0
-    hc.assert_not_called()  # précheck skippé en dry-run
-
-
-def test_action_seed_prune_called(tmp_path, monkeypatch):
-    """Flag --prune → _seed_prune est appelé."""
-    seed = _seed_yaml(tmp_path, ["git@github.com:Foo/a.git"])
-    console = mock.Mock()
-    with mock.patch.object(actions, "_health_check", return_value=True), \
-         mock.patch.object(actions, "_seed_one_app", return_value=(True, "ok")), \
-         mock.patch.object(actions, "_seed_prune", return_value=0) as sp, \
-         mock.patch.object(actions, "_get_vault", return_value=mock.Mock()):
-        actions.action_seed(console, str(seed), prune=True, dry_run=False)
-    sp.assert_called_once()
-
-
-def test_action_seed_missing_file(tmp_path):
-    """Fichier inexistant → code 1, message d'erreur."""
-    console = mock.Mock()
-    rc = actions.action_seed(console, str(tmp_path / "nexiste.yaml"), dry_run=True)
-    assert rc == 1
-
-
-def test_action_seed_empty_apps_returns_zero(tmp_path, monkeypatch):
-    """apps: [] → 'Aucune app à déployer', code 0."""
-    seed = _seed_yaml(tmp_path, [])
-    console = mock.Mock()
-    with mock.patch.object(actions, "_health_check", return_value=True), \
-         mock.patch.object(actions, "_seed_one_app") as soa:
-        rc = actions.action_seed(console, str(seed), dry_run=False)
-    assert rc == 0
-    soa.assert_not_called()
-
-
-# ── action_seed_export ──────────────────────────────────────────
-
-def test_action_seed_export_generates_yaml(tmp_path, monkeypatch):
-    """Vérifie que le YAML généré contient les URLs attendues."""
-    apps = tmp_path / "APPS"
-    apps.mkdir()
-    for slug in ("app-a", "app-b"):
-        d = apps / slug
-        d.mkdir()
-        (d / ".git").mkdir()
-
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-
-    # Mock subprocess.run pour simuler git remote
-    git_urls = {
-        "app-a": "git@github.com:user/app-a.git",
-        "app-b": "git@github.com:user/app-b.git",
-    }
-    orig_run = subprocess.run
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "git" and cmd[-1] == "origin":
-            slug = Path(cmd[2]).name
-            url = git_urls.get(slug, "")
-            return subprocess.CompletedProcess(cmd, 0, stdout=url.encode(), stderr=b"")
-        return orig_run(cmd, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    out_path = tmp_path / "seed-test.yaml"
-    console = Console()
-
-    rc = actions.action_seed_export(console, output_path=str(out_path), force=False)
-    assert rc == 0
-
-    content = out_path.read_text()
-    assert "git@github.com:user/app-a.git" in content
-    assert "git@github.com:user/app-b.git" in content
-    assert content.strip().startswith("#")
-    assert "apps:" in content
-
-
-def test_action_seed_export_empty_apps_returns_1(tmp_path, monkeypatch):
-    """APPS/ vide → retourne 1, pas de fichier créé."""
-    apps = tmp_path / "APPS"
-    apps.mkdir()
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-
-    out_path = tmp_path / "seed-empty.yaml"
-    console = Console()
-
-    rc = actions.action_seed_export(console, output_path=str(out_path), force=False)
-    assert rc == 1
-    assert not out_path.exists()
-
-
-def test_action_seed_export_refuses_overwrite(tmp_path, monkeypatch):
-    """Fichier existant sans --force → retourne 1, fichier inchangé."""
-    apps = tmp_path / "APPS"
-    apps.mkdir()
-    app = apps / "app-x"
-    app.mkdir()
-    (app / ".git").mkdir()
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "git" and cmd[-1] == "origin":
-            return subprocess.CompletedProcess(cmd, 0, stdout=b"git@github.com:user/app-x.git", stderr=b"")
-        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    out_path = tmp_path / "existing.yaml"
-    out_path.write_text("original content")
-
-    console = Console()
-
-    rc = actions.action_seed_export(console, output_path=str(out_path), force=False)
-    assert rc == 1
-    assert out_path.read_text() == "original content"
-
-
-def test_action_seed_export_force_overwrites(tmp_path, monkeypatch):
-    """Fichier existant avec --force → écrase le fichier."""
-    apps = tmp_path / "APPS"
-    apps.mkdir()
-    app = apps / "app-x"
-    app.mkdir()
-    (app / ".git").mkdir()
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "git" and cmd[-1] == "origin":
-            return subprocess.CompletedProcess(cmd, 0, stdout=b"git@github.com:user/app-x.git", stderr=b"")
-        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    out_path = tmp_path / "existing.yaml"
-    out_path.write_text("original content")
-
-    console = Console()
-
-    rc = actions.action_seed_export(console, output_path=str(out_path), force=True)
-    assert rc == 0
-    assert "git@github.com:user/app-x.git" in out_path.read_text()
-
-
-def test_action_seed_export_default_filename(tmp_path, monkeypatch):
-    """Sans output_path → génère le nom par défaut seed-export-YYYY-MM-DD.yaml."""
-    apps = tmp_path / "APPS"
-    apps.mkdir()
-    app = apps / "app-x"
-    app.mkdir()
-    (app / ".git").mkdir()
-    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps)
-    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "git" and cmd[-1] == "origin":
-            return subprocess.CompletedProcess(cmd, 0, stdout=b"git@github.com:user/app-x.git", stderr=b"")
-        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    console = Console()
-    rc = actions.action_seed_export(console)
-    assert rc == 0
-
-    # Vérifier qu'un fichier seed-export-*.yaml a été créé
-    exports = list(tmp_path.glob("seed-export-*.yaml"))
-    assert len(exports) == 1
-    assert exports[0].name.startswith("seed-export-")
-    assert exports[0].name.endswith(".yaml")
-
-
 # ── Task 6 : ports réels dans résumé + OIDC_ISSUER (correctif changement de port) ──
 
 
@@ -2090,3 +1650,128 @@ def test_install_precheck_toolchain_docker_absent_silencieux(monkeypatch, tmp_pa
     con = _recording_console()
     assert actions._install_precheck(con) is True
     assert "⚠" not in con.export_text()
+
+
+# ── hubctl app remove <slug> ─────────────────────────────────────────────────
+
+
+def _remove_env(tmp_path, monkeypatch):
+    """APPS/<slug> existant (avec compose) + backups redirigés vers tmp_path."""
+    apps_dir = tmp_path / "APPS"
+    app = apps_dir / "mon-app"
+    app.mkdir(parents=True)
+    (app / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    monkeypatch.setattr(actions.hub_state, "backups_dir", lambda: tmp_path / "backups")
+    return apps_dir, app
+
+
+def test_app_remove_refuse_sans_yes_en_non_interactif(tmp_path, monkeypatch):
+    """Sans --yes ni callable de confirmation (non-interactif) : refus clair
+    (« --yes requis »), RIEN n'est exécuté — pas de down, backup ni rmtree."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "mon-app", yes=False)
+    assert rc == 1
+    rs.assert_not_called()
+    rm.assert_not_called()
+    assert app.exists()
+    assert not list((tmp_path / "backups").glob("mon-app-*.tar.gz"))
+
+
+def test_app_remove_yes_execute_dans_l_ordre(tmp_path, monkeypatch):
+    """--yes : compose down -v, puis backup tar.gz, puis rmtree — ordre vérifié,
+    archive créée, app retirée, code 0."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    calls = []
+    real_tar_open = actions.tarfile.open
+    real_rmtree = actions.shutil.rmtree
+
+    def fake_run_shell(cmd, **kwargs):
+        calls.append(tuple(cmd))
+        return 0
+
+    def fake_tar_open(archive, mode):
+        calls.append(("backup",))
+        return real_tar_open(archive, mode)
+
+    def fake_rmtree(path, **kwargs):
+        calls.append(("rmtree",))
+        return real_rmtree(path, **kwargs)
+
+    with mock.patch.object(actions.utils, "run_shell", side_effect=fake_run_shell), \
+         mock.patch.object(actions.tarfile, "open", side_effect=fake_tar_open), \
+         mock.patch.object(actions.shutil, "rmtree", side_effect=fake_rmtree):
+        rc = actions.action_app_remove(console, "mon-app", yes=True)
+    assert rc == 0
+    downs = [c for c in calls if isinstance(c, tuple) and "down" in c]
+    assert len(downs) == 1 and "-v" in downs[0]
+    assert calls.index(("backup",)) < calls.index(("rmtree",))
+    assert calls.index(downs[0]) < calls.index(("backup",))
+    assert calls.index(downs[0]) < calls.index(("rmtree",))
+    assert not app.exists()
+    backups = list((tmp_path / "backups").glob("mon-app-*.tar.gz"))
+    assert len(backups) == 1
+
+
+def test_app_remove_dry_run_plan_sans_execution(tmp_path, monkeypatch):
+    """dry-run : le plan est affiché, rien n'est exécuté — l'app reste en place,
+    pas d'archive."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.tarfile, "open") as tf, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "mon-app", yes=True, dry_run=True)
+    assert rc == 0
+    rs.assert_not_called()
+    tf.assert_not_called()
+    rm.assert_not_called()
+    assert app.exists()
+
+
+def test_app_remove_slug_inexistant_erreur_claire(tmp_path, monkeypatch):
+    """App absente de APPS/ → code 1, message clair, rien n'est exécuté."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    monkeypatch.setattr(actions.hub_state, "backups_dir", lambda: tmp_path / "backups")
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "inconnue", yes=True)
+    assert rc == 1
+    rs.assert_not_called()
+    rm.assert_not_called()
+
+
+def test_app_remove_confirmation_refusee_n_execute_rien(tmp_path, monkeypatch):
+    """Confirmation interactive refusée (confirm → False) : rien n'est exécuté,
+    code 1."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    confirm = mock.Mock(return_value=False)
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "mon-app", confirm=confirm)
+    assert rc == 1
+    confirm.assert_called_once()
+    rs.assert_not_called()
+    rm.assert_not_called()
+    assert app.exists()
+
+
+def test_app_remove_confirmation_acceptee_execute(tmp_path, monkeypatch):
+    """Confirmation interactive acceptée (confirm → True) : la suppression
+    s'exécute, code 0."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    confirm = mock.Mock(return_value=True)
+    with mock.patch.object(actions.utils, "run_shell", return_value=0), \
+         mock.patch.object(actions.shutil, "rmtree", side_effect=actions.shutil.rmtree):
+        rc = actions.action_app_remove(console, "mon-app", confirm=confirm)
+    assert rc == 0
+    assert not app.exists()
