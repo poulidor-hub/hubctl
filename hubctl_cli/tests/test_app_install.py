@@ -429,15 +429,17 @@ def _present(b, slug="app-exemple", *, cert=None):
 # ══ (a) Dépendances ══════════════════════════════════════════════════════════
 
 
-def test_dependances_installees_d_abord_dans_l_ordre_une_fois_chacune(b):
+def test_dependances_installees_d_abord_dans_l_ordre_une_fois_chacune(b, admin_pw):
     """L'app est clonée d'abord (lecture de depends.yaml) ; chaque dépendance
     absente est installée AVANT elle, dans l'ordre déclaré, une seule fois même
     quand deux apps de la commande la partagent."""
-    tmp_seed(b, {"dep-a": _u("dep-a"), "dep-b": _u("dep-b")})
     b.shell.add("dep-a")
     b.shell.add("dep-b", depends=[("dep-a", "référentiel")])
     b.shell.add("app-exemple", depends=[("dep-a", "référentiel"), ("dep-b", "compta")])
     b.shell.add("app-b", depends=[("dep-a", "référentiel")])
+    for dep in ("dep-a", "dep-b"):
+        b.hub.apps[dep] = {"slug": dep, "approval_status": "approved", "is_active": True,
+                           "git_repo_url": _u(dep)}
 
     rc = b.install([_u("app-exemple"), _u("app-b")])
 
@@ -453,11 +455,12 @@ def test_dependances_installees_d_abord_dans_l_ordre_une_fois_chacune(b):
     assert b.coffre == ["dep-a", "dep-b", "app-exemple", "app-b"]
 
 
-def test_cycle_de_dependances_erreur_claire(b):
+def test_cycle_de_dependances_erreur_claire(b, admin_pw):
     """A → B → A : erreur explicite, rien n'est construit, clones retirés, rc 1."""
     b.shell.add("app-a", depends=[("app-b", "")])
     b.shell.add("app-b", depends=[("app-a", "")])
-    tmp_seed(b, {"app-b": _u("app-b")})
+    b.hub.apps["app-b"] = {"slug": "app-b", "approval_status": "approved", "is_active": True,
+                           "git_repo_url": _u("app-b")}
     rc = b.install(_u("app-a"))
     assert rc == 1
     assert "cycle de dépendances : app-a → app-b → app-a" in b.out()
@@ -483,28 +486,30 @@ def test_no_deps_ignore_les_dependances_avec_avertissement(b):
     assert "--no-deps" in out and "dep-a" in out
 
 
-def test_dependance_introuvable_echec_et_les_suivantes_continuent(b):
-    """(h) ni dans seed-apps.yaml ni au registre : l'app n'est pas installée
-    (clone retiré), message-action, l'app suivante continue, rc 1."""
-    b.shell.add("app-exemple", depends=[("dep-x", "introuvable")])
+def test_dependance_introuvable_app_autonome_avec_avertissement(b):
+    """Dépendance absente du registre : l'app s'installe SEULE (décision du
+    27/11/2026 — la mise en place d'un Hub ne requiert pas les apps
+    dépendantes), avec un avertissement explicite ; l'app suivante continue."""
+    b.shell.add("app-exemple", depends=[("dep-x", "intégrations SI")])
     b.shell.add("app-b")
     rc = b.install([_u("app-exemple"), _u("app-b")])
-    assert rc == 1
+    assert rc == 0
     out = b.out()
-    assert "Dépendance « dep-x » introuvable — installe-la d'abord ou renseigne seed-apps.yaml" in out
-    assert not b.app_dir("app-exemple").exists()
-    assert b.shell.targets("app-exemple") == []
-    assert "make:app-b:up" in b.events
+    assert "Dépendance « dep-x » absente du parc" in out
+    assert "s'installe seule" in out
+    assert "make:app-exemple:up" in b.events and "make:app-b:up" in b.events
+    assert b.app_dir("app-exemple").exists() and b.app_env("app-exemple")
 
 
 def test_dependance_introuvable_sans_jeton_admin_n_interroge_pas_le_registre(b):
     """Sans mot de passe admin (pas de TTY), la source « registre » est
-    simplement indisponible : aucun appel Hub, et le message reste clair."""
+    simplement indisponible : aucun appel Hub, avertissement, app autonome."""
     b.shell.add("app-exemple", depends=[("dep-x", "")])
     rc = b.install(_u("app-exemple"))
-    assert rc == 1
-    assert b.hub.calls == []
-    assert "Dépendance « dep-x » introuvable" in b.out()
+    assert rc == 0
+    assert "GET /api/apps/" not in b.hub.paths(), "sans jeton admin, le registre n'est pas interroge"
+    assert "Dépendance « dep-x » absente du parc" in b.out()
+    assert "make:app-exemple:up" in b.events
 
 
 def test_dependance_resolue_via_le_registre_hub(b, admin_pw):
@@ -537,13 +542,14 @@ def test_dependance_deja_installee_est_ignoree(b):
     assert "déjà installée" in b.out()
 
 
-def test_dependance_en_echec_fait_echouer_ses_dependants(b):
+def test_dependance_en_echec_fait_echouer_ses_dependants(b, admin_pw):
     """Le build de la dépendance échoue : l'app qui en dépend n'est pas installée
     (clone retiré) ; son autre dépendant échoue tout de suite, sans la retenter."""
     b.shell.add("dep-a", build_fails=True)
     b.shell.add("app-exemple", depends=[("dep-a", "")])
     b.shell.add("app-b", depends=[("dep-a", "")])
-    tmp_seed(b, {"dep-a": _u("dep-a")})
+    b.hub.apps["dep-a"] = {"slug": "dep-a", "approval_status": "approved", "is_active": True,
+                           "git_repo_url": _u("dep-a")}
     rc = b.install([_u("app-exemple"), _u("app-b")])
     assert rc == 1
     assert b.events.count("make:dep-a:build") == 1
@@ -1353,8 +1359,9 @@ def test_dry_run_ne_clone_rien(b):
     assert "✓ installée" not in out and "app(s) en service" not in out, "un dry-run ne met rien en service"
 
 
-def test_confirmation_par_defaut_annulation(b):
-    tmp_seed(b, {"dep-a": _u("dep-a")})
+def test_confirmation_par_defaut_annulation(b, admin_pw):
+    b.hub.apps["dep-a"] = {"slug": "dep-a", "approval_status": "approved", "is_active": True,
+                           "git_repo_url": _u("dep-a")}
     b.shell.add("dep-a")
     b.shell.add("app-exemple", depends=[("dep-a", "")])
     vues = []
