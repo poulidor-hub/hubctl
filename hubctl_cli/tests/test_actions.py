@@ -1710,6 +1710,7 @@ def test_app_remove_yes_execute_dans_l_ordre(tmp_path, monkeypatch):
     downs = [c for c in calls if isinstance(c, tuple) and "down" in c]
     assert len(downs) == 1 and "-v" in downs[0]
     assert calls.index(("backup",)) < calls.index(("rmtree",))
+    assert calls.index(downs[0]) < calls.index(("backup",))
     assert calls.index(downs[0]) < calls.index(("rmtree",))
     assert not app.exists()
     backups = list((tmp_path / "backups").glob("mon-app-*.tar.gz"))

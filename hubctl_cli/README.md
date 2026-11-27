@@ -184,8 +184,8 @@ l'activation (créé par n'importe quel lancement de `./hubctl`).
 Toutes les confirmations sont des **choix** (Oui/Non), pas de la saisie libre.
 
 **Ajouter une app** : `./hubctl app install <url-git>` (une commande, l'app
-tourne — cf. ci-dessous). La retirer : `./hubctl app remove <slug>` (backup,
-compose down -v, dossier supprimé).
+tourne — cf. ci-dessous). La retirer : `./hubctl app remove <slug>`
+(compose down -v, backup, dossier supprimé).
 
 ## Installer une application (`app install`)
 
