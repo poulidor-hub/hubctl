@@ -1,5 +1,5 @@
-## [0.22.3] - 27 novembre 2026
-### 🐛 Statut « Mises à jour » honnête en déploiement + sortie Docker silencieuse + unités re-rendues par `update hub`
+## [0.23.1] - 27 novembre 2026
+### 🐛 Statut « Mises à jour » honnête en déploiement + sortie Docker silencieuse + unités re-rendues par `update hub` (verrouillage tests)
 Trois retours du lot « restes installation sans friction » (validation VM 26-27/11/2026).
 
 - **Statut honnête en déploiement** (`update serve`) : un déploiement est en HEAD
@@ -18,10 +18,10 @@ Trois retours du lot « restes installation sans friction » (validation VM 26-2
   pull/build/up verbeux de compose polluait le terminal et les logs. Aucun
   Makefile modifié (compose lit la variable) ; un `make` manuel au terminal
   reste verbeux.
-- **Unités hôtes re-rendues par `update hub`** : le comportement livré en
-  0.22.2 (complément) est désormais VERROUILLÉ par des tests — fin d'`update
-  hub` réussie ⇒ re-rendu + re-pose idempotents des deux unités systemd hôtes
-  (atelier + update), échec non fatal (simple avertissement).
+- **Unités hôtes re-rendues par `update hub`** : verrouillage de tests du
+  complément déjà embarqué sur main (`e505d62`) — pas de nouveau code. Fin
+  d'`update hub` réussie ⇒ re-rendu + re-pose idempotents des deux unités
+  systemd hôtes (atelier + update), échec non fatal (simple avertissement).
 - Tests : +7 (4 cas de statut déploiement, quiet, ensure appelés, échec non
   fatal) ; suites `test_update_serve.py` + `test_actions.py` : 133 verts.
 
@@ -39,6 +39,13 @@ ces apps rejoindront le parc plus tard.
 - `seed` et `seed-apps.yaml` gardent leur rôle de reprise/convergence, inchangés.
 - Tests réécrits pour le nouveau contrat (autonomie + avertissement + « aucune
   interrogation du registre sans jeton ») ; suite complète 993 verts.
+
+## [0.22.2] - 26 novembre 2026
+### 🔧 `update hub` re-rend et re-pose les unités hôtes (complément publié dans le méta 0.88.16)
+- Bump 0.22.2 publié dans le méta POULIDOR 0.88.16 ; le complément
+  « update hub re-rend et re-pose les unités systemd hôtes » (`b3fb77b`,
+  merge `e505d62`) a été embarqué dans la même publication SANS bump de
+  version ni entrée — cette entrée documente le croisement.
 
 ## [0.22.1] - 26 novembre 2026
 ### 🐛 Validation VM d'une installation neuve : service atelier, doctor, dépendances, coffre
