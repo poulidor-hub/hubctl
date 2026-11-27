@@ -31,7 +31,8 @@ Shape (contrat) :
   toucher à l'arbre local, ``None`` si absent) ;
   ``drifted`` = rel_paths des submodules dont le HEAD local ≠ gitlink
   enregistré par le méta (calculé pour l'entrée méta, ``[]`` pour un
-  submodule) ;
+  submodule) ; ``drifted`` est figé à ``[]`` quand le méta est en
+  déploiement (HEAD détaché) ;
   ``deployment`` = True uniquement si le HEAD du dépôt est DÉTACHÉ
   (``park_checks._detached_head``) — l'état que pose ``git clone`` +
   ``submodule update`` sur tout déploiement ; False pour un checkout de
