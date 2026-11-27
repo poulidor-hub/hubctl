@@ -2090,3 +2090,127 @@ def test_install_precheck_toolchain_docker_absent_silencieux(monkeypatch, tmp_pa
     con = _recording_console()
     assert actions._install_precheck(con) is True
     assert "⚠" not in con.export_text()
+
+
+# ── hubctl app remove <slug> ─────────────────────────────────────────────────
+
+
+def _remove_env(tmp_path, monkeypatch):
+    """APPS/<slug> existant (avec compose) + backups redirigés vers tmp_path."""
+    apps_dir = tmp_path / "APPS"
+    app = apps_dir / "mon-app"
+    app.mkdir(parents=True)
+    (app / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    monkeypatch.setattr(actions.hub_state, "backups_dir", lambda: tmp_path / "backups")
+    return apps_dir, app
+
+
+def test_app_remove_refuse_sans_yes_en_non_interactif(tmp_path, monkeypatch):
+    """Sans --yes ni callable de confirmation (non-interactif) : refus clair
+    (« --yes requis »), RIEN n'est exécuté — pas de down, backup ni rmtree."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "mon-app", yes=False)
+    assert rc == 1
+    rs.assert_not_called()
+    rm.assert_not_called()
+    assert app.exists()
+    assert not list((tmp_path / "backups").glob("mon-app-*.tar.gz"))
+
+
+def test_app_remove_yes_execute_dans_l_ordre(tmp_path, monkeypatch):
+    """--yes : compose down -v, puis backup tar.gz, puis rmtree — ordre vérifié,
+    archive créée, app retirée, code 0."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    calls = []
+    real_tar_open = actions.tarfile.open
+    real_rmtree = actions.shutil.rmtree
+
+    def fake_run_shell(cmd, **kwargs):
+        calls.append(tuple(cmd))
+        return 0
+
+    def fake_tar_open(archive, mode):
+        calls.append(("backup",))
+        return real_tar_open(archive, mode)
+
+    def fake_rmtree(path, **kwargs):
+        calls.append(("rmtree",))
+        return real_rmtree(path, **kwargs)
+
+    with mock.patch.object(actions.utils, "run_shell", side_effect=fake_run_shell), \
+         mock.patch.object(actions.tarfile, "open", side_effect=fake_tar_open), \
+         mock.patch.object(actions.shutil, "rmtree", side_effect=fake_rmtree):
+        rc = actions.action_app_remove(console, "mon-app", yes=True)
+    assert rc == 0
+    downs = [c for c in calls if isinstance(c, tuple) and "down" in c]
+    assert len(downs) == 1 and "-v" in downs[0]
+    assert calls.index(("backup",)) < calls.index(("rmtree",))
+    assert calls.index(downs[0]) < calls.index(("rmtree",))
+    assert not app.exists()
+    backups = list((tmp_path / "backups").glob("mon-app-*.tar.gz"))
+    assert len(backups) == 1
+
+
+def test_app_remove_dry_run_plan_sans_execution(tmp_path, monkeypatch):
+    """dry-run : le plan est affiché, rien n'est exécuté — l'app reste en place,
+    pas d'archive."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.tarfile, "open") as tf, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "mon-app", yes=True, dry_run=True)
+    assert rc == 0
+    rs.assert_not_called()
+    tf.assert_not_called()
+    rm.assert_not_called()
+    assert app.exists()
+
+
+def test_app_remove_slug_inexistant_erreur_claire(tmp_path, monkeypatch):
+    """App absente de APPS/ → code 1, message clair, rien n'est exécuté."""
+    apps_dir = tmp_path / "APPS"
+    apps_dir.mkdir()
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", apps_dir)
+    monkeypatch.setattr(actions.hub_state, "backups_dir", lambda: tmp_path / "backups")
+    console = mock.Mock()
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "inconnue", yes=True)
+    assert rc == 1
+    rs.assert_not_called()
+    rm.assert_not_called()
+
+
+def test_app_remove_confirmation_refusee_n_execute_rien(tmp_path, monkeypatch):
+    """Confirmation interactive refusée (confirm → False) : rien n'est exécuté,
+    code 1."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    confirm = mock.Mock(return_value=False)
+    with mock.patch.object(actions.utils, "run_shell") as rs, \
+         mock.patch.object(actions.shutil, "rmtree") as rm:
+        rc = actions.action_app_remove(console, "mon-app", confirm=confirm)
+    assert rc == 1
+    confirm.assert_called_once()
+    rs.assert_not_called()
+    rm.assert_not_called()
+    assert app.exists()
+
+
+def test_app_remove_confirmation_acceptee_execute(tmp_path, monkeypatch):
+    """Confirmation interactive acceptée (confirm → True) : la suppression
+    s'exécute, code 0."""
+    apps_dir, app = _remove_env(tmp_path, monkeypatch)
+    console = mock.Mock()
+    confirm = mock.Mock(return_value=True)
+    with mock.patch.object(actions.utils, "run_shell", return_value=0), \
+         mock.patch.object(actions.shutil, "rmtree", side_effect=actions.shutil.rmtree):
+        rc = actions.action_app_remove(console, "mon-app", confirm=confirm)
+    assert rc == 0
+    assert not app.exists()

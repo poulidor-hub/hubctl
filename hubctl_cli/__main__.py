@@ -13,7 +13,7 @@ from hubctl_cli import actions, animation, atelier_serve, menu, update_serve
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_restart, action_update_all, action_update,
     action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
-    action_seed_export, action_doctor, action_app_install,
+    action_seed_export, action_doctor, action_app_install, action_app_remove,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -227,8 +227,10 @@ def build_parser() -> argparse.ArgumentParser:
                             help="afficher ce message d'aide et quitter")
 
     app_parser = sub.add_parser(
-        "app", add_help=False, help="Installer une application du parc depuis son dépôt git",
-        description="Commandes relatives aux applications du parc :\n  hubctl app install <url-git>…")
+        "app", add_help=False, help="Installer ou supprimer une application du parc",
+        description="Commandes relatives aux applications du parc :\n"
+                    "  hubctl app install <url-git>…\n"
+                    "  hubctl app remove <slug>")
     _aide_fr(app_parser)
     app_sub = app_parser.add_subparsers(dest="app_command", metavar="COMMANDE")
     install_parser = app_sub.add_parser(
@@ -260,6 +262,30 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument(
         "--yes", dest="install_yes", action="store_true",
         help="Aucune confirmation (défaut effectif sans terminal interactif)")
+
+    remove_parser = app_sub.add_parser(
+        "remove", add_help=False,
+        help="Supprimer une app du parc : backup, compose down -v, dossier retiré",
+        description=(
+            "Suppression d'une application du parc.\n\n"
+            "Plan : docker compose down -v (conteneurs + volumes), backup tar.gz du "
+            "dossier dans backups/ du parc (best-effort), suppression du dossier "
+            "APPS/<slug>.\n\n"
+            "Confirmation interactive [O/n] en terminal interactif ; en non-interactif "
+            "(script, cron, pipe) --yes est requis — sans lui la commande refuse de "
+            "rien faire. --dry-run affiche le plan sans rien exécuter.\n\n"
+            "Code de sortie : 0 si l'app est supprimée (ou plan simulé), 1 sinon."),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    _aide_fr(remove_parser)
+    remove_parser.add_argument(
+        "slug", metavar="SLUG",
+        help="Slug de l'app à supprimer (dossier APPS/<slug>)")
+    remove_parser.add_argument(
+        "--yes", dest="remove_yes", action="store_true",
+        help="Supprimer sans confirmation (requis en non-interactif)")
+    remove_parser.add_argument(
+        "--dry-run", dest="remove_dry_run", action="store_true",
+        help="Afficher le plan sans rien exécuter")
 
     # socle — build local des images de base, statut flotte
     socle_parser = sub.add_parser("socle", help="Socle HUBsocle : build des images de base, statut flotte")
@@ -693,11 +719,25 @@ def _run(args) -> int:
     if args.command == "app":
         from rich.console import Console as RichConsole
         console = RichConsole()
+        if args.app_command == "remove":
+            _resolve_mode(args)
+            interactive = _interactive()
+            try:
+                return action_app_remove(
+                    console, args.slug, yes=args.remove_yes,
+                    dry_run=global_dry_run or args.remove_dry_run,
+                    confirm=_tty_confirm if interactive else None)
+            except KeyboardInterrupt:
+                print("\n❌ Interrompu.")
+                return 130
+            except Exception as e:
+                print(f"❌ app remove a échoué : {e}")
+                return 1
         if args.app_command != "install":
             console.print("[yellow]hubctl app requiert une sous-commande — rien n'a été exécuté.[/yellow]")
             console.print("[bold]Usage :[/bold]")
             console.print("  hubctl app install <url-git> [url-git…] [--no-deps] [--yes]")
-            console.print("  hubctl app install <fichier-seed.yaml>")
+            console.print("  hubctl app remove <slug> [--yes] [--dry-run]")
             return 2
         _resolve_mode(args)
         # Terminal interactif : confirmation du plan et saisie masquée du mot de

@@ -1469,44 +1469,69 @@ def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tup
         return (False, f"erreur : {e}")
 
 
-def action_remove_app(console, name: str, vault=None, *, dry_run: bool = False) -> None:
-    """Supprime physiquement une app : compose down -v + rm -rf dossier.
+def action_app_remove(console, name: str, *, yes: bool = False, dry_run: bool = False,
+                      confirm=None) -> int:
+    """`hubctl app remove <slug>` — supprime physiquement une app du parc.
 
-    Utilisé par ``seed --prune`` pour retirer les apps non listées dans le seed.
-    Préserve un backup tar.gz du dossier avant suppression (best-effort).
+    Plan : compose down -v (conteneurs + volumes), backup tar.gz du dossier
+    dans le dossier backups du parc (best-effort), puis suppression du dossier.
+    Confirmation interactive [O/n] via `confirm` (callable fourni par l'entrée
+    interactive de __main__) ; sans --yes ni `confirm` (script, cron, pipe) :
+    refus clair, RIEN n'est exécuté. `dry_run` affiche le plan sans exécuter.
+
+    Retourne 0 si l'app est supprimée (ou plan simulé), 1 sinon (app inconnue,
+    confirmation non obtenue, confirmation impossible en non-interactif).
     """
     con = console or _console
     app_dir = hub_state.APPS_DIR / name
     compose_file = app_dir / "docker-compose.yml"
 
-    con.print(f"[bold]→ Suppression de « {name} »…[/bold]")
+    if not app_dir.exists():
+        con.print(f"[red]✗ App « {escape(name)} » introuvable dans {hub_state.APPS_DIR} — "
+                  "rien à supprimer.[/red]")
+        return 1
+
+    con.print(f"[bold]→ Suppression de « {escape(name)} »…[/bold]")
+    con.print("[dim]  1. docker compose down -v (conteneurs + volumes)[/dim]")
+    con.print("[dim]  2. backup tar.gz du dossier dans backups/[/dim]")
+    con.print(f"[dim]  3. suppression du dossier {escape(app_dir.name)}[/dim]")
+    if dry_run:
+        con.print("[dim](dry-run) rien n'a été exécuté — l'app est intacte.[/dim]")
+        return 0
+
+    if not yes:
+        if confirm is None:
+            con.print("[red]✗ Confirmation impossible (terminal non interactif) : "
+                      "relancez avec --yes pour supprimer sans confirmation.[/red]")
+            return 1
+        if not confirm(f"Supprimer définitivement « {name} » (backup conservé) ? [O/n]"):
+            con.print("[dim]Suppression annulée — rien n'a été modifié.[/dim]")
+            return 1
 
     # 1. compose down -v (stop conteneurs + volumes)
     if compose_file.exists():
         utils.run_shell(["docker", "compose", "-f", str(compose_file), "down", "-v"],
-                        cwd=str(app_dir), dry_run=dry_run, console=con, timeout=60)
+                        cwd=str(app_dir), dry_run=False, console=con, timeout=60)
 
     # 2. backup tar.gz best-effort puis rm -rf
-    if app_dir.exists():
-        backups = hub_state.backups_dir()
-        backups.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        archive = backups / f"{name}-{stamp}.tar.gz"
-        con.print(f"[dim]→ Backup {archive.name}[/dim]")
-        if not dry_run:
-            try:
-                with tarfile.open(archive, "w:gz") as tar:
-                    tar.add(str(app_dir), arcname=app_dir.name)
-                if archive.exists():
-                    os.chmod(archive, 0o600)
-            except (OSError, tarfile.TarError):
-                con.print(f"[yellow]⚠ Backup échoué, suppression quand même.[/yellow]")
+    backups = hub_state.backups_dir()
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive = backups / f"{name}-{stamp}.tar.gz"
+    con.print(f"[dim]→ Backup {archive.name}[/dim]")
+    try:
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(str(app_dir), arcname=app_dir.name)
+        if archive.exists():
+            os.chmod(archive, 0o600)
+    except (OSError, tarfile.TarError):
+        con.print(f"[yellow]⚠ Backup échoué, suppression quand même.[/yellow]")
 
-        con.print(f"[dim]→ rm -rf {app_dir.name}[/dim]")
-        if not dry_run:
-            shutil.rmtree(str(app_dir), ignore_errors=True)
+    con.print(f"[dim]→ rm -rf {app_dir.name}[/dim]")
+    shutil.rmtree(str(app_dir), ignore_errors=True)
 
-    con.print(f"[green]✓ « {name} » supprimée[/green]")
+    con.print(f"[green]✓ « {escape(name)} » supprimée[/green]")
+    return 0
 
 
 def _seed_prune(console, listed_slugs: set[str], vault, *, dry_run: bool = False) -> int:
