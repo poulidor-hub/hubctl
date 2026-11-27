@@ -2529,12 +2529,10 @@ def _depends_clean_empty(f: Path) -> bool:
 
 
 def _resolve_dependency_url(run: _InstallRun, dep_slug: str) -> str | None:
-    """URL git d'une dépendance absente du parc : (a) seed-apps.yaml de la
-    racine du parc, (b) registre du Hub (git_repo_url, jeton admin)."""
-    url = run.seed_urls().get(dep_slug)
-    if url:
-        run.con.print(f"[dim]• dépendance « {dep_slug} » résolue par seed-apps.yaml[/dim]")
-        return url
+    """URL git d'une dépendance absente du parc : le registre du Hub
+    (git_repo_url, jeton admin). `seed-apps.yaml` n'en fait pas partie : c'est
+    l'outil de reprise d'une flotte sauvegardée, pas de la mise en place d'un
+    Hub (décision utilisateur du 27/11/2026)."""
     token = run.admin.token()
     if not token:
         return None
@@ -2548,8 +2546,10 @@ def _resolve_dependency_url(run: _InstallRun, dep_slug: str) -> str | None:
 
 def _install_plan(run: _InstallRun, res: _InstallResult, dest: Path) -> list[tuple[str, str, str]] | None:
     """Dépendances à installer AVANT l'app : [(slug, url, note)]. None si la
-    résolution échoue (cycle, dépendance introuvable ou déjà en échec) :
-    `res.detail` est alors renseigné et l'erreur affichée."""
+    résolution échoue (cycle ou dépendance déjà en échec) : `res.detail` est
+    alors renseigné et l'erreur affichée. Une dépendance déclarée mais absente
+    du registre du Hub n'empêche pas l'installation : l'app part en autonome
+    avec un avertissement (décision utilisateur du 27/11/2026)."""
     con = run.con
     slug = res.slug
     deps = _read_depends(dest)
@@ -2583,9 +2583,14 @@ def _install_plan(run: _InstallRun, res: _InstallResult, dest: Path) -> list[tup
             continue
         url = _resolve_dependency_url(run, dep_slug)
         if not url:
-            _install_fail(con, res, f"Dépendance « {dep_slug} » introuvable — installe-la "
-                          "d'abord ou renseigne seed-apps.yaml")
-            return None
+            # Absente du registre : l'app s'installe seule (décision utilisateur
+            # du 27/11/2026 — la mise en place d'un Hub ne requiert pas les apps
+            # dépendantes). Ses intégrations M2M s'activeront quand elle
+            # rejoindra le parc.
+            con.print(f"[yellow]⚠ Dépendance « {dep_slug} » absente du parc — « {slug} » "
+                      "s'installe seule ; ses intégrations s'activeront quand elle "
+                      "rejoindra le parc (./hubctl app install <url-git-de-la-dépendance>).[/yellow]")
+            continue
         plan.append((dep_slug, url, note))
     return plan
 
