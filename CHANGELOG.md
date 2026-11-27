@@ -1,3 +1,38 @@
+## [0.24.0] - 27 novembre 2026
+### ✂️ Retrait du système seed · 🌱 Ajout : `hubctl app remove <slug>`
+
+Le déploiement batch déclaratif par fichier seed YAML (`hubctl seed`,
+`hubctl seed export`, variante `hubctl app install <seed.yaml>`) disparaît :
+il n'était plus utilisé — le remplacement était déjà en place depuis 0.21.0
+avec `hubctl app install <url-git> [<url-git>…]`, qui couvre tous ses usages
+(multi-URLs, dépendances d'abord, socle garanti, approbation au Hub,
+certificat, budgets de premier démarrage). En échange, la suppression d'app —
+jusqu'ici réservée au `--prune` du seed — devient une commande publique.
+
+- **Retrait** : `hubctl seed`, `hubctl seed export`, la variante
+  `app install <seed.yaml>` et tout le code seed-only (`_load_seed_file`,
+  `_seed_one_app`, `_seed_prune`, `_seed_report`, budgets de convergence,
+  résolution de dépendances par `seed-apps.yaml` — le registre du Hub reste
+  l'unique lieu de résolution). Fonctions partagées avec `app install`
+  conservées à l'identique (clone, structure, config, `.env`,
+  `_build_up_health`, coffre). Un `hubctl seed` donne désormais une
+  erreur d'usage argparse claire.
+- **Ajout : `hubctl app remove <slug>`** (recyclage du moteur de
+  `seed --prune`) : plan affiché puis `docker compose down -v` (conteneurs +
+  volumes), backup tar.gz best-effort dans backups/ du parc (chmod 600),
+  suppression du dossier APPS/<slug>. Confirmation interactive [O/n] en
+  terminal ; en non-interactif (script, cron) `--yes` est requis — sans lui,
+  refus clair et RIEN n'est exécuté. `--dry-run` : plan seul. App inconnue :
+  erreur claire, code 1. Code de sortie 0/1 ; Ctrl-C → 130.
+- Tests : +14 `app remove` (refus non-interactif, `--yes` avec ordre
+  down → backup → rmtree vérifié, dry-run, slug inconnu, confirmation
+  refusée/acceptée, parseur, dispatch, dry-run global, interruptions) ;
+  34 tests seed supprimés, pas réécrits (28 dans test_actions, 6 dans
+  test_app_install) ; suite complète du paquet : 1001 verts, 7 skipped.
+  Aucune mention seed résiduelle dans le code et l'aide (grep parc).
+- Docs : README racine et hubctl_cli/README.md (table des commandes,
+  ajout/retrait d'app, résolution des dépendances au registre seul).
+
 ## [0.23.2] - 27 novembre 2026
 ### 🐛 doctor/précheck : plancher compose des builds d'apps fines (combo compose/buildx)
 Cadrage « docker 29 » (option A1) : compose v5 délègue le build à `buildx bake` ;
