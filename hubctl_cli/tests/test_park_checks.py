@@ -852,3 +852,144 @@ def test_env_newer_than_last_restart_still_reported(tmp_path, monkeypatch):
     future = now + 300
     os.utime(env, (future, future))
     assert len(_env_findings(meta)) == 1
+
+
+# ── Toolchain docker : plancher compose des builds d'apps fines (A1) ────────
+
+
+class TestToolchain:
+    """``check_toolchain`` — plancher compose pour les builds d'apps fines.
+
+    Cadrage « app install des apps fines socle échoue sur VM fraîche »
+    (docker 29, option A1) : compose v5 délègue le build à ``buildx bake`` ;
+    buildx ≥ 0.37.2 (fix GHSA-gwr2-q96m-6682) enforce les entitlements
+    fichiers (``fs.read``) que seul compose ≥ 5.7.0 (PR #14325) accorde
+    lui-même. Les versions sont simulées par monkeypatch des deux helpers
+    de lecture (``_compose_version`` / ``_buildx_version``) : jamais de
+    subprocess réel, les combos du brief sont reproductibles partout.
+    """
+
+    COMPOSE_OK = (5, 8, 1)   # install réelle, labo cadrage-d29
+    BUILDX_OK = (0, 39, 1)   # idem
+    COMPOSE_OLD = (5, 6, 1)  # < plancher 5.7.0
+    BUILDX_OLD = (0, 30, 5)  # < gate 0.37.2 (enforce entitlements)
+
+    def _patch(self, monkeypatch, compose, buildx):
+        monkeypatch.setattr(park_checks, "_compose_version", lambda: compose)
+        monkeypatch.setattr(park_checks, "_buildx_version", lambda: buildx)
+
+    # ── combos simulés du brief ──────────────────────────────────────────
+
+    def test_combo_sain_aucun_finding(self, monkeypatch):
+        """5.8.1 + 0.39.1 (combo courant) : rien à signaler."""
+        self._patch(monkeypatch, self.COMPOSE_OK, self.BUILDX_OK)
+        assert park_checks.check_toolchain() == []
+
+    def test_compose_plancher_exact_aucun_finding(self, monkeypatch):
+        """compose 5.7.0 exactement = au plancher : l'auto-grant est là."""
+        self._patch(monkeypatch, (5, 7, 0), self.BUILDX_OK)
+        assert park_checks.check_toolchain() == []
+
+    def test_combo_casse_probleme_avec_remede(self, monkeypatch):
+        """5.6.1 + 0.39.1 : builds d'apps fines bloqués → PROBLÈME (ok=False).
+
+        Le remède nomme l'upgrade du plugin et le plancher 5.7.0.
+        """
+        self._patch(monkeypatch, self.COMPOSE_OLD, self.BUILDX_OK)
+        findings = park_checks.check_toolchain()
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.check == "toolchain.compose"
+        assert f.ok is False and f.info is False
+        assert "builds d'apps fines bloqués" in f.detail
+        assert "entitlements fs.read" in f.detail
+        assert f.remedy and "docker-compose-plugin" in f.remedy
+        assert "5.7.0" in f.remedy
+
+    def test_buildx_gate_exact_probleme(self, monkeypatch):
+        """buildx 0.37.2 exactement = dès la gate : déjà en enforce."""
+        self._patch(monkeypatch, self.COMPOSE_OLD, (0, 37, 2))
+        findings = park_checks.check_toolchain()
+        assert len(findings) == 1 and findings[0].ok is False
+
+    def test_compose_ancien_seul_info_preventif(self, monkeypatch):
+        """5.6.1 + buildx 0.30 (ancien) : INFO préventif, même remède.
+
+        Le message est auto-suffisant (doctor n'affiche le champ remède
+        que d'un problème) : le remède y figure en toutes lettres.
+        """
+        self._patch(monkeypatch, self.COMPOSE_OLD, self.BUILDX_OLD)
+        findings = park_checks.check_toolchain()
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.check == "toolchain.compose"
+        assert f.ok is True and f.info is True
+        assert "docker-compose-plugin" in f.detail and "5.7.0" in f.detail
+
+    def test_buildx_illisible_info_si_compose_ancien(self, monkeypatch):
+        """buildx illisible + compose < 5.7.0 : info préventif (pas de crash)."""
+        self._patch(monkeypatch, self.COMPOSE_OLD, None)
+        findings = park_checks.check_toolchain()
+        assert len(findings) == 1
+        assert findings[0].ok is True and findings[0].info is True
+
+    def test_docker_absent_aucun_finding(self, monkeypatch):
+        """Docker/compose absents ou illisibles : silence, jamais un crash."""
+        self._patch(monkeypatch, None, None)
+        assert park_checks.check_toolchain() == []
+
+    # ── helpers de lecture : parse + tolérance (monkeypatchables) ────────
+
+    @staticmethod
+    def _proc(returncode=0, stdout="", stderr=""):
+        return subprocess.CompletedProcess(args=[], returncode=returncode,
+                                           stdout=stdout, stderr=stderr)
+
+    def test_compose_version_parse_short(self, monkeypatch):
+        """`docker compose version --short` → « 5.8.1 » → (5, 8, 1)."""
+        monkeypatch.setattr(park_checks.subprocess, "run",
+                            lambda *a, **k: self._proc(stdout="5.8.1\n"))
+        assert park_checks._compose_version() == (5, 8, 1)
+
+    def test_buildx_version_parse_regex_v(self, monkeypatch):
+        """`docker buildx version` → « …buildx v0.39.1 … » → (0, 39, 1)."""
+        monkeypatch.setattr(
+            park_checks.subprocess, "run",
+            lambda *a, **k: self._proc(
+                stdout="github.com/docker/buildx v0.39.1 5fd7fc8\n"))
+        assert park_checks._buildx_version() == (0, 39, 1)
+
+    def test_helpers_silencieux_si_commande_en_erreur(self, monkeypatch):
+        """rc != 0 ou docker absent (FileNotFoundError) → None, jamais une
+        exception remontée au doctor."""
+        monkeypatch.setattr(park_checks.subprocess, "run",
+                            lambda *a, **k: self._proc(returncode=1))
+        assert park_checks._compose_version() is None
+        assert park_checks._buildx_version() is None
+
+        def _absent(*_a, **_k):
+            raise FileNotFoundError(2, "No such file", "docker")
+
+        monkeypatch.setattr(park_checks.subprocess, "run", _absent)
+        assert park_checks._compose_version() is None
+        assert park_checks._buildx_version() is None
+
+    def test_helpers_silencieux_si_sortie_inattendue(self, monkeypatch):
+        """Sortie sans version parsable → None (aucun crash doctor)."""
+        monkeypatch.setattr(park_checks.subprocess, "run",
+                            lambda *a, **k: self._proc(stdout="n'importe quoi"))
+        assert park_checks._compose_version() is None
+        assert park_checks._buildx_version() is None
+
+    # ── câblage doctor ───────────────────────────────────────────────────
+
+    def test_run_checks_embarque_toolchain(self, monkeypatch, tmp_path):
+        """``run_checks`` (le lot consommé par ``action_doctor``, à côté des
+        autres checks) inclut le finding toolchain."""
+        monkeypatch.setattr(park_checks, "run_update_prechecks", lambda _r: [])
+        monkeypatch.setattr(park_checks, "check_env_applied", lambda _r: [])
+        finding = Finding(check="toolchain.compose", ok=False, detail="x",
+                          remedy="y")
+        monkeypatch.setattr(park_checks, "check_toolchain", lambda: [finding])
+        findings = park_checks.run_checks(tmp_path, apps=[])
+        assert finding in findings

@@ -2024,3 +2024,69 @@ def test_close_all_dry_run_propage_dry_run(monkeypatch):
     rc = actions.action_atelier_close_all(_mock_console(), dry_run=True, oui=True)
     assert calls == [("app-exemple", True)]
     assert rc == 0
+
+
+# ── précheck `app install` : plancher compose/buildx (A1, non bloquant) ─────
+
+
+def _recording_console():
+    """Console d'enregistrement large : les assertions portent sur le texte,
+    jamais sur l'enroulement à 80 colonnes de rich (cf. test_doctor)."""
+    from rich.console import Console
+    return Console(record=True, width=250)
+
+
+def _patch_precheck_env(monkeypatch, tmp_path, compose, buildx):
+    """Précheck isolé : hub sain, Docker joignable, APPS/ créable — et les
+    deux lectures de version toolchain simulées (jamais de subprocess réel)."""
+    monkeypatch.setattr(actions, "_hub_precheck", lambda con: True)
+    monkeypatch.setattr(actions.hub_state, "check_docker", lambda: True)
+    monkeypatch.setattr(actions.hub_state, "APPS_DIR", tmp_path / "APPS")
+    monkeypatch.setattr(actions.park_checks, "_compose_version", lambda: compose)
+    monkeypatch.setattr(actions.park_checks, "_buildx_version", lambda: buildx)
+
+
+def test_install_precheck_toolchain_avertit_sans_bloquer(monkeypatch, tmp_path):
+    """Combo compose < 5.7.0 + buildx ≥ 0.37.2 : une ligne ⚠ avant le clone,
+    mais le précheck reste un succès — l'installation n'est PAS bloquée.
+
+    Cadrage docker 29 (option A1) : c'est le `make build` post-install qui
+    gate sur un combo cassé, pas l'installation elle-même.
+    """
+    _patch_precheck_env(monkeypatch, tmp_path, (5, 6, 1), (0, 39, 1))
+    con = _recording_console()
+    assert actions._install_precheck(con) is True
+    out = con.export_text()
+    assert "⚠" in out
+    assert "builds d'apps fines bloqués" in out
+    assert "docker-compose-plugin" in out
+
+
+def test_install_precheck_toolchain_info_preventive(monkeypatch, tmp_path):
+    """Info préventive (compose < 5.7.0 + buildx ancien) : rendue en ℹ cyan,
+    PAS en ⚠ — contrat Finding.info (« ne compte jamais comme un problème »,
+    park_checks.py) ; cohérent avec le rendu doctor (ℹ cyan, actions.py).
+    Le remède est déjà dans le detail de l'info : pas de suffixe remède."""
+    _patch_precheck_env(monkeypatch, tmp_path, (5, 6, 1), (0, 30, 5))
+    con = _recording_console()
+    assert actions._install_precheck(con) is True
+    out = con.export_text()
+    assert "ℹ" in out
+    assert "⚠" not in out
+
+
+def test_install_precheck_toolchain_sain_silencieux(monkeypatch, tmp_path):
+    """Combo sain (5.8.1 + 0.39.1) : aucun ⚠, le précheck reste identique."""
+    _patch_precheck_env(monkeypatch, tmp_path, (5, 8, 1), (0, 39, 1))
+    con = _recording_console()
+    assert actions._install_precheck(con) is True
+    assert "⚠" not in con.export_text()
+
+
+def test_install_precheck_toolchain_docker_absent_silencieux(monkeypatch, tmp_path):
+    """Docker/compose absents (lecture None) : aucun ⚠, jamais un crash du
+    précheck — `check_docker` a déjà son propre message dans ce cas."""
+    _patch_precheck_env(monkeypatch, tmp_path, None, None)
+    con = _recording_console()
+    assert actions._install_precheck(con) is True
+    assert "⚠" not in con.export_text()
