@@ -1262,9 +1262,15 @@ def hub_make(target: str, *, dry_run: bool, console=None, timeout: int | None = 
 
 def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout: int = 120, apps_dir: str | None = None) -> int:
     base = Path(apps_dir) if apps_dir else hub_state.active_apps_dir()
+    # Sortie Docker silencieuse : tout `make` d'app lancé PAR hubctl
+    # (install/update/convergence des 38 apps) passe COMPOSE_PROGRESS=quiet —
+    # le pull/build/up verbeux de compose polluait le terminal et les logs.
+    # C'est compose qui lit la variable : aucun Makefile à modifier. Un
+    # `make` lancé à la main dans le terminal reste verbeux (aucun env).
     return utils.run_shell(
         ["make", "-C", str(base / app_name), target],
         dry_run=dry_run, console=console, timeout=timeout,
+        env={**os.environ, "COMPOSE_PROGRESS": "quiet"},
     )
 
 

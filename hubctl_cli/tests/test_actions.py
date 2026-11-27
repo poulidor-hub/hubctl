@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 POULIDOR Audit & Développement (Valérian Poulidor)
 
+import os
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -37,6 +38,22 @@ def test_app_make_targets_app_dir():
     args = rs.call_args.args[0]
     assert str(actions.hub_state.APPS_DIR / "suivi-exemple") in args
     assert args[-1] == "logs"
+
+
+def test_app_make_passes_compose_progress_quiet():
+    """Tout `make` d'app lancé par hubctl passe COMPOSE_PROGRESS=quiet.
+
+    La sortie Docker (pull/build/up verbeux) polluait le terminal et les
+    logs de `app install`/`update` sur les 38 apps du parc — sans toucher
+    aux Makefiles : c'est compose qui lit la variable. Un `make` lancé à
+    la main dans le terminal reste verbeux (aucun env injecté).
+    """
+    with mock.patch.object(actions.utils, "run_shell", return_value=0) as rs:
+        actions.app_make("suivi-exemple", "up", dry_run=True)
+    env = rs.call_args.kwargs["env"]
+    assert env["COMPOSE_PROGRESS"] == "quiet"
+    # le reste de l'environnement est conservé (PATH, DOCKER_HOST, tokens…)
+    assert set(os.environ) <= set(env)
 
 
 def test_disk_guard_blocks_when_critical():
