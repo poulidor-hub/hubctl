@@ -1719,10 +1719,16 @@ def _install_precheck(con, *, dry_run: bool = False) -> bool:
     # Toolchain docker : plancher compose des builds d'apps fines (cadrage
     # docker 29, option A1). Avertissement NON bloquant avant le clone —
     # l'installation elle-même peut réussir, c'est le `make build` qui gate
-    # ensuite sur un combo compose < 5.7.0 + buildx ≥ 0.37.2.
+    # ensuite sur un combo compose < 5.7.0 + buildx ≥ 0.37.2. L'info
+    # préventive (compose < 5.7.0 seul) reste un constat neutre ℹ — contrat
+    # Finding.info (« ne compte jamais comme un problème »), cohérent avec
+    # le rendu doctor ; son remède est déjà dans son detail.
     for f in park_checks.check_toolchain():
-        con.print(f"[yellow]⚠ {f.detail}[/yellow]"
-                  + (f" — remède : {f.remedy}" if f.remedy else ""))
+        if f.info:
+            con.print(f"[cyan]ℹ {f.detail}[/cyan]")
+        else:
+            con.print(f"[yellow]⚠ {f.detail}[/yellow]"
+                      + (f" — remède : {f.remedy}" if f.remedy else ""))
     if not _apps_dir_writable():
         con.print(f"[red]✗ {hub_state.APPS_DIR} n'est pas inscriptible — lancez hubctl avec "
                   "l'utilisateur du parc (cf. install.sh).[/red]")

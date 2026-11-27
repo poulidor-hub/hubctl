@@ -2062,6 +2062,19 @@ def test_install_precheck_toolchain_avertit_sans_bloquer(monkeypatch, tmp_path):
     assert "docker-compose-plugin" in out
 
 
+def test_install_precheck_toolchain_info_preventive(monkeypatch, tmp_path):
+    """Info préventive (compose < 5.7.0 + buildx ancien) : rendue en ℹ cyan,
+    PAS en ⚠ — contrat Finding.info (« ne compte jamais comme un problème »,
+    park_checks.py) ; cohérent avec le rendu doctor (ℹ cyan, actions.py).
+    Le remède est déjà dans le detail de l'info : pas de suffixe remède."""
+    _patch_precheck_env(monkeypatch, tmp_path, (5, 6, 1), (0, 30, 5))
+    con = _recording_console()
+    assert actions._install_precheck(con) is True
+    out = con.export_text()
+    assert "ℹ" in out
+    assert "⚠" not in out
+
+
 def test_install_precheck_toolchain_sain_silencieux(monkeypatch, tmp_path):
     """Combo sain (5.8.1 + 0.39.1) : aucun ⚠, le précheck reste identique."""
     _patch_precheck_env(monkeypatch, tmp_path, (5, 8, 1), (0, 39, 1))

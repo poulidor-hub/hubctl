@@ -12,12 +12,14 @@ socle — hubctl le dit désormais AVANT l'installation.
   ancien ou illisible) → information préventive, même remède ; docker/compose
   absents ou illisibles → silence (jamais un crash doctor).
 - **Précheck `app install`** : même logique en avertissement NON bloquant avant le
-  clone — une ligne ⚠, l'installation peut réussir, c'est le build post-install qui
-  gate. `update hub` inchangé (pré-checks sans docker).
-- Tests : +15 (combos simulés 5.8.1+0.39.1 sain / 5.6.1+0.39.1 problème /
+  clone — une ligne ⚠ (problème) ou ℹ (info préventive — contrat Finding.info, « ne
+  compte jamais comme un problème », cohérent avec le rendu doctor), l'installation
+  peut réussir, c'est le build post-install qui gate. `update hub` inchangé
+  (pré-checks sans docker).
+- Tests : +16 (combos simulés 5.8.1+0.39.1 sain / 5.6.1+0.39.1 problème /
   5.6.1+0.30 info / docker absent, bornes exactes 5.7.0 et 0.37.2, parse des
-  helpers, précheck ⚠ non bloquant) — suites park_checks/actions/doctor/app_install
-  : 323 verts.
+  helpers, précheck ⚠ non bloquant, info préventive en ℹ) — suites
+  park_checks/actions/doctor/app_install : 324 verts.
 
 ## [0.23.1] - 27 novembre 2026
 ### 🐛 Statut « Mises à jour » honnête en déploiement + sortie Docker silencieuse + unités re-rendues par `update hub` (verrouillage tests)
