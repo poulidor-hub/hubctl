@@ -83,6 +83,32 @@ def _make_parc(tmp_path: Path) -> tuple[Path, Path, Path]:
     return parc, parc / "HUB_base", sub_origin
 
 
+def _make_deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Déploiement réel (calque test_park_checks.py) : ``git clone`` du méta
+    + ``submodule update --init``.
+
+    Reproduit un clone public frais (VM 26/11) : HUB_base est en HEAD
+    DÉTACHÉ sur le gitlink du méta, avec une branche locale ``main`` laissée
+    par le clone. C'est l'état « déploiement qui suit les releases du
+    méta » — l'opposé du HEAD ATTACHÉ de :func:`_make_parc` (checkout de
+    développement). Retourne (méta, HUB_base, hub_origin).
+    """
+    hub_origin = _init_repo(tmp_path / "origin_hub")
+    _commit(hub_origin, "README.md", "hub origin v1")
+    _commit(hub_origin, "docker-compose.yml", "hub origin v2")
+    meta_origin = _init_repo(tmp_path / "origin_meta")
+    _commit(meta_origin, "README.md", "meta origin")
+    _git("-c", "protocol.file.allow=always", "submodule", "add",
+         str(hub_origin), "HUB_base", cwd=meta_origin)
+    _git("commit", "-am", "add submodule", cwd=meta_origin)
+
+    meta = tmp_path / "meta"
+    _git("clone", str(meta_origin), str(meta), cwd=tmp_path)
+    _git("config", "protocol.file.allow", "always", cwd=meta)
+    _git("submodule", "update", "--init", "--recursive", cwd=meta)
+    return meta, meta / "HUB_base", hub_origin
+
+
 @pytest.fixture(autouse=True)
 def _reset_update_serve_state():
     """Cache statut + flag job sont module-level : chaque test repart à froid."""
@@ -128,6 +154,50 @@ def test_status_behind(tmp_path):
     assert comp["update_available"] is True
     assert comp["commits_behind"] == 1
     assert comp["version_target"] == "2.0.0"
+    # Non-régression (statut honnête) : un checkout de développement est
+    # BRANCHÉ → deployment is False, l'update reste annoncée normalement.
+    assert comp["deployment"] is False
+
+
+def test_status_deployment_behind_no_false_positive(tmp_path):
+    """Cas 1 — déploiement (HEAD détaché) + origin/main en avance : PAS de
+    « mise à jour disponible ».
+
+    Retour VM 26/11 : un déploiement suit les RELEASES du méta (gitlink) —
+    `hubctl update hub` réaligne le pointeur, il ne « tire » jamais
+    origin/main du submodule. Annoncer ``commits_behind > 0`` comme une
+    mise à jour disponible y était un faux positif PERMANENT : le statut
+    doit rester honnête (``commits_behind`` reste affiché, mais
+    ``update_available`` est False et ``deployment`` True).
+    """
+    parc, _sub, hub_origin = _make_deployment(tmp_path)
+    # origin/main du submodule avance d'un commit (release non encore
+    # réalignée côté méta) — l'état qui déclenchait le faux positif
+    throwaway = tmp_path / "throwaway"
+    _git("clone", str(hub_origin), str(throwaway), cwd=tmp_path)
+    _git("config", "user.email", "test@test.local", cwd=throwaway)
+    _git("config", "user.name", "test", cwd=throwaway)
+    (throwaway / "VERSION").write_text("2.0.0\n")
+    _git("add", "-A", cwd=throwaway)
+    _git("commit", "-m", "2.0.0", cwd=throwaway)
+    _git("push", "origin", "main", cwd=throwaway)
+
+    status = update_serve.collect_update_status(parc)
+    comp = status["components"]["HUB_base"]
+    assert comp["deployment"] is True          # HEAD détaché (déploiement)
+    assert comp["commits_behind"] > 0          # le retard reste MESURÉ
+    assert comp["update_available"] is False   # …sans faux « à mettre à jour »
+
+
+def test_status_deployment_aligned(tmp_path):
+    """Cas 2 — déploiement aligné sur son gitlink : statut serein,
+    deployment True, aucune mise à jour annoncée."""
+    parc, _sub, _hub_origin = _make_deployment(tmp_path)
+    status = update_serve.collect_update_status(parc)
+    comp = status["components"]["HUB_base"]
+    assert comp["deployment"] is True
+    assert comp["commits_behind"] == 0
+    assert comp["update_available"] is False
 
 
 def test_meta_drifted_submodule_gitlink(tmp_path):
@@ -148,6 +218,9 @@ def test_meta_drifted_submodule_gitlink(tmp_path):
     # …mais le gitlink méta ne pointe plus son HEAD local → drift
     assert status["meta"]["drifted"] == ["HUB_base"]
     assert status["meta"]["update_available"] is True
+    # Non-régression (statut honnête) : le méta d'un checkout de dev est
+    # BRANCHÉ → deployment False, la logique drift/behind reste inchangée.
+    assert status["meta"]["deployment"] is False
 
 
 def test_status_dirty(tmp_path):
