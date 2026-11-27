@@ -115,7 +115,8 @@ def test_update_hub_units_failure_is_not_fatal(monkeypatch, tmp_path):
 
     with mock.patch.object(actions.utils, "run_shell", return_value=0), \
          mock.patch.object(actions, "_health_check", return_value=True), \
-         mock.patch.object(actions, "_ensure_atelier_service", boom):
+         mock.patch.object(actions, "_ensure_atelier_service", boom), \
+         mock.patch.object(actions, "_ensure_update_service"):
         ok = actions._update_hub_via_meta(_mock_console(), dry_run=True)
     assert ok is True
 
