@@ -520,6 +520,93 @@ def _system_step_fallback(con, label: str, cmds: list[list[str]]) -> None:
         con.print(f"[yellow]  {' '.join(cmd)}[/yellow]")
 
 
+def _ensure_unit(con, nom: str, *, gabarit: Path, rendu: Path, unite: Path,
+                 dry_run: bool = False) -> None:
+    """Rend l'unit systemd du service hôte ``nom`` et la (re)pose.
+
+    Une montée de version de hubctl peut changer le gabarit : l'unit déjà
+    posée est RE-POSÉE dès que le rendu diffère de l'unit installée (verdict
+    utilisateur du 27/11/2026 — l'unit périmée survivait à ``update hub`` et
+    au relancement d'``install.sh``).
+
+    - unit absente            → posée, puis ``enable --now`` ;
+    - identique et active     → rien ;
+    - identique mais inactive → ``enable --now`` ;
+    - différente et active    → posée + ``daemon-reload`` + ``restart`` ;
+    - différente et inactive  → posée + ``daemon-reload`` + ``enable --now``.
+
+    Jamais fatal : sans TTY (ou échec sudo), le rappel des commandes reste
+    affiché — l'init ne doit pas casser à cause de cette étape.
+    """
+    import sys as _sys
+    source: Path = gabarit
+    if not dry_run:
+        source = _render_unit(con, gabarit, rendu) or gabarit
+        print(f'DEBUG ensure_unit: source={source} existe={source.exists()}')
+        # Le repli (gabarit brut) contient des placeholders : ne JAMAIS poser
+        # une unit cassée — rappel manuel à la place (jamais fatal).
+        import re as _re
+        try:
+            contenu_source = source.read_text(encoding="utf-8")
+        except OSError:
+            contenu_source = ""
+        if _re.search(r"@\w+@", contenu_source):
+            con.print(f"[yellow]⚠ Rendu de l'unit {nom} incomplet (placeholders non "
+                      "substitués) — commandes à lancer à la main :[/yellow]")
+            cmds = [["sudo", "cp", str(source), str(unite)],
+                    ["sudo", "systemctl", "daemon-reload"],
+                    ["sudo", "systemctl", "enable", "--now", f"hubctl-{nom}"]]
+            _system_step_fallback(con, nom, cmds)
+            return
+    if unite.exists():
+        try:
+            st = subprocess.run(["systemctl", "is-active", f"hubctl-{nom}"],
+                                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            st = None
+        actif = st is not None and st.returncode == 0 and st.stdout.strip() == "active"
+        identique = False
+        try:
+            identique = source.read_text(encoding="utf-8") == unite.read_text(encoding="utf-8")
+        except OSError:
+            pass
+        if actif and identique:
+            con.print(f"[green]✓ Service {nom} déjà à jour et actif[/green]")
+            return
+        cmds = [["sudo", "cp", str(source), str(unite)],
+                ["sudo", "systemctl", "daemon-reload"]]
+        if actif:
+            cmds.append(["sudo", "systemctl", "restart", f"hubctl-{nom}"])
+            verbe = "mis à jour et redémarré"
+        else:
+            cmds.append(["sudo", "systemctl", "enable", "--now", f"hubctl-{nom}"])
+            verbe = "posé et activé"
+    else:
+        cmds = [["sudo", "cp", str(source), str(unite)],
+                ["sudo", "systemctl", "daemon-reload"],
+                ["sudo", "systemctl", "enable", "--now", f"hubctl-{nom}"]]
+        verbe = "installé et activé"
+
+    # ── Exécution (TTY requis pour le prompt sudo) ou rappel manuel ──
+    try:
+        if dry_run or _sys.stdin.isatty():
+            failed = False
+            for cmd in cmds:
+                if utils.run_shell(cmd, dry_run=dry_run, console=con) != 0:
+                    failed = True
+                    break
+            if not failed:
+                if dry_run:
+                    con.print(f"[dim](dry-run) service {nom} {verbe}[/dim]")
+                else:
+                    con.print(f"[green]✓ Service {nom} {verbe}[/green]")
+                return
+    except Exception as e:
+        con.print(f"[yellow]⚠ Service {nom} (étape système) : {e}[/yellow]")
+
+    _system_step_fallback(con, nom, cmds)
+
+
 def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     """Étape `hubctl init` : service hôte hubctl-atelier (« ensure » idempotent).
 
@@ -599,52 +686,11 @@ def _ensure_atelier_service(console, dry_run: bool = False) -> None:
     except OSError as e:
         con.print(f"[yellow]⚠ Coffre ({coffre}) : {e}[/yellow]")
 
-    # ── 3. Unit systemd : rendre (substitution), installer / activer / rien ──
-    if _ATELIER_UNIT.exists():
-        try:
-            st = subprocess.run(
-                ["systemctl", "is-active", "hubctl-atelier"],
-                capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.SubprocessError):
-            st = None
-        if st is not None and st.returncode == 0 and st.stdout.strip() == "active":
-            con.print("[green]✓ Service atelier hubctl-atelier actif[/green]")
-            return
-        cmds = [["sudo", "systemctl", "enable", "--now", "hubctl-atelier"]]
-    else:
-        # dry-run : aucune écriture → pas de rendu, aperçu sur le gabarit brut
-        cp_src = (_ATELIER_UNIT_GABARIT if dry_run
-                  else (_render_unit(con, _ATELIER_UNIT_GABARIT,
-                                     _ATELIER_UNIT_RENDERED)
-                        or _ATELIER_UNIT_GABARIT))
-        cmds = [
-            ["sudo", "cp", str(cp_src), str(_ATELIER_UNIT)],
-            ["sudo", "systemctl", "daemon-reload"],
-            ["sudo", "systemctl", "enable", "--now", "hubctl-atelier"],
-        ]
-
-    # ── 4. Exécution (TTY requis pour le prompt sudo) ou rappel manuel ──
-    # Filet jamais-fatal : stdin peut être None (daemon), l'étape système ne
-    # doit JAMAIS casser l'init — toute imprévue → rappel des commandes.
-    try:
-        if dry_run or _sys.stdin.isatty():
-            failed = False
-            for cmd in cmds:
-                if utils.run_shell(cmd, dry_run=dry_run, console=con) != 0:
-                    failed = True
-                    break
-            if not failed:
-                if dry_run:
-                    con.print("[dim](dry-run) service hubctl-atelier installé + activé[/dim]")
-                else:
-                    con.print("[green]✓ Service atelier hubctl-atelier actif[/green]")
-                return
-    except Exception as e:
-        con.print(f"[yellow]⚠ Service atelier (étape système) : {e}[/yellow]")
-
-    # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
-    # rappeler les commandes à lancer à la main (sauf flux de l'installeur).
-    _system_step_fallback(con, "atelier", cmds)
+    _ensure_unit(con, "atelier",
+                 gabarit=_ATELIER_UNIT_GABARIT,
+                 rendu=_ATELIER_UNIT_RENDERED,
+                 unite=_ATELIER_UNIT,
+                 dry_run=dry_run)
 
 
 def _ensure_update_service(console, dry_run: bool = False) -> None:
@@ -661,53 +707,11 @@ def _ensure_update_service(console, dry_run: bool = False) -> None:
     sudo, les commandes sont rappelées à la main — l'init ne doit pas casser
     à cause de cette étape).
     """
-    con = console or _console
-    import sys as _sys
-    # ── Unit systemd : rendre (substitution), installer / activer / rien ──
-    if _UPDATE_UNIT.exists():
-        try:
-            st = subprocess.run(
-                ["systemctl", "is-active", "hubctl-update"],
-                capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.SubprocessError):
-            st = None
-        if st is not None and st.returncode == 0 and st.stdout.strip() == "active":
-            con.print("[green]✓ Service update hubctl-update actif[/green]")
-            return
-        cmds = [["sudo", "systemctl", "enable", "--now", "hubctl-update"]]
-    else:
-        # dry-run : aucune écriture → pas de rendu, aperçu sur le gabarit brut
-        cp_src = (_UPDATE_UNIT_GABARIT if dry_run
-                  else (_render_unit(con, _UPDATE_UNIT_GABARIT,
-                                     _UPDATE_UNIT_RENDERED)
-                        or _UPDATE_UNIT_GABARIT))
-        cmds = [
-            ["sudo", "cp", str(cp_src), str(_UPDATE_UNIT)],
-            ["sudo", "systemctl", "daemon-reload"],
-            ["sudo", "systemctl", "enable", "--now", "hubctl-update"],
-        ]
-
-    # ── Exécution (TTY requis pour le prompt sudo) ou rappel manuel ──
-    # Filet jamais-fatal : identique à l'atelier.
-    try:
-        if dry_run or _sys.stdin.isatty():
-            failed = False
-            for cmd in cmds:
-                if utils.run_shell(cmd, dry_run=dry_run, console=con) != 0:
-                    failed = True
-                    break
-            if not failed:
-                if dry_run:
-                    con.print("[dim](dry-run) service hubctl-update installé + activé[/dim]")
-                else:
-                    con.print("[green]✓ Service update hubctl-update actif[/green]")
-                return
-    except Exception as e:
-        con.print(f"[yellow]⚠ Service update (étape système) : {e}[/yellow]")
-
-    # Pas de TTY (ou échec/imprévu sudo) : ne jamais faire échouer l'init —
-    # rappeler les commandes à lancer à la main.
-    _system_step_fallback(con, "update", cmds)
+    _ensure_unit(console, "update",
+                 gabarit=_UPDATE_UNIT_GABARIT,
+                 rendu=_UPDATE_UNIT_RENDERED,
+                 unite=_UPDATE_UNIT,
+                 dry_run=dry_run)
 
 
 def _summary_urls(host_ip: str) -> list[tuple[str, str]]:

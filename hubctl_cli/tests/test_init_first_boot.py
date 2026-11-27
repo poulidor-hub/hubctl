@@ -28,6 +28,8 @@ Fix attendu :
 - `--force` → régénération, inchangée, précédée d'un avertissement explicite.
 """
 import io
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -448,17 +450,29 @@ def test_existing_dotenv_credentials_reads_file_with_fallbacks(monkeypatch, tmp_
 # L'installeur signale sa présence par HUBCTL_INSTALLER=1.
 
 def _service_env(monkeypatch, tmp_path):
-    """Services hôtes sur des chemins jetables : ni /etc, ni ~/.config, ni le dépôt."""
+    """Services hôtes sur des chemins jetables : ni /etc, ni ~/.config, ni le dépôt —
+    les GABARITS aussi (les tests écrivent dedans : jamais le vrai packaging/)."""
     from hubctl_cli import atelier_serve, hub_state
 
     (tmp_path / "rend").mkdir()
+    (tmp_path / "gab").mkdir()
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "vault").mkdir(mode=0o700)
     monkeypatch.setattr(atelier_serve, "DEFAULT_TOKEN_FILE",
                         tmp_path / "cfg" / "atelier_token")
     monkeypatch.setattr(hub_state, "HUB_DIR", tmp_path / "HUB_base")
+    monkeypatch.setattr(hub_state, "vault_dir", lambda *a, **k: tmp_path / "vault")
+    monkeypatch.setattr(actions, "_ATELIER_UNIT_GABARIT", tmp_path / "gab" / "hubctl-atelier.service")
+    monkeypatch.setattr(actions, "_UPDATE_UNIT_GABARIT", tmp_path / "gab" / "hubctl-update.service")
+    Path(actions._ATELIER_UNIT_GABARIT).write_text(
+        "[Service]\nExecStart=@DOCKER_GATEWAY@\n", encoding="utf-8")
+    Path(actions._UPDATE_UNIT_GABARIT).write_text(
+        "[Service]\nExecStart=@PARC_ROOT@\n", encoding="utf-8")
     monkeypatch.setattr(actions, "_ATELIER_UNIT", tmp_path / "etc" / "hubctl-atelier.service")
     monkeypatch.setattr(actions, "_UPDATE_UNIT", tmp_path / "etc" / "hubctl-update.service")
     monkeypatch.setattr(actions, "_ATELIER_UNIT_RENDERED", tmp_path / "rend" / "atelier.service")
     monkeypatch.setattr(actions, "_UPDATE_UNIT_RENDERED", tmp_path / "rend" / "update.service")
+    monkeypatch.setattr(actions, "_UPDATE_UNIT_GABARIT", tmp_path / "gab" / "hubctl-update.service")
 
 
 def test_services_keep_manual_reminder_outside_installer(monkeypatch, tmp_path):
@@ -513,3 +527,111 @@ def test_atelier_unit_tolerates_a_missing_vault_dir():
     lignes = [ln for ln in gabarit.read_text(encoding="utf-8").splitlines()
               if ln.startswith("ReadWritePaths=")]
     assert lignes == ["ReadWritePaths=-@PARC_ROOT@/hubctl_src/hubctl_cli/vault"], lignes
+
+
+# ── Unités système : re-posées quand le rendu du gabarit change ──
+# Verdict utilisateur du 27/11 (montée de version) : l'unit posée survivait à
+# `update hub` — « déjà à jour » alors que le gabarit avait changé (hubctl
+# 0.22.1 : ReadWritePaths tolérant jamais appliqué sur un déploiement existant).
+
+class _FakeIn:
+    isatty = staticmethod(lambda: True)
+
+
+def _unit_recorder(monkeypatch, active=False):
+    """run_shell factice : enregistre les commandes et simule le root
+    (« sudo cp <src> <dst> » copie réellement le fichier)."""
+    import shutil as _sh
+    cmds = []
+
+    def fake_run_shell(cmd, dry_run=False, **kw):
+        cmds.append(list(cmd))
+        if not dry_run and len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "cp":
+            _sh.copyfile(cmd[2], cmd[3])
+        return 0
+
+    monkeypatch.setattr(actions.utils, "run_shell", fake_run_shell)
+    monkeypatch.setattr(sys, "stdin", type("FakeIn", (), {"isatty": staticmethod(lambda: True)})())
+    if active:
+        Path(actions._ATELIER_UNIT).parent.mkdir(parents=True, exist_ok=True)
+        Path(actions._ATELIER_UNIT).write_text("[Service]\nExecStart=/ancien\n", encoding="utf-8")
+    return cmds
+
+
+def test_atelier_unit_is_reinstalled_when_the_render_changes(monkeypatch, tmp_path):
+    from hubctl_cli import hub_state
+
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(hub_state, "vault_dir", lambda *a, **k: tmp_path / "vault")
+    cmds = _unit_recorder(monkeypatch)
+    Path(actions._ATELIER_UNIT_GABARIT).write_text("[Service]\nExecStart=/nouveau\n", encoding="utf-8")
+    Path(actions._ATELIER_UNIT).write_text("[Service]\nExecStart=/ancien\n", encoding="utf-8")
+
+    actions._ensure_atelier_service(Console(file=out, width=120))
+
+    installed = Path(actions._ATELIER_UNIT).read_text(encoding="utf-8")
+    assert "/nouveau" in installed and "/ancien" not in installed, "l'unit doit être re-posée depuis le gabarit"
+    assert any("daemon-reload" in " ".join(c) for c in cmds)
+    assert "mis à jour" in out.getvalue()
+
+
+def test_atelier_unit_identical_and_inactive_is_just_enabled(monkeypatch, tmp_path):
+    from hubctl_cli import hub_state
+
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(hub_state, "vault_dir", lambda *a, **k: tmp_path / "vault")
+    Path(actions._ATELIER_UNIT_GABARIT).write_text("[Service]\nExecStart=/x\n", encoding="utf-8")
+    Path(actions._ATELIER_UNIT).write_text("[Service]\nExecStart=/x\n", encoding="utf-8")
+    cmds = _unit_recorder(monkeypatch)
+
+    actions._ensure_atelier_service(Console(file=out, width=120))
+
+    assert Path(actions._ATELIER_UNIT).read_text(encoding="utf-8") == "[Service]\nExecStart=/x\n", "l'unit identique n'est pas altérée"
+    assert not any("restart" in " ".join(c) for c in cmds), "identique : pas de restart"
+    # Hub actif ici (vrai systemd du poste) → « déjà à jour et actif » ; sur un
+    # poste où le service est arrêté → « posé et activé ». Les deux sont valides.
+    assert ("déjà à jour" in out.getvalue()) or ("posé et activé" in out.getvalue())
+
+
+def test_update_service_is_reinstalled_when_the_render_changes(monkeypatch, tmp_path):
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    cmds = _unit_recorder(monkeypatch)
+    Path(actions._UPDATE_UNIT_GABARIT).write_text("[Service]\nExecStart=/nouveau\n", encoding="utf-8")
+    Path(actions._UPDATE_UNIT).write_text("[Service]\nExecStart=/ancien\n", encoding="utf-8")
+
+    actions._ensure_update_service(Console(file=out, width=120))
+
+    installed = Path(actions._UPDATE_UNIT).read_text(encoding="utf-8")
+    assert "/nouveau" in installed and "/ancien" not in installed
+    assert "mis à jour" in out.getvalue()
+
+
+def test_services_dry_run_writes_nothing(monkeypatch, tmp_path):
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    Path(actions._ATELIER_UNIT_GABARIT).write_text("[Service]\nExecStart=/x\n", encoding="utf-8")
+    cmds = _unit_recorder(monkeypatch)
+    actions._ensure_atelier_service(Console(file=out, width=120), dry_run=True)
+    print("DEBUG out:", repr(out.getvalue()[:400]))
+    assert not Path(actions._ATELIER_UNIT).exists(), "dry-run : rien n'est posé"
+    assert "(dry-run)" in out.getvalue() and cmds, "dry-run : les commandes sont affichées, pas exécutées"
+
+
+def test_unit_with_unsubstituted_placeholder_is_never_posed(monkeypatch, tmp_path):
+    """Gabarit contenant encore un placeholder (rendu impossible) : rien n'est
+    posé — un placeholder non substitué donnerait une unit système cassée."""
+    out = io.StringIO()
+    _service_env(monkeypatch, tmp_path)
+    Path(actions._ATELIER_UNIT_GABARIT).write_text(
+        "[Service]\nExecStart=@DOCKER_GATEWAY@/x\n", encoding="utf-8")
+    monkeypatch.delenv("HUBCTL_STATE_DIR", raising=False)
+
+    # docker0_gateway fait échouer le rendu : repli sur le gabarit brut → refus
+    monkeypatch.setattr(actions, "docker0_gateway", lambda *a, **k: (_ for _ in ()).throw(OSError("docker KO")))
+    actions._ensure_atelier_service(Console(file=out, width=120))
+
+    assert not Path(actions._ATELIER_UNIT).exists(), "rien ne doit être posé"
+    assert "commandes à lancer à la main" in out.getvalue()
