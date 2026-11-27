@@ -1,3 +1,30 @@
+## [0.22.3] - 27 novembre 2026
+### 🐛 Statut « Mises à jour » honnête en déploiement + sortie Docker silencieuse + unités re-rendues par `update hub`
+Trois retours du lot « restes installation sans friction » (validation VM 26-27/11/2026).
+
+- **Statut honnête en déploiement** (`update serve`) : un déploiement est en HEAD
+  DÉTACHÉ sur le gitlink (posé par `git clone` + `submodule update`) — origin/main
+  du submodule peut être en avance sans qu'aucune mise à jour ne soit actionnable
+  (`update hub` réaligne le pointeur via le méta, il ne « tire » jamais origin/main
+  du submodule). Annoncer `commits_behind > 0` comme « mise à jour disponible »
+  était un faux positif PERMANENT dans l'UI. Chaque composant sérialise désormais
+  `deployment` (True uniquement si HEAD détaché, méta inclus — le méta d'un
+  déploiement reste branché ⇒ False, logique méta inchangée) ; `deployment=True`
+  ⇒ `update_available=False`, le retard restant mesuré dans `commits_behind`.
+  Un checkout de développement (HEAD branché) garde le comportement habituel.
+  Consommé par le front HUB_base via le passthrough du proxy (aucune modif proxy).
+- **Sortie Docker silencieuse** : tout `make` d'app lancé PAR hubctl
+  (install/update/convergence des 38 apps) passe `COMPOSE_PROGRESS=quiet` — le
+  pull/build/up verbeux de compose polluait le terminal et les logs. Aucun
+  Makefile modifié (compose lit la variable) ; un `make` manuel au terminal
+  reste verbeux.
+- **Unités hôtes re-rendues par `update hub`** : le comportement livré en
+  0.22.2 (complément) est désormais VERROUILLÉ par des tests — fin d'`update
+  hub` réussie ⇒ re-rendu + re-pose idempotents des deux unités systemd hôtes
+  (atelier + update), échec non fatal (simple avertissement).
+- Tests : +7 (4 cas de statut déploiement, quiet, ensure appelés, échec non
+  fatal) ; suites `test_update_serve.py` + `test_actions.py` : 133 verts.
+
 ## [0.23.0] - 27 novembre 2026
 ### ⚡ `app install` : une dépendance absente ne bloque plus l'installation
 Retour utilisateur (27/11/2026) : pour la mise en place d'un Hub, installer une app
