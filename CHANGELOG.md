@@ -1,3 +1,18 @@
+## [0.23.0] - 27 novembre 2026
+### ⚡ `app install` : une dépendance absente ne bloque plus l'installation
+Retour utilisateur (27/11/2026) : pour la mise en place d'un Hub, installer une app
+aux dépendances non présentes (ex. intégrations M2M référentiel/compta) doit marcher —
+ces apps rejoindront le parc plus tard.
+- Dépendance déclarée et absente du registre du Hub → **avertissement explicite** et
+  l'app s'installe seule (« ses intégrations s'activeront quand elle rejoindra le parc ») ;
+  plus jamais d'échec ni de renvoi vers `seed-apps.yaml`, qui n'en fait pas partie
+  (outil de reprise d'une flotte sauvegardée — décision utilisateur).
+- La résolution des dépendances passe désormais par le seul registre du Hub
+  (`git_repo_url`, jeton admin).
+- `seed` et `seed-apps.yaml` gardent leur rôle de reprise/convergence, inchangés.
+- Tests réécrits pour le nouveau contrat (autonomie + avertissement + « aucune
+  interrogation du registre sans jeton ») ; suite complète 993 verts.
+
 ## [0.22.1] - 26 novembre 2026
 ### 🐛 Validation VM d'une installation neuve : service atelier, doctor, dépendances, coffre
 Tout vient de la validation bout-en-bout sur VM vierge du 26/11/2026 (installation puis
