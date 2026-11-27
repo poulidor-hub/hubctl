@@ -1,3 +1,24 @@
+## [0.23.2] - 27 novembre 2026
+### 🐛 doctor/précheck : plancher compose des builds d'apps fines (combo compose/buildx)
+Cadrage « docker 29 » (option A1) : compose v5 délègue le build à `buildx bake` ;
+buildx ≥ 0.37.2 (fix GHSA-gwr2-q96m-6682 / CVE-2026-93325) enforce les entitlements
+fichiers (`fs.read`) que seul compose ≥ 5.7.0 (PR #14325) accorde lui-même. Un combo
+compose < 5.7.0 + buildx ≥ 0.37.2 gate silencieusement tout `make build` d'app fine
+socle — hubctl le dit désormais AVANT l'installation.
+
+- **Nouveau check `toolchain.compose`** (`hubctl doctor`, via `run_checks`) : combo
+  cassé (compose < 5.7.0 ET buildx ≥ 0.37.2) → problème avec remède (« upgrade
+  docker-compose-plugin (compose ≥ 5.7.0 requis) ») ; compose < 5.7.0 seul (buildx
+  ancien ou illisible) → information préventive, même remède ; docker/compose
+  absents ou illisibles → silence (jamais un crash doctor).
+- **Précheck `app install`** : même logique en avertissement NON bloquant avant le
+  clone — une ligne ⚠, l'installation peut réussir, c'est le build post-install qui
+  gate. `update hub` inchangé (pré-checks sans docker).
+- Tests : +15 (combos simulés 5.8.1+0.39.1 sain / 5.6.1+0.39.1 problème /
+  5.6.1+0.30 info / docker absent, bornes exactes 5.7.0 et 0.37.2, parse des
+  helpers, précheck ⚠ non bloquant) — suites park_checks/actions/doctor/app_install
+  : 323 verts.
+
 ## [0.23.1] - 27 novembre 2026
 ### 🐛 Statut « Mises à jour » honnête en déploiement + sortie Docker silencieuse + unités re-rendues par `update hub` (verrouillage tests)
 Trois retours du lot « restes installation sans friction » (validation VM 26-27/11/2026).
