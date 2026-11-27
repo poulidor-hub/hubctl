@@ -23,18 +23,27 @@ Shape (contrat) :
 - :func:`collect_update_status` → ``{"service": "ok", "checked_at":
   <ISO8601>, "meta": <component>, "components": {rel_path: <component>}}`` ;
 - ``<component>`` = ``{"name", "path", "version", "version_target",
-  "branch", "commits_behind", "dirty", "drifted", "update_available",
-  "error"}`` ;
+  "branch", "commits_behind", "dirty", "drifted", "deployment",
+  "update_available", "error"}`` ;
   ``version`` = ``VERSION`` local (à défaut champ ``version`` du
   ``package.json`` pour les composants JS, sinon ``None``) ;
   ``version_target`` = ``git show origin/main:<fichier>`` (lisible sans
   toucher à l'arbre local, ``None`` si absent) ;
   ``drifted`` = rel_paths des submodules dont le HEAD local ≠ gitlink
   enregistré par le méta (calculé pour l'entrée méta, ``[]`` pour un
-  submodule) ;
+  submodule) ; ``drifted`` est figé à ``[]`` quand le méta est en
+  déploiement (HEAD détaché) ;
+  ``deployment`` = True uniquement si le HEAD du dépôt est DÉTACHÉ
+  (``park_checks._detached_head``) — l'état que pose ``git clone`` +
+  ``submodule update`` sur tout déploiement ; False pour un checkout de
+  développement (HEAD branché), méta inclus ;
   ``update_available`` du méta = ``commits_behind > 0 or drifted`` —
   une mise à jour réalignera les pointeurs (spec §5.1) ; pour un
-  submodule, ``commits_behind > 0`` seul.
+  submodule, ``commits_behind > 0`` seul ; dans les DEUX cas, un
+  composant ``deployment`` (HEAD détaché) ne peut pas « tirer »
+  origin/main (la mise à jour passe par le méta) → ``False`` même en
+  retard : le retard reste MESURÉ dans ``commits_behind``, mais ne se
+  traduit plus en faux « à mettre à jour » permanent (retour VM 26/11).
 
 Job (contrat, spec §5.2) :
 - l'état du job ne vit QUE dans ``update_state.json`` (écriture JSON
@@ -191,7 +200,12 @@ def _component_status(parc_root: Path, rel: str) -> dict:
     refs locales (le fetch précédent, jamais de diagnostic destructeur) ;
     sous-repo non initialisé → ``error="not initialized"``. Pour le méta,
     ``drifted`` liste les submodules désalignés (``_meta_drift``) et
-    alimente ``update_available``.
+    alimente ``update_available``. ``deployment`` (HEAD détaché — l'état
+    posé par ``git clone`` + ``submodule update``) sérialisé pour TOUS les
+    composants : un déploiement ne « tire » jamais origin/main, donc son
+    ``update_available`` reste False même en retard (statut honnête, le
+    retard reste visible dans ``commits_behind``) ; un HEAD branché
+    (checkout de développement) garde la logique habituelle.
     """
     repo = parc_root if rel == "." else parc_root / rel
     entry: dict = {
@@ -203,6 +217,7 @@ def _component_status(parc_root: Path, rel: str) -> dict:
         "commits_behind": 0,
         "dirty": False,
         "drifted": [],
+        "deployment": False,
         "update_available": False,
         "error": None,
     }
@@ -237,7 +252,21 @@ def _component_status(parc_root: Path, rel: str) -> dict:
 
     entry["version"] = _read_version(repo)
     entry["version_target"] = _read_version(repo, "origin/main")
-    if rel == ".":
+    # Statut honnête en déploiement (retour VM 26/11) : un déploiement est
+    # en HEAD DÉTACHÉ sur le gitlink (posé par `git clone` + `submodule
+    # update`) — `update hub` réaligne le pointeur via le méta, il ne
+    # « tire » jamais origin/main du submodule. Annoncer le retard
+    # ``commits_behind`` comme une mise à jour disponible y était un faux
+    # positif PERMANENT. ``deployment`` est True UNIQUEMENT si HEAD est
+    # détaché ; le méta d'un déploiement reste branché → False → logique
+    # méta inchangée. Indétermination git (None) jamais lue comme
+    # déploiement (convention ``_detached_head``) : lecture stricte du
+    # checkout de développement.
+    deployment = park_checks._detached_head(repo) is True
+    entry["deployment"] = deployment
+    if deployment:
+        entry["update_available"] = False
+    elif rel == ".":
         # spec §5.1 : le méta est aussi « à mettre à jour » quand un gitlink
         # ne pointe plus le HEAD local d'un submodule (drift) — une mise à
         # jour réalignera les pointeurs. Entrées submodules : commits_behind

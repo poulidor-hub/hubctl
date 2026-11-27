@@ -1,3 +1,30 @@
+## [0.23.1] - 27 novembre 2026
+### 🐛 Statut « Mises à jour » honnête en déploiement + sortie Docker silencieuse + unités re-rendues par `update hub` (verrouillage tests)
+Trois retours du lot « restes installation sans friction » (validation VM 26-27/11/2026).
+
+- **Statut honnête en déploiement** (`update serve`) : un déploiement est en HEAD
+  DÉTACHÉ sur le gitlink (posé par `git clone` + `submodule update`) — origin/main
+  du submodule peut être en avance sans qu'aucune mise à jour ne soit actionnable
+  (`update hub` réaligne le pointeur via le méta, il ne « tire » jamais origin/main
+  du submodule). Annoncer `commits_behind > 0` comme « mise à jour disponible »
+  était un faux positif PERMANENT dans l'UI. Chaque composant sérialise désormais
+  `deployment` (True uniquement si HEAD détaché, méta inclus — le méta d'un
+  déploiement reste branché ⇒ False, logique méta inchangée) ; `deployment=True`
+  ⇒ `update_available=False`, le retard restant mesuré dans `commits_behind`.
+  Un checkout de développement (HEAD branché) garde le comportement habituel.
+  Consommé par le front HUB_base via le passthrough du proxy (aucune modif proxy).
+- **Sortie Docker silencieuse** : tout `make` d'app lancé PAR hubctl
+  (install/update/convergence des 38 apps) passe `COMPOSE_PROGRESS=quiet` — le
+  pull/build/up verbeux de compose polluait le terminal et les logs. Aucun
+  Makefile modifié (compose lit la variable) ; un `make` manuel au terminal
+  reste verbeux.
+- **Unités hôtes re-rendues par `update hub`** : verrouillage de tests du
+  complément déjà embarqué sur main (`e505d62`) — pas de nouveau code. Fin
+  d'`update hub` réussie ⇒ re-rendu + re-pose idempotents des deux unités
+  systemd hôtes (atelier + update), échec non fatal (simple avertissement).
+- Tests : +7 (4 cas de statut déploiement, quiet, ensure appelés, échec non
+  fatal) ; suites `test_update_serve.py` + `test_actions.py` : 133 verts.
+
 ## [0.23.0] - 27 novembre 2026
 ### ⚡ `app install` : une dépendance absente ne bloque plus l'installation
 Retour utilisateur (27/11/2026) : pour la mise en place d'un Hub, installer une app
@@ -12,6 +39,13 @@ ces apps rejoindront le parc plus tard.
 - `seed` et `seed-apps.yaml` gardent leur rôle de reprise/convergence, inchangés.
 - Tests réécrits pour le nouveau contrat (autonomie + avertissement + « aucune
   interrogation du registre sans jeton ») ; suite complète 993 verts.
+
+## [0.22.2] - 26 novembre 2026
+### 🔧 `update hub` re-rend et re-pose les unités hôtes (complément publié dans le méta 0.88.16)
+- Bump 0.22.2 publié dans le méta POULIDOR 0.88.16 ; le complément
+  « update hub re-rend et re-pose les unités systemd hôtes » (`b3fb77b`,
+  merge `e505d62`) a été embarqué dans la même publication SANS bump de
+  version ni entrée — cette entrée documente le croisement.
 
 ## [0.22.1] - 26 novembre 2026
 ### 🐛 Validation VM d'une installation neuve : service atelier, doctor, dépendances, coffre
