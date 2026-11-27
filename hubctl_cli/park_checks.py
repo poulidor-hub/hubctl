@@ -451,16 +451,110 @@ def check_app_repo(app_path: Path) -> Finding:
     return Finding(check=f"app.{name}", ok=True, detail="propre et à jour")
 
 
+# ── Toolchain docker : plancher compose des builds d'apps fines (A1) ────────
+
+# Plancher compose : compose ≥ 5.7.0 (PR #14325) accorde lui-même les
+# entitlements fichiers (`fs.read`) demandés par les builds bake des apps
+# fines socle (contexte `socle:` additionnel, `dockerfile:` hors contexte).
+COMPOSE_FLOOR = (5, 7, 0)
+# À partir de buildx 0.37.2 (fix GHSA-gwr2-q96m-6682 / CVE-2026-93325), ces
+# entitlements sont ENFORCE même en `--progress rawjson` — le contournement
+# silencieux que compose < 5.7.0 exploitait n'existe plus.
+BUILDX_GATE = (0, 37, 2)
+
+_TOOLCHAIN_REMEDY = ("upgrade docker-compose-plugin (compose ≥ 5.7.0 requis) — "
+                     "apt-get install --only-upgrade docker-compose-plugin")
+
+
+def _compose_version() -> tuple[int, int, int] | None:
+    """``docker compose version --short`` → ``(5, 8, 1)``, ``None`` si absent ou illisible.
+
+    Docker ou le plugin compose absent, commande en erreur, sortie sans
+    version : ``None`` — le check appelant reste silencieux (doctor n'est
+    pas le lieu d'un diagnostic d'installation docker ; ``app install`` a
+    déjà son propre check Docker joignable).
+    """
+    try:
+        r = subprocess.run(["docker", "compose", "version", "--short"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", r.stdout or "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def _buildx_version() -> tuple[int, int, int] | None:
+    """``docker buildx version`` → ``(0, 39, 1)``, ``None`` si absent ou illisible."""
+    try:
+        r = subprocess.run(["docker", "buildx", "version"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    m = re.search(r"v(\d+\.\d+\.\d+)", r.stdout or "")
+    if not m:
+        return None
+    major, minor, patch = m.group(1).split(".")
+    return (int(major), int(minor), int(patch))
+
+
+def _fmt_version(v: tuple[int, int, int]) -> str:
+    return ".".join(str(n) for n in v)
+
+
+def check_toolchain() -> list[Finding]:
+    """Plancher toolchain pour les builds d'apps fines socle (cadrage docker 29).
+
+    compose v5 délègue le build à ``buildx bake`` ; buildx ≥ 0.37.2 enforce
+    les entitlements fichiers (``fs.read``) que seul compose ≥ 5.7.0 accorde
+    lui-même. Combo compose < 5.7.0 + buildx ≥ 0.37.2 = tout ``make build``
+    d'app fine gate → PROBLÈME (``ok=False``, remède : upgrade du plugin).
+    compose < 5.7.0 seul (buildx ancien ou illisible) → information
+    préventive, auto-suffisante : la prochaine montée de buildx (apt
+    upgrade) déclenchera le même blocage. Docker/compose absents ou
+    illisibles → silence : aucun finding, jamais un crash de doctor.
+    """
+    compose = _compose_version()
+    if compose is None or compose >= COMPOSE_FLOOR:
+        return []
+    buildx = _buildx_version()
+    if buildx is not None and buildx >= BUILDX_GATE:
+        return [Finding(
+            check="toolchain.compose", ok=False,
+            detail=(f"docker compose v{_fmt_version(compose)} < 5.7.0 avec "
+                    f"buildx v{_fmt_version(buildx)} ≥ 0.37.2 : builds d'apps "
+                    "fines bloqués (entitlements fs.read)"),
+            remedy=_TOOLCHAIN_REMEDY,
+        )]
+    etat = (f"buildx v{_fmt_version(buildx)}" if buildx is not None
+            else "buildx illisible ou absent")
+    return [_info(
+        "toolchain.compose",
+        f"docker compose v{_fmt_version(compose)} < 5.7.0 ({etat}) : les "
+        "builds d'apps fines casseront à la première montée de buildx "
+        f"≥ 0.37.2 (entitlements fs.read) — {_TOOLCHAIN_REMEDY}",
+    )]
+
+
 def run_update_prechecks(parc_root: Path) -> list[Finding]:
     """Pré-checks du flux ``update hub`` : méta + HUB_base."""
     return check_meta_ready(Path(parc_root)) + check_hub_base(Path(parc_root))
 
 
 def run_checks(parc_root: Path, apps: list[str]) -> list[Finding]:
-    """Pré-checks complets : méta + HUB_base + configuration en service + chaque app demandée."""
+    """Pré-checks complets : méta + HUB_base + configuration en service + toolchain docker + chaque app demandée.
+
+    (``check_toolchain`` : plancher compose des builds d'apps fines —
+    consommé par ``doctor``, jamais par les pré-checks ``update hub`` qui
+    passent par :func:`run_update_prechecks`.)
+    """
     parc_root = Path(parc_root)
     findings = run_update_prechecks(parc_root)
     findings += check_env_applied(parc_root)
+    findings += check_toolchain()
     for slug in apps:
         findings.append(check_app_repo(parc_root / "APPS" / slug))
     return findings

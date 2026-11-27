@@ -1716,6 +1716,13 @@ def _install_precheck(con, *, dry_run: bool = False) -> bool:
     if hub_state.check_docker() is False:
         con.print("[red]✗ Docker injoignable. Vérifiez que le daemon tourne.[/red]")
         return False
+    # Toolchain docker : plancher compose des builds d'apps fines (cadrage
+    # docker 29, option A1). Avertissement NON bloquant avant le clone —
+    # l'installation elle-même peut réussir, c'est le `make build` qui gate
+    # ensuite sur un combo compose < 5.7.0 + buildx ≥ 0.37.2.
+    for f in park_checks.check_toolchain():
+        con.print(f"[yellow]⚠ {f.detail}[/yellow]"
+                  + (f" — remède : {f.remedy}" if f.remedy else ""))
     if not _apps_dir_writable():
         con.print(f"[red]✗ {hub_state.APPS_DIR} n'est pas inscriptible — lancez hubctl avec "
                   "l'utilisateur du parc (cf. install.sh).[/red]")
