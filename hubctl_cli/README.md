@@ -184,16 +184,14 @@ l'activation (créé par n'importe quel lancement de `./hubctl`).
 Toutes les confirmations sont des **choix** (Oui/Non), pas de la saisie libre.
 
 **Ajouter une app** : `./hubctl app install <url-git>` (une commande, l'app
-tourne — cf. ci-dessous) ou, pour tout un parc, un fichier seed —
-`./hubctl seed apps.yaml` (clone, détection de config, écriture du `.env`,
-build, démarrage, sync coffre).
+tourne — cf. ci-dessous). La retirer : `./hubctl app remove <slug>` (backup,
+compose down -v, dossier supprimé).
 
 ## Installer une application (`app install`)
 
 ```bash
 ./hubctl app install git@github.com:exemple/app-exemple.git   # une commande, l'app tourne
 ./hubctl app install a.git b.git --no-deps --yes              # plusieurs, sans les dépendances, scriptable
-./hubctl app install seed-apps.yaml                           # un fichier seed YAML, en argument unique
 ```
 
 Pour chaque URL git, dans l'ordre et sans étape cachée :
@@ -204,8 +202,8 @@ Pour chaque URL git, dans l'ordre et sans étape cachée :
    `./hubctl update <slug>` », on passe.
 3. **Dépendances d'abord** (`depends.yaml` → `depends_on: [{slug, note}]`) :
    chaque dépendance absente du parc est installée avant l'app, dans l'ordre
-   déclaré, une seule fois. Son URL est résolue dans `seed-apps.yaml` (racine
-   du parc), sinon au registre du Hub (`git_repo_url`, jeton admin).
+   déclaré, une seule fois. Son URL est résolue au registre du Hub
+   (`git_repo_url`, jeton admin).
    Introuvable, cycle, ou dépendance en échec : l'app n'est pas installée
    (clone retiré), les apps suivantes continuent. `--no-deps` les ignore avec
    un avertissement.

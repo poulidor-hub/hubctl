@@ -12,8 +12,8 @@ from rich.text import Text
 from hubctl_cli import actions, animation, atelier_serve, menu, update_serve
 from hubctl_cli.actions import (
     action_start_all, action_stop_all, action_restart, action_update_all, action_update,
-    action_atelier, action_atelier_close_all, action_bootstrap, action_vpn, action_seed,
-    action_seed_export, action_doctor, action_app_install, action_app_remove,
+    action_atelier, action_atelier_close_all, action_bootstrap, action_vpn,
+    action_doctor, action_app_install, action_app_remove,
 )
 from hubctl_cli.canvas import Canvas
 from hubctl_cli.coffre import Vault
@@ -204,24 +204,9 @@ def build_parser() -> argparse.ArgumentParser:
     jwt_cleanup = jwt_sub.add_parser("cleanup", help="Supprimer les PEM archivés/révoqués anciens")
     jwt_cleanup.add_argument("--older-than-months", type=int, default=12)
 
-    # seed (déploiement batch déclaratif d'apps + export)
-    seed_parser = sub.add_parser("seed",
-                                 help="Déployer/converger des apps depuis un fichier seed YAML")
-    seed_parser.add_argument("fichier", nargs="?", default=None,
-                              help="Chemin vers le fichier seed (YAML) — ou 'export' pour exporter le parc")
-    seed_parser.add_argument("--prune", action="store_true",
-                              help="Supprimer les apps présentes mais non listées (confirmation)")
-    seed_parser.add_argument("--dry-run", action="store_true",
-                              help="Simulation : afficher les actions sans les exécuter")
-    seed_parser.add_argument("-o", "--output", default=None,
-                              help="Chemin de sortie (défaut: seed-export-YYYY-MM-DD.yaml)")
-    seed_parser.add_argument("--force", action="store_true",
-                              help="Écraser le fichier s'il existe déjà")
-    seed_parser.set_defaults(seed_action=None)
-
-    # app — installation d'une application du parc (une commande, l'app tourne).
-    # Aide entièrement en français : -h/--help est redéfini (texte argparse par
-    # défaut en anglais).
+    # app — installation/suppression d'une application du parc (une commande,
+    # l'app tourne). Aide entièrement en français : -h/--help est redéfini
+    # (texte argparse par défaut en anglais).
     def _aide_fr(parser):
         parser.add_argument("-h", "--help", action="help", default=argparse.SUPPRESS,
                             help="afficher ce message d'aide et quitter")
@@ -243,8 +228,8 @@ def build_parser() -> argparse.ArgumentParser:
             "neutralisés), images du socle garanties, make sync-env, make build, app "
             "pré-créée APPROUVÉE au registre du Hub, make up, health check, certificat "
             "signé par la CA du Hub. Les dépendances déclarées dans depends.yaml sont "
-            "installées d'abord : leur URL est résolue dans seed-apps.yaml (racine du "
-            "parc), sinon au registre du Hub (jeton admin).\n\n"
+            "installées d'abord : leur URL est résolue au registre du Hub (jeton "
+            "admin).\n\n"
             "Mot de passe admin du Hub (approbation) : HUBCTL_ADMIN_PASSWORD, sinon "
             "ADMIN_PASSWORD de HUB_base/.env, sinon saisie masquée (terminal interactif). "
             "Sans mot de passe l'installation continue : l'app reste « en attente "
@@ -254,8 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     _aide_fr(install_parser)
     install_parser.add_argument(
         "urls", nargs="+", metavar="URL_GIT",
-        help="URL git de l'app à installer (plusieurs possibles), ou un fichier seed YAML "
-             "(liste d'URL) en argument unique")
+        help="URL git de l'app à installer (plusieurs possibles)")
     install_parser.add_argument(
         "--no-deps", dest="no_deps", action="store_true",
         help="Ne pas installer les dépendances déclarées dans depends.yaml (avertissement)")
@@ -687,34 +671,6 @@ def _run(args) -> int:
         if args.jwt_action == "cleanup":
             return jwt_keys.run_cleanup(args.older_than_months)
         return 0
-
-    if args.command == "seed":
-        from rich.console import Console as RichConsole
-        console = RichConsole()
-        _resolve_mode(args)
-
-        # Export mode : -o flag ou fichier == "export"
-        if args.output is not None or args.fichier == "export":
-            try:
-                return action_seed_export(console,
-                                          output_path=args.output,
-                                          force=args.force)
-            except Exception as e:
-                print(f"❌ seed export a échoué : {e}")
-                return 1
-
-        # Legacy : seed <fichier>
-        if not args.fichier:
-            console.print("[red]✗ Fichier seed requis. Usage : hubctl seed <fichier.yaml>[/red]")
-            console.print("[dim]Nouveau : hubctl seed export [-o <chemin>] pour exporter le parc actuel.[/dim]")
-            return 1
-        try:
-            return action_seed(console, args.fichier,
-                               prune=args.prune,
-                               dry_run=global_dry_run or args.dry_run)
-        except Exception as e:
-            print(f"❌ seed a échoué : {e}")
-            return 1
 
     if args.command == "app":
         from rich.console import Console as RichConsole

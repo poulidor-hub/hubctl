@@ -564,7 +564,7 @@ class TestAppInstallParser:
         out = capsys.readouterr().out
         assert "installation" in out.lower()
         assert "dépendances" in out and "--no-deps" in out and "--yes" in out
-        assert "seed-apps.yaml" in out and "HUBCTL_ADMIN_PASSWORD" in out
+        assert "registre du Hub" in out and "HUBCTL_ADMIN_PASSWORD" in out
         assert "Code de sortie" in out and "show this help" not in out
 
 

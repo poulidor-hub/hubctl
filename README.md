@@ -25,7 +25,7 @@ manuelle
   Hub) et assistant de restauration sur serveur neuf.
 - **Socle** — build local des images HUBsocle et surveillance du drift de la flotte.
 - **Extras** — agent de debug IA (Granite/Ollama), gestion VPN WireGuard, trousseau de
-  clés JWT du Hub, déploiement convergent d'apps depuis un fichier seed YAML.
+  clés JWT du Hub.
 
 ## Place dans le parc
 
@@ -93,8 +93,8 @@ lecture seule pour les clients (GitHub le garantit).
 | `pra-restore [kit]` | Restauration PRA sur serveur neuf (assistant) |
 | `vault <backup\|restore\|status\|export\|import\|app>` | Coffre de secrets |
 | `jwt <keys\|rotate\|revoke\|cleanup>` | Trousseau de clés JWT du Hub (v0.9.0, HUB_base ≥ 3.59.0) |
-| `seed <fichier>` / `seed export` | Déployer/converger des apps depuis YAML / exporter le parc |
-| `app install <url-git>… [--no-deps] [--yes]` | Installer une application du parc en une commande (et ses dépendances) : `.env`, socle, build, approbation au Hub, démarrage, certificat de la CA du Hub ; ou un fichier seed YAML en argument unique |
+| `app install <url-git>… [--no-deps] [--yes]` | Installer une application du parc en une commande (et ses dépendances) : `.env`, socle, build, approbation au Hub, démarrage, certificat de la CA du Hub |
+| `app remove <slug> [--yes] [--dry-run]` | Supprimer une app du parc : `compose down -v`, backup tar.gz, dossier retiré (`--yes` requis en non-interactif) |
 | `socle <build\|status>` | Images HUBsocle + drift `APP_SOCLE_VERSION` |
 | `vpn <sync\|status\|on\|off>` | WireGuard |
 | `debug [app]` | Agent de debug IA (Granite/Ollama) |

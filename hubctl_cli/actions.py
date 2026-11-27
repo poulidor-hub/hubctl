@@ -926,43 +926,6 @@ def repo_name_from_url(url: str) -> str | None:
     return name
 
 
-def _load_seed_file(path) -> list[tuple[str, str]]:
-    """Parse un fichier seed YAML. Retourne [(url, slug), ...].
-
-    Lève FileNotFoundError si le fichier n'existe pas.
-    Lève ValueError si le contenu est invalide (pas de clé apps, URL invalide, slug dupliqué).
-    """
-    import yaml
-    from pathlib import Path
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Fichier seed introuvable : {path}")
-    data = yaml.safe_load(path.read_text()) or {}
-    if not isinstance(data, dict):
-        raise ValueError("Le fichier seed doit être un dictionnaire YAML avec une clé 'apps'.")
-    apps = data.get("apps")
-    if not isinstance(apps, list):
-        raise ValueError("Aucune entrée 'apps' (liste non vide) dans le fichier seed.")
-    # empty list is valid → return [] (nothing to deploy)
-    result: list[tuple[str, str]] = []
-    seen_slugs: set[str] = set()
-    for entry in apps:
-        url = entry.strip() if isinstance(entry, str) else ""
-        if not url or ("/" not in url and ":" not in url):
-            raise ValueError(f"URL git invalide : {url}")
-        name = repo_name_from_url(url)
-        if not name:
-            raise ValueError(f"URL git invalide : {url}")
-        slug = name.lower().replace("_", "-")
-        if not valid_app_name(slug):
-            raise ValueError(f"Slug invalide dérivé de {url} : {slug}")
-        if slug in seen_slugs:
-            raise ValueError(f"Slug dupliqué : {slug} (deux URLs → même slug)")
-        seen_slugs.add(slug)
-        result.append((url, slug))
-    return result
-
-
 def _clone_app(console, url, dest, *, dry_run: bool = False) -> bool:
     """Clone un dépôt git vers dest. Retourne True si succès."""
     con = console or _console
@@ -1097,7 +1060,7 @@ def _detect_app_config(name: str) -> dict:
     host_ip = _detect_host_ip()
 
     # Allocation officielle auprès du Hub : ports préservés par slug+host
-    # (registre partagé — évite les collisions entre instances/seed) et
+    # (registre partagé — évite les collisions entre instances) et
     # APP_SUBNET requis par les docker-compose récents. Fallback silencieux
     # sur les ports locaux si le Hub est injoignable (le sync-env de l'app
     # réinterrogera le Hub au build).
@@ -1275,20 +1238,14 @@ def app_make(app_name: str, target: str, *, dry_run: bool, console=None, timeout
 
 
 # ── Budgets de démarrage d'une app (secondes) ──
-# Deux situations, deux budgets — le même chemin (cf. _build_up_health) :
-#  - PREMIER DÉMARRAGE d'une app (seed CAS A/B, `app install`) : build des
-#    images api + frontend sans cache, migrations, auto-enregistrement. Même
-#    famille de budget que le premier boot du Hub (_build_timeout) : sur une
-#    petite VM, le seul build du Hub dépasse 120 s (E2E 26/11) — les anciens
-#    600/120/60 ne laissaient aucune marge à un premier build d'app.
-#  - CONVERGENCE d'une app déjà déployée (seed CAS C) : images en cache,
-#    mêmes valeurs que `hubctl update`.
+# Premier démarrage d'une app (`app install`) : build des images api +
+# frontend sans cache, migrations, auto-enregistrement. Même famille de
+# budget que le premier boot du Hub (_build_timeout) : sur une petite VM,
+# le seul build du Hub dépasse 120 s (E2E 26/11) — les anciens 600/120/60
+# ne laissaient aucune marge à un premier build d'app.
 INSTALL_BUILD_TIMEOUT = 1800
 INSTALL_UP_TIMEOUT = 600
 INSTALL_HEALTH_TIMEOUT = 300
-_CONVERGE_BUILD_TIMEOUT = 600
-_CONVERGE_UP_TIMEOUT = 120
-_CONVERGE_HEALTH_TIMEOUT = 60
 
 
 def _build_up_health(console, dest, *, dry_run: bool = False,
@@ -1358,16 +1315,6 @@ def _build_up_health(console, dest, *, dry_run: bool = False,
     return True, ""
 
 
-def _build_and_start_app(console, dest, config, *, dry_run: bool = False, before_up=None) -> bool:
-    """Premier démarrage d'une app : build + up + health check (cf. _build_up_health).
-
-    Retourne True si l'app est saine. Chemin partagé par le seed (nouvelle app)
-    et `app install` — `config` est conservé par compatibilité de signature.
-    """
-    ok, _step = _build_up_health(console, dest, dry_run=dry_run, before_up=before_up)
-    return ok
-
-
 def _get_vault():
     """Récupère le coffre du parc (lazy import pour éviter les dépendances circulaires)."""
     from hubctl_cli.coffre import Vault
@@ -1400,73 +1347,6 @@ def _sync_app_coffre(console, name, *, dry_run: bool = False) -> None:
         con.print(f"[green]✓ Secrets de {name} sauvegardés dans le coffre[/green]")
     except Exception as e:
         con.print(f"[yellow]⚠ Sync coffre échoué ({e}) — l'app est démarrée, le coffre peut être sync plus tard.[/yellow]")
-
-
-def _seed_one_app(console, url: str, slug: str, *, dry_run: bool = False) -> tuple[bool, str]:
-    """Déploie ou met à jour UNE app. Retourne (ok, detail). Ne lève jamais.
-
-    CAS A : dossier absent → clone + detect + write_env + build_start + sync coffre
-    CAS B : dossier sans .env → pull + detect + write_env + build_start + sync coffre
-    CAS C : dossier avec .env → pull + build + up + health (.env PRÉSERVÉ)
-    """
-    con = console or _console
-    dest = hub_state.active_apps_dir() / slug
-
-    # Mode dry-run : simulation pure, aucune sous-fonction exécutée
-    if dry_run:
-        if not dest.exists():
-            con.print(f"[dim](dry-run) clone {url} → init → build → up[/dim]")
-            return (True, "(simulé) serait déployée")
-        if not (dest / ".env").exists():
-            con.print(f"[dim](dry-run) pull → init → build → up : {slug}[/dim]")
-            return (True, "(simulé) serait initialisée")
-        con.print(f"[dim](dry-run) pull → build → up : {slug} (.env préservé)[/dim]")
-        return (True, "(simulé) serait mise à jour")
-
-    has_env = (dest / ".env").exists()
-    try:
-        if not dest.exists():
-            # ── CAS A : nouvelle app ──
-            if not disk_guard(con):
-                return (False, "espace disque insuffisant")
-            if not _clone_app(con, url, dest, dry_run=False):
-                return (False, "clone failed")
-            if not _validate_app_structure(con, dest, dry_run=False):
-                return (False, "structure template invalide")
-            config = _detect_app_config(slug)
-            _write_app_env(con, dest, config, dry_run=False)
-            if not _build_and_start_app(con, dest, config, dry_run=False):
-                return (False, "build/start failed")
-            _sync_app_coffre(con, slug, dry_run=False)
-            return (True, f"déployée (ports {config['api_port']}/{config['frontend_port']})")
-
-        if not has_env:
-            # ── CAS B : clonée, jamais initialisée ──
-            rc = utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
-            if rc != 0:
-                return (False, "git pull failed")
-            config = _detect_app_config(slug)
-            _write_app_env(con, dest, config, dry_run=False)
-            if not _build_and_start_app(con, dest, config, dry_run=False):
-                return (False, "build/start failed")
-            _sync_app_coffre(con, slug, dry_run=False)
-            return (True, f"initialisée (ports {config['api_port']}/{config['frontend_port']})")
-
-        # ── CAS C : déjà déployée (convergence) — .env PRÉSERVÉ ──
-        rc = utils.run_shell(["git", "-C", str(dest), "pull"], dry_run=False, console=con)
-        if rc != 0:
-            return (False, "git pull failed")
-        # Même chemin que le premier démarrage, budget de convergence.
-        ok, step = _build_up_health(
-            con, dest, dry_run=False,
-            build_timeout=_CONVERGE_BUILD_TIMEOUT, up_timeout=_CONVERGE_UP_TIMEOUT,
-            health_timeout=_CONVERGE_HEALTH_TIMEOUT)
-        if not ok:
-            return (False, f"{step} failed")
-        return (True, "mise à jour")
-
-    except Exception as e:
-        return (False, f"erreur : {e}")
 
 
 def action_app_remove(console, name: str, *, yes: bool = False, dry_run: bool = False,
@@ -1534,61 +1414,9 @@ def action_app_remove(console, name: str, *, yes: bool = False, dry_run: bool = 
     return 0
 
 
-def _seed_prune(console, listed_slugs: set[str], vault, *, dry_run: bool = False) -> int:
-    """Supprime les apps présentes dans le dossier actif mais non listées dans le seed.
-
-    Affiche la liste et demande une confirmation globale Oui/Non.
-    Retourne le nombre d'apps supprimées.
-    """
-    con = console or _console
-    present: set[str] = set()
-    try:
-        for app in hub_state.get_active_apps():
-            present.add(app.name)
-    except Exception:
-        pass
-    to_remove = sorted(present - listed_slugs)
-    if not to_remove:
-        con.print("[dim]Rien à supprimer (--prune).[/dim]")
-        return 0
-    con.print("[yellow]Apps à supprimer (non listées dans le seed) :[/yellow]")
-    for name in to_remove:
-        con.print(f"  • {name}")
-    try:
-        answer = input("  Supprimer ces apps ? [o/N] : ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = "n"
-    if answer not in ("o", "oui", "y", "yes"):
-        con.print("[dim]Prune annulé.[/dim]")
-        return 0
-    count = 0
-    for name in to_remove:
-        action_remove_app(con, name, vault, dry_run=dry_run)
-        count += 1
-    return count
-
-
-def _seed_report(console, results: list[tuple[str, bool, str]]) -> None:
-    """Affiche le tableau de synthèse final."""
-    con = console or _console
-    from rich.table import Table
-    t = Table(title="Résultat du seed")
-    t.add_column("App", style="bold")
-    t.add_column("Résultat", style="bold")
-    t.add_column("Détail")
-    for slug, ok, detail in results:
-        icon = "✓" if ok else "✗"
-        style = "green" if ok else "red"
-        t.add_row(slug, f"[{style}]{icon}[/{style}]", detail)
-    con.print()
-    con.print(t)
-    ok_count = sum(1 for _, ok, _ in results if ok)
-    con.print(f"[bold]{ok_count}/{len(results)} app(s) réussies[/bold]")
-
-
 def _hub_precheck(con) -> bool:
-    """Le Hub doit être sain avant de déployer (précheck commun au seed et à
-    `app install` ; skippé en dry-run par les deux appelants)."""
+    """Le Hub doit être sain avant de déployer une app (précheck d'
+    `app install` ; skippé en dry-run)."""
     con.print("[cyan]♢ Précheck : le hub doit être sain…[/cyan]")
     if not _health_check("hub", console=con, timeout=30):
         con.print("[red]✗ Hub non disponible. Lancez `hubctl start` d'abord.[/red]")
@@ -1596,61 +1424,17 @@ def _hub_precheck(con) -> bool:
     return True
 
 
-def action_seed(console, seed_file: str, *, prune: bool = False, dry_run: bool = False) -> int:
-    """Déploie/converge les apps listées dans un fichier seed YAML.
-
-    Retourne 0 si toutes les apps ont réussi, 1 si au moins un échec.
-    """
-    con = console or _console
-
-    # 1. Précheck hub (skippé en dry-run)
-    if not dry_run and not _hub_precheck(con):
-        return 1
-
-    # 2. Lecture du fichier seed
-    from pathlib import Path
-    try:
-        entries = _load_seed_file(Path(seed_file))
-    except (FileNotFoundError, ValueError) as e:
-        con.print(f"[red]✗ {e}[/red]")
-        return 1
-    if not entries:
-        con.print("[dim]Aucune app à déployer.[/dim]")
-        return 0
-
-    con.print(f"[bold]Seed : {len(entries)} app(s) à traiter[/bold]")
-
-    # 3. Déploiement (best-effort)
-    results: list[tuple[str, bool, str]] = []
-    for url, slug in entries:
-        con.print()
-        con.print(f"[bold cyan]▸ {slug}[/bold cyan]")
-        ok, detail = _seed_one_app(con, url, slug, dry_run=dry_run)
-        results.append((slug, ok, detail))
-
-    # 4. Prune (optionnel)
-    if prune:
-        con.print()
-        listed = {slug for _, slug in entries}
-        vault = _get_vault()
-        _seed_prune(con, listed, vault, dry_run=dry_run)
-
-    # 5. Rapport final + code de sortie
-    _seed_report(con, results)
-    return 0 if all(ok for _, ok, _ in results) else 1
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # `hubctl app install <url-git>` — une commande, l'app tourne
 # ═════════════════════════════════════════════════════════════════════════════
 #
-# Le seed et `app install` partagent les mêmes fonctions (clone, structure,
-# config, .env, _build_up_health, coffre). `app install` ajoute, autour de ce
-# socle commun, ce qui manquait pour qu'une app neuve soit VRAIMENT en service :
-# dépendances installées d'abord, secrets par défaut neutralisés, images du
-# socle garanties (`make sync-env` refuse sans elles), app pré-créée APPROUVÉE
-# au registre (l'auto-enregistrement la fait naître « en attente »), certificat
-# signé par la CA du Hub, budgets de premier démarrage.
+# Installation d'une app neuve VRAIMENT en service : clone (fonctions partagées
+# _clone_app / _validate_app_structure / _detect_app_config / _write_app_env /
+# _build_up_health / coffre), dépendances installées d'abord, secrets par
+# défaut neutralisés, images du socle garanties (`make sync-env` refuse sans
+# elles), app pré-créée APPROUVÉE au registre (l'auto-enregistrement la fait
+# naître « en attente »), certificat signé par la CA du Hub, budgets de
+# premier démarrage.
 #
 # Contrat de sortie : 0 si toutes les apps demandées répondent, 1 sinon.
 
@@ -1665,7 +1449,7 @@ _INSTALL_SLUG_RE = re.compile(r"^[a-z0-9-]{2,50}$")
 
 
 def _install_url(arg: str) -> str:
-    """URL git validée (forme minimale du seed : un hôte et un chemin)."""
+    """URL git validée (au moins un hôte et un chemin)."""
     url = (arg or "").strip()
     if not url or ("/" not in url and ":" not in url):
         raise ValueError(f"URL git invalide : {arg}")
@@ -1673,8 +1457,9 @@ def _install_url(arg: str) -> str:
 
 
 def _install_slug(url: str) -> str:
-    """Slug d'une app à installer : nom du dépôt (règle du seed), validé par la
-    règle du registre Hub. Lève ValueError avec un message-action."""
+    """Slug d'une app à installer : nom du dépôt git (minuscules, tirets),
+    validé par la règle du registre Hub. Lève ValueError avec un
+    message-action."""
     name = repo_name_from_url(url)
     if not name:
         raise ValueError(f"URL git invalide : {url}")
@@ -1689,33 +1474,12 @@ def _install_slug(url: str) -> str:
 def _install_targets(args: list[str]) -> list[tuple[str, str]]:
     """Arguments de la commande → [(url, slug), ...].
 
-    Accepte des URL git, ou — en argument unique — un fichier YAML au format
-    seed (liste d'URL). Lève ValueError (message affichable) sur tout problème.
+    Accepte des URL git. Lève ValueError (message affichable) sur tout
+    problème.
     """
     if not args:
         raise ValueError("Aucune cible : hubctl app install <url-git> [url-git…]")
-    yaml_args = [a for a in args if _looks_like_seed_file(a)]
-    if yaml_args:
-        if len(args) != 1:
-            raise ValueError("Un fichier seed YAML doit être l'unique argument de `app install`.")
-        import yaml
-        try:
-            return _load_seed_file(Path(args[0]))
-        except FileNotFoundError as e:
-            raise ValueError(str(e)) from None
-        except (OSError, ValueError, yaml.YAMLError) as e:
-            raise ValueError(f"Fichier seed illisible : {args[0]} — {e}") from None
     return [(u, _install_slug(u)) for u in (_install_url(a) for a in args)]
-
-
-def _looks_like_seed_file(arg: str) -> bool:
-    """Argument qui désigne un fichier seed YAML (extension, ou fichier existant)."""
-    if (arg or "").lower().endswith((".yaml", ".yml")):
-        return True
-    try:
-        return Path(arg).is_file()
-    except (OSError, ValueError):
-        return False
 
 
 def _apps_dir_writable() -> bool:
@@ -1731,7 +1495,7 @@ def _apps_dir_writable() -> bool:
 
 
 def _install_precheck(con, *, dry_run: bool = False) -> bool:
-    """Prérequis d'un déploiement d'app : Hub sain (précheck du seed, skippé en
+    """Prérequis d'un déploiement d'app : Hub sain (précheck, skippé en
     dry-run), Docker joignable, APPS/ inscriptible."""
     if dry_run:
         con.print("[dim](dry-run) Précheck : Hub sain, Docker joignable, APPS/ inscriptible[/dim]")
@@ -1799,20 +1563,6 @@ def _read_depends(dest: Path) -> list[tuple[str, str]]:
             note = item.get("note")
             deps.append((item["slug"].strip(), note.strip() if isinstance(note, str) else ""))
     return deps
-
-
-def _parc_seed_urls() -> tuple[dict[str, str], str | None]:
-    """seed-apps.yaml de la racine du parc → ({slug: url}, erreur).
-
-    Source (a) de résolution des dépendances. Fichier absent → ({}, None) ;
-    illisible → ({}, raison) : l'appelant prévient, sans bloquer."""
-    f = hub_state.PARC_ROOT / "seed-apps.yaml"
-    if not f.exists():
-        return {}, None
-    try:
-        return {slug: url for url, slug in _load_seed_file(f)}, None
-    except (OSError, ValueError) as e:
-        return {}, str(e)
 
 
 # ── API du Hub depuis l'hôte ─────────────────────────────────────────────────
@@ -2535,16 +2285,7 @@ class _InstallRun:
         self.failed: set[str] = set()               # slugs en échec plus tôt dans cette commande
         self.done: dict[str, _InstallResult] = {}   # installées avec succès dans cette commande
         self.results: list[_InstallResult] = []     # une ligne de résumé par app, dans l'ordre
-        self._seed: tuple[dict[str, str], str | None] | None = None
         self._ca_pem: str | None = None
-
-    def seed_urls(self) -> dict[str, str]:
-        if self._seed is None:
-            self._seed = _parc_seed_urls()
-            if self._seed[1]:
-                self.con.print(f"[yellow]⚠ seed-apps.yaml illisible — dépendances non résolues "
-                               f"par ce fichier : {escape(self._seed[1])}[/yellow]")
-        return self._seed[0]
 
     def ca_pem(self) -> str | None:
         """CA racine du Hub, lue une fois par commande (jamais en dry-run)."""
@@ -2578,9 +2319,8 @@ def _depends_clean_empty(f: Path) -> bool:
 
 def _resolve_dependency_url(run: _InstallRun, dep_slug: str) -> str | None:
     """URL git d'une dépendance absente du parc : le registre du Hub
-    (git_repo_url, jeton admin). `seed-apps.yaml` n'en fait pas partie : c'est
-    l'outil de reprise d'une flotte sauvegardée, pas de la mise en place d'un
-    Hub (décision utilisateur du 27/11/2026)."""
+    (git_repo_url, jeton admin) — unique lieu de résolution (décision
+    utilisateur du 27/11/2026)."""
     token = run.admin.token()
     if not token:
         return None
@@ -2749,7 +2489,7 @@ def _install_one(run: _InstallRun, url: str, slug: str, *, is_dependency: bool =
     - clonée puis non installable (dépendance introuvable, cycle, annulation,
       dépendance en échec) → le clone est retiré, l'app n'est PAS installée ;
     - en échec plus tard (build, démarrage, health) → le dossier est CONSERVÉ
-      pour diagnostic, comme le seed.
+      pour diagnostic (logs, .env).
     """
     con = run.con
     if slug in run.done:                      # déjà installée pendant cette commande
@@ -2866,7 +2606,7 @@ def action_app_install(console, targets, *, no_deps: bool = False, yes: bool = F
                        dry_run: bool = False, prompt_password=None, confirm=None) -> int:
     """`hubctl app install <url-git>…` — installe des apps du parc, en service.
 
-    Pour chaque URL git (ou un fichier seed YAML en argument unique) :
+    Pour chaque URL git :
     clone dans APPS/, dépendances d'abord (depends.yaml), .env généré et secrets
     par défaut neutralisés, images du socle garanties, `make sync-env`,
     `make build`, app pré-créée APPROUVÉE au registre du Hub (jeton admin),
@@ -3006,7 +2746,7 @@ def _health_check(target: str, console=None, timeout: int = 60, port_override: s
     `target` : « hub » ou le slug d'une app (port API lu dans son .env).
     """
     con = console or _console
-    # « Hub » pour le précheck, le nom de l'app sinon (seed, update, app install).
+    # « Hub » pour le précheck, le nom de l'app sinon (update, app install).
     label = "Hub" if target == "hub" else f"« {escape(target)} »"
     # Port API : HUB_API_PORT du .env Hub (défaut 8000) pour target "hub",
     # sinon API_PORT de l'app cible.
@@ -5119,77 +4859,5 @@ def action_vpn(console, subcmd: str, *, dry_run: bool = False) -> None:
         return
 
     raise ValueError(f"subcmd inconnu: {subcmd!r} (attendu: sync|status|on|off)")
-
-
-def action_seed_export(console, output_path: str | None = None, *, force: bool = False) -> int:
-    """Génère un fichier seed YAML à partir des apps installées dans APPS/.
-
-    Retourne 0 si au moins une app exportée, 1 si aucune.
-    """
-    import yaml
-    from datetime import date
-
-    con = console or _console
-    apps_dir = hub_state.APPS_DIR
-
-    # 1. Vérifier que APPS/ existe et contient des dossiers
-    if not apps_dir.exists() or not any(
-        d.is_dir() and not d.name.startswith(".") for d in apps_dir.iterdir()
-    ):
-        con.print("[dim]Aucune app dans APPS/, rien à exporter.[/dim]")
-        return 1
-
-    # 2. Collecter les URLs git de chaque app
-    urls: list[str] = []
-    for app_path in sorted(apps_dir.iterdir()):
-        if not app_path.is_dir() or app_path.name.startswith("."):
-            continue
-        if not (app_path / ".git").exists():
-            con.print(f"[dim yellow]⚠ {app_path.name} ignorée (pas de dépôt git)[/dim yellow]")
-            continue
-
-        try:
-            r = subprocess.run(
-                ["git", "-C", str(app_path), "remote", "get-url", "origin"],
-                capture_output=True, text=True, timeout=5,
-            )
-            stdout = r.stdout
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode()
-            if r.returncode != 0 or not stdout.strip():
-                con.print(f"[dim yellow]⚠ {app_path.name} ignorée (pas de remote git)[/dim yellow]")
-                continue
-            urls.append(stdout.strip())
-        except Exception:
-            con.print(f"[dim yellow]⚠ {app_path.name} ignorée (erreur git)[/dim yellow]")
-            continue
-
-    # 3. Aucune URL collectée
-    if not urls:
-        con.print("[dim]Aucune app avec remote git trouvée dans APPS/.[/dim]")
-        return 1
-
-    # 4. Trier (déterministe)
-    urls.sort()
-
-    # 5. Déterminer le chemin de sortie
-    if output_path:
-        out = Path(output_path)
-    else:
-        today = date.today().isoformat()
-        out = hub_state.PARC_ROOT / f"seed-export-{today}.yaml"
-
-    # 6. Vérifier si le fichier existe déjà
-    if out.exists() and not force:
-        con.print(f"[red]✗ {out} existe déjà. Utilisez --force pour écraser.[/red]")
-        return 1
-
-    # 7. Écrire le YAML
-    header = f"# seed-export-{date.today().isoformat()}.yaml — export du parc au {date.today().isoformat()}\n"
-    content = header + yaml.dump({"apps": urls}, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    out.write_text(content)
-
-    con.print(f"[green]✓ {len(urls)} app(s) exportée(s) vers {out}[/green]")
-    return 0
 
 
