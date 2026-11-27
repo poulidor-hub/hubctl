@@ -46,6 +46,10 @@ def _setup(monkeypatch, *, precheck_problems=None, run_shell_side=None,
     monkeypatch.setattr(actions.park_checks, "run_update_prechecks",
                         lambda root: precheck_problems or [_f(True)])
     monkeypatch.setattr(actions, "_db_snapshot", lambda con=None: None)
+    monkeypatch.setattr(actions, "_ensure_atelier_service",
+                        lambda con=None, dry_run=False: None)
+    monkeypatch.setattr(actions, "_ensure_update_service",
+                        lambda con=None, dry_run=False: None)
     monkeypatch.setattr(actions, "_health_check",
                         lambda target, con, timeout=60: health)
     monkeypatch.setattr(actions, "_git_head_sha",
@@ -220,3 +224,17 @@ def test_update_hub_information_prints_git_text_verbatim(monkeypatch):
     text = con.export_text()  # un seul export : il vide l'enregistrement
     assert "ℹ hub_base.fetch — impossible de vérifier" in text
     assert "ref a[b] rejeté" in text
+
+
+def test_update_hub_refreshes_host_units(tmp_path, monkeypatch):
+    """Succès d'update hub → les unités système atelier/update sont re-rendues
+    et re-posées si le gabarit a changé (jamais fatal)."""
+    calls, _rollback = _setup(monkeypatch)
+    ens_atelier = mock.Mock()
+    ens_update = mock.Mock()
+    monkeypatch.setattr(actions, "_ensure_atelier_service", ens_atelier)
+    monkeypatch.setattr(actions, "_ensure_update_service", ens_update)
+    con = mock.Mock()
+    assert actions._update_hub_via_meta(con, dry_run=False) is True
+    ens_atelier.assert_called_once()
+    ens_update.assert_called_once()

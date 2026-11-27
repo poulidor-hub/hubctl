@@ -3600,6 +3600,15 @@ def _update_hub_via_meta(con, *, dry_run: bool) -> bool:
                   dry_run=dry_run, meta_root=meta_root,
                   prev_meta_sha=prev_meta_sha, meta_clean=meta_clean)
         return False
+
+    # Unités hôtes : le gabarit peut avoir changé avec la montée de version —
+    # re-rendu + re-pose ici (jamais fatal). Sans cela, l'unit périmée
+    # survivait à la mise à jour (retour utilisateur du 27/11/2026).
+    try:
+        _ensure_atelier_service(con)
+        _ensure_update_service(con)
+    except Exception as e:
+        con.print(f"[yellow]⚠ Unités hôtes : {e}[/yellow]")
     return True
 
 

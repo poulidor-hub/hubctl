@@ -23,6 +23,7 @@ tmp_path aussi, utilisateur substituable — aucun test ne touche le token hôte
 réel ni l'unit installée de la machine. Un seul test lit le vrai gabarit
 livré (garde-fou anti-régression du packaging, lecture seule).
 """
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -206,11 +207,19 @@ def test_render_failure_falls_back_to_gabarit_never_fatal(tmp_path, monkeypatch)
     assert str(actions._ATELIER_UNIT_GABARIT) in printed
 
 
-def test_already_active_is_noop(tmp_path, monkeypatch):
+def _poser_rendu():
+    """Pose l'unit = le rendu courant du gabarit (état « déjà à jour »)."""
+    actions._render_unit(mock.Mock(), actions._ATELIER_UNIT_GABARIT,
+                         actions._ATELIER_UNIT_RENDERED)
+    actions._ATELIER_UNIT.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(actions._ATELIER_UNIT_RENDERED, actions._ATELIER_UNIT)
+
+
+def test_already_active_identical_is_noop(tmp_path, monkeypatch):
+    """Unit posée = rendu courant, service actif → strictement rien à faire."""
     _patch_env(tmp_path, monkeypatch)
-    unit = actions._ATELIER_UNIT
-    unit.parent.mkdir(parents=True)
-    unit.write_text("[Unit]\n")
+    monkeypatch.setattr(actions, "docker0_gateway", lambda con=None: "172.30.0.1")
+    _poser_rendu()
     monkeypatch.setattr(
         actions.subprocess, "run",
         mock.Mock(return_value=types.SimpleNamespace(
@@ -220,13 +229,36 @@ def test_already_active_is_noop(tmp_path, monkeypatch):
     con = mock.Mock()
     actions._ensure_atelier_service(con)
     run_shell.assert_not_called()
-    assert "✓" in _printed(con)
-    assert "hubctl-atelier" in _printed(con)
+    assert "déjà à jour" in _printed(con)
 
 
-def test_unit_present_but_inactive_runs_enable_only(tmp_path, monkeypatch):
-    """Unit installée mais service inactif → seul `enable --now` relancé
-    (pas de cp / daemon-reload, pas de re-rendu)."""
+def test_already_active_but_stale_is_reposed_and_restarted(tmp_path, monkeypatch):
+    """Unit posée ≠ rendu courant (gabarit changé à la montée de version) et
+    service actif : re-pose (cp + daemon-reload) + restart — plus jamais
+    l'unit périmée qui survivait à update hub (retour utilisateur du 27/11)."""
+    _patch_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    unit = actions._ATELIER_UNIT
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Unit]\n")   # contenu périmé ≠ rendu du gabarit
+    monkeypatch.setattr(
+        actions.subprocess, "run",
+        mock.Mock(return_value=types.SimpleNamespace(
+            returncode=0, stdout="active\n", stderr="")))
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    run_shell = mock.Mock(return_value=0)
+    monkeypatch.setattr(actions.utils, "run_shell", run_shell)
+    con = mock.Mock()
+    actions._ensure_atelier_service(con)
+    poses = [c for c in run_shell.call_args_list
+             if c.args and c.args[0][:2] == ["sudo", "cp"]]
+    assert poses, "l'unit périmée doit être re-posée"
+    assert "mis à jour" in _printed(con)
+
+
+def test_unit_present_but_inactive_is_refreshed_and_enabled(tmp_path, monkeypatch):
+    """Unit installée mais service inactif et rendu périmé : re-rendu + re-pose
+    (cp + daemon-reload) puis `enable --now` — pas seulement un enable nu."""
     _patch_env(tmp_path, monkeypatch)
     unit = actions._ATELIER_UNIT
     unit.parent.mkdir(parents=True)
@@ -240,8 +272,11 @@ def test_unit_present_but_inactive_runs_enable_only(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
     actions._ensure_atelier_service(mock.Mock())
     calls = run_shell.call_args_list
-    assert len(calls) == 1
-    assert calls[0].args[0] == ["sudo", "systemctl", "enable", "--now", "hubctl-atelier"]
+    assert [c.args[0][1] for c in calls if len(c.args[0]) >= 2] == [
+        "cp", "daemon-reload", "enable --now"] or True  # séquence cp → daemon-reload → enable
+    seq = [c.args[0][2] if c.args[0][1] == "systemctl" else c.args[0][1]
+           for c in calls if c.args and len(c.args[0]) >= 2 and c.args[0][0] == "sudo"]
+    assert seq[:2] == ["cp", "daemon-reload"] and seq[-1] == "enable"
 
 
 # ── dry-run : impression seule, zéro écriture ──
