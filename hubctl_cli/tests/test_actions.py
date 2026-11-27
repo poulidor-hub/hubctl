@@ -56,6 +56,70 @@ def test_app_make_passes_compose_progress_quiet():
     assert set(os.environ) <= set(env)
 
 
+# ── update hub : unités hôtes re-rendues en fin de mise à jour ──────────────
+
+
+def test_update_hub_rerenders_host_units(monkeypatch, tmp_path):
+    """Fin d'`update hub` réussie → les DEUX « ensure » unités hôtes sont
+    rappelés (todo b9c019aa, 1re moitié).
+
+    Le gabarit packaging/*.service peut changer avec la montée de version
+    de hubctl : sans re-rendu, l'unit périmée survivait à la mise à jour
+    (retour utilisateur 27/11/2026). Les fonctions d'ensure de `hubctl
+    init` sont idempotentes (rendu gabarit → .rendered/ → pose
+    /etc/systemd/system/ seulement si le rendu change) : on les RÉUTILISE
+    telles quelles, sans nouvelle logique de rendu — et jamais fatales
+    (échec → simple avertissement, l'update reste un succès).
+    """
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    # pré-checks : aucune divergence, méta propre (le flux doit aller au bout)
+    monkeypatch.setattr(actions.park_checks, "run_update_prechecks",
+                        lambda *_a, **_k: [])
+    monkeypatch.setattr(actions.park_checks, "meta_unrelated_dirty_files",
+                        lambda *_a, **_k: False)
+    monkeypatch.setattr(actions, "ensure_hub_env", lambda *a, **kw: None)
+    monkeypatch.setattr(actions, "_git_head_sha", lambda *_a, **_k: "0" * 40)
+    # dry_run=True → pas de snapshot DB ; cycle git/make/mocké → exit 0
+    with mock.patch.object(actions.utils, "run_shell", return_value=0), \
+         mock.patch.object(actions, "_health_check", return_value=True), \
+         mock.patch.object(actions, "_ensure_atelier_service") as m_atelier, \
+         mock.patch.object(actions, "_ensure_update_service") as m_update:
+        ok = actions._update_hub_via_meta(_mock_console(), dry_run=True)
+    assert ok is True
+    m_atelier.assert_called_once()
+    m_update.assert_called_once()
+
+
+def test_update_hub_units_failure_is_not_fatal(monkeypatch, tmp_path):
+    """Échec du re-rendu des unités (ex. pas de TTY pour sudo) → simple
+    avertissement : la mise à jour du Hub reste un SUCCÈS (contrat
+    « n'échoue JAMAIS » des ensure services)."""
+    hub_dir = tmp_path / "HUB_base"
+    hub_dir.mkdir()
+    (hub_dir / "docker-compose.yml").write_text("services: {}\n")
+    monkeypatch.setattr(actions.hub_state, "HUB_DIR", hub_dir)
+    monkeypatch.setattr(actions.hub_state, "PARC_ROOT", tmp_path)
+    monkeypatch.setattr(actions.park_checks, "run_update_prechecks",
+                        lambda *_a, **_k: [])
+    monkeypatch.setattr(actions.park_checks, "meta_unrelated_dirty_files",
+                        lambda *_a, **_k: False)
+    monkeypatch.setattr(actions, "ensure_hub_env", lambda *a, **kw: None)
+    monkeypatch.setattr(actions, "_git_head_sha", lambda *_a, **_k: "0" * 40)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("pas de TTY pour sudo")
+
+    with mock.patch.object(actions.utils, "run_shell", return_value=0), \
+         mock.patch.object(actions, "_health_check", return_value=True), \
+         mock.patch.object(actions, "_ensure_atelier_service", boom):
+        ok = actions._update_hub_via_meta(_mock_console(), dry_run=True)
+    assert ok is True
+
+
 def test_disk_guard_blocks_when_critical():
     fake = mock.Mock(percent_free=3.0, free=1, total=100)
     with mock.patch.object(actions.hub_state, "get_disk_usage", return_value=fake):
