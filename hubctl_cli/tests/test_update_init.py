@@ -18,6 +18,7 @@ tmp_path, utilisateur substituable — aucun test ne touche l'unit installée
 de la machine. Un seul test lit le vrai gabarit livré (garde-fou
 anti-régression du packaging, lecture seule).
 """
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -108,6 +109,7 @@ def test_rendered_unit_substitutes_placeholders(tmp_path, monkeypatch):
     dépendre du docker0 de la machine qui lance la suite."""
     _patch_env(tmp_path, monkeypatch)
     monkeypatch.setattr(actions, "docker0_gateway", lambda con=None: "172.30.0.1")
+    # (docker0_gateway est le global d actions — _render_unit le résout à l appel)
     monkeypatch.setattr(actions.utils, "run_shell", mock.Mock(return_value=0))
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
     actions._ensure_update_service(mock.Mock())
@@ -123,11 +125,15 @@ def test_rendered_unit_substitutes_placeholders(tmp_path, monkeypatch):
     assert "User=@REAL_USER@" in actions._UPDATE_UNIT_GABARIT.read_text()
 
 
-def test_already_active_is_noop(tmp_path, monkeypatch):
+def test_already_active_identical_is_noop(tmp_path, monkeypatch):
+    """Unit posée = rendu courant, service actif → strictement rien à faire."""
     _patch_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(actions, "docker0_gateway", lambda con=None: "172.30.0.1")
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    actions._render_unit(mock.Mock(), actions._UPDATE_UNIT_GABARIT, actions._UPDATE_UNIT_RENDERED)
     unit = actions._UPDATE_UNIT
     unit.parent.mkdir(parents=True)
-    unit.write_text("[Unit]\n")
+    shutil.copyfile(actions._UPDATE_UNIT_RENDERED, unit)
     monkeypatch.setattr(
         actions.subprocess, "run",
         mock.Mock(return_value=types.SimpleNamespace(
@@ -137,28 +143,28 @@ def test_already_active_is_noop(tmp_path, monkeypatch):
     con = mock.Mock()
     actions._ensure_update_service(con)
     run_shell.assert_not_called()
-    assert "✓" in _printed(con)
-    assert "hubctl-update" in _printed(con)
+    assert "déjà à jour" in _printed(con) and "update" in _printed(con)
 
 
-def test_unit_present_but_inactive_runs_enable_only(tmp_path, monkeypatch):
-    """Unit installée mais service inactif → seul `enable --now` relancé
-    (pas de cp / daemon-reload, pas de re-rendu)."""
+def test_unit_present_but_inactive_is_refreshed_and_enabled(tmp_path, monkeypatch):
+    """Unit installée, service inactif, rendu périmé : re-rendu + re-pose
+    (cp + daemon-reload) puis `enable --now` — pas seulement un enable nu."""
     _patch_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(actions, "docker0_gateway", lambda con=None: "172.30.0.1")
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
     unit = actions._UPDATE_UNIT
     unit.parent.mkdir(parents=True)
     unit.write_text("[Unit]\n")
-    monkeypatch.setattr(
-        actions.subprocess, "run",
-        mock.Mock(return_value=types.SimpleNamespace(
-            returncode=3, stdout="inactive\n", stderr="")))
     run_shell = mock.Mock(return_value=0)
     monkeypatch.setattr(actions.utils, "run_shell", run_shell)
-    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
-    actions._ensure_update_service(mock.Mock())
+    con = mock.Mock()
+    actions._ensure_update_service(con)
     calls = run_shell.call_args_list
-    assert len(calls) == 1
-    assert calls[0].args[0] == ["sudo", "systemctl", "enable", "--now", "hubctl-update"]
+    assert len(calls) == 3
+    verbs = [c.args[0][2] if c.args[0][1] == "systemctl" else c.args[0][1]
+             for c in calls if c.args and len(c.args[0]) >= 2 and c.args[0][0] == "sudo"]
+    assert verbs == ["cp", "daemon-reload", "restart"], verbs
+    assert "mis à jour et redémarré" in _printed(con)
 
 
 # ── dry-run : impression seule, zéro écriture ──
